@@ -1,0 +1,14 @@
+{
+  "name": "com.indey.uiprefabbuilder",
+  "version": "0.1.0",
+  "displayName": "UI Prefab Builder",
+  "description": "AI-powered UI Prefab construction agent running natively inside Unity Editor",
+  "unity": "2021.3",
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.0.2"
+  },
+  "keywords": ["ui", "prefab", "ai", "agent", "ugui"],
+  "author": {
+    "name": "Indey"
+  }
+}

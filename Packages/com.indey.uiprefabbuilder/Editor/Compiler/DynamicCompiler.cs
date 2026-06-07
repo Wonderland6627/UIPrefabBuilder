@@ -143,6 +143,8 @@ namespace Indey.UIPrefabBuilder.Compiler
                     StandardOutputEncoding = Encoding.UTF8,
                     StandardErrorEncoding = Encoding.UTF8
                 };
+                psi.EnvironmentVariables["DOTNET_CLI_UI_LANGUAGE"] = "en";
+                psi.EnvironmentVariables["VSLANG"] = "1033";
 
                 using var proc = Process.Start(psi);
                 var stdout = proc.StandardOutput.ReadToEnd();

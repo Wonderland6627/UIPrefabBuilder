@@ -9,7 +9,7 @@ namespace Indey.UIPrefabBuilder.Config
         [SerializeField] private string baseUrl = "https://api.openai.com/v1";
         [SerializeField] private string modelName = "gpt-4o-mini";
         [SerializeField] private int requestTimeoutSeconds = 60;
-        [SerializeField] private int maxRetryCount = 3;
+        [SerializeField] private int maxRetryCount = 5;
         [SerializeField] private int executeTimeoutSeconds = 5;
         [SerializeField] private bool autoExecute = true;
 

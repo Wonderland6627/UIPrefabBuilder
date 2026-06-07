@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading;
@@ -85,9 +86,81 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("- Optionally think in <thinking>...</thinking>.");
             sb.AppendLine("- Always output exactly one ```csharp block implementing IAgentAction.");
             sb.AppendLine("- Use helpers: UICreator, RectTransformHelper, LayoutHelper, PrefabHelper, AssetFinder, ComponentHelper, SceneHelper, HierarchyInspector.");
+            sb.AppendLine("- For RectTransform operations not covered by RectTransformHelper, use the Unity RectTransform API directly (anchorMin, anchorMax, pivot, sizeDelta, anchoredPosition).");
+            sb.AppendLine("- For component property changes not covered by ComponentHelper, use the Unity component API directly (GetComponent<T>(), AddComponent<T>()).");
             sb.AppendLine("- Never delete files, quit Unity, or access network.");
+            sb.AppendLine();
+            sb.AppendLine(IAgentActionContract);
+            sb.AppendLine();
+            sb.AppendLine(ApiQuickReference);
             _history.SetSystemPrompt(sb.ToString());
         }
+
+        private const string IAgentActionContract = @"## IAgentAction Contract
+```csharp
+public interface IAgentAction {
+    string ActionName { get; }
+    string Description { get; }
+    ActionResult Execute(ActionContext context);
+}
+public class ActionContext {
+    public GameObject TargetObject { get; set; }
+    public GameObject CanvasRoot { get; set; }
+}
+public class ActionResult {
+    public bool Success { get; set; }
+    public string Message { get; set; }
+    public static ActionResult Ok(string message);   // use for success
+    public static ActionResult Fail(string message);  // use for failure
+}
+```";
+
+        private const string ApiQuickReference = @"## API Quick Reference
+### UICreator
+- `CreateCanvas(string name, RenderMode mode = ScreenSpaceOverlay)` → GameObject
+- `CreatePanel(string name, Transform parent, Color color)` → GameObject (Image)
+- `CreateButton(string name, Transform parent, string text, Vector2 size)` → GameObject (Button+Text)
+- `CreateText(string name, Transform parent, string content, int fontSize = 18, Color? color = null)` → GameObject (Text)
+- `CreateImage(string name, Transform parent, string spritePath, Vector2 size)` → GameObject (Image)
+- `CreateInputField(string name, Transform parent, string placeholder, Vector2 size)` → GameObject
+- `CreateSlider(string name, Transform parent, float min, float max, float val)` → GameObject
+- `CreateToggle(string name, Transform parent, string label, bool isOn)` → GameObject
+- `CreateScrollView(string name, Transform parent, Vector2 size)` → GameObject
+
+### AssetFinder
+- `Find(string filter, int limit = 50)` → List<string> of asset paths (e.g. `Find(""t:Sprite icon"")`)
+- `GetInfo(string path)` → string description
+
+### RectTransformHelper
+- `SetAnchorPreset(GameObject go, AnchorPreset preset)` — presets: TopLeft/TopCenter/TopRight/MiddleLeft/MiddleCenter/MiddleRight/BottomLeft/BottomCenter/BottomRight/StretchAll
+- `SetSize(GameObject go, float w, float h)`
+- `SetPosition(GameObject go, float x, float y)`
+
+### ComponentHelper
+- `SetImageColor(GameObject go, Color color)`
+- `SetImageSprite(GameObject go, string path)`
+- `SetText(GameObject go, string text)`
+- `AddCanvasGroup(GameObject go, float alpha = 1, bool interact = true, bool block = true)`
+
+### LayoutHelper
+- `AddVerticalLayout(GameObject go, float spacing = 8, TextAnchor align = UpperCenter, RectOffset pad = null)` → VerticalLayoutGroup
+- `AddHorizontalLayout(GameObject go, float spacing = 8, TextAnchor align = MiddleLeft, RectOffset pad = null)` → HorizontalLayoutGroup
+- `AddGridLayout(GameObject go, Vector2 cellSize, Vector2 spacing)` → GridLayoutGroup
+- `AddLayoutElement(GameObject go, float? minW = null, float? minH = null, float? prefW = null, float? prefH = null)` → LayoutElement
+
+### PrefabHelper
+- `Create(GameObject source, string path)` → string
+- `Instantiate(string path, Transform parent = null, string name = null)` → GameObject
+- `Apply(GameObject instance)` → bool
+
+### SceneHelper
+- `GetCurrentSceneName()` / `GetCurrentScenePath()` → string
+- `SaveScene()` → bool / `MarkDirty()`
+- `FindByTag(string tag)` / `FindByName(string name)` → GameObject[]
+
+### HierarchyInspector
+- `Describe(GameObject root, int maxDepth = 4)` → string
+- `DescribeComponents(GameObject go)` → string";
 
         private void TransitionTo(AgentState s)
         {
@@ -207,7 +280,17 @@ namespace Indey.UIPrefabBuilder.Core
                     TransitionTo(AgentState.ObservingResult);
                 }
             }
-            catch (Exception e) { ConsoleLogger.Error("Execution exception: " + e.Message); _txManager.RollbackLast(); Retry("Exception: " + e.Message); }
+            catch (Exception e)
+            {
+                var inner = e is TargetInvocationException tie && tie.InnerException != null ? tie.InnerException : e;
+                var firstFrame = inner.StackTrace?.Split('\n').FirstOrDefault(l => l.Contains("Agent_"))?.Trim() ?? "";
+                var detail = string.IsNullOrEmpty(firstFrame)
+                    ? $"Exception: {inner.GetType().Name}: {inner.Message}"
+                    : $"Exception: {inner.GetType().Name}: {inner.Message}\n  at {firstFrame}";
+                ConsoleLogger.Error("Execution exception: " + detail);
+                _txManager.RollbackLast();
+                Retry(detail);
+            }
         }
 
         private void DoObserve()
@@ -222,8 +305,54 @@ namespace Indey.UIPrefabBuilder.Core
             if (_retryCount >= _settings.MaxRetryCount) { ConsoleLogger.Error($"Max retries reached: {feedback}"); HandleError(feedback); return; }
             _retryCount++;
             ConsoleLogger.Warning($"Retry {_retryCount}/{_settings.MaxRetryCount}: {feedback}");
-            _history.AddToolResult($"[ERROR] {feedback}\n\n[Retry {_retryCount}/{_settings.MaxRetryCount}] Fix the error above and output a corrected ```csharp code block implementing IAgentAction. Do NOT explain, just output the fixed code.");
+            var hint = BuildErrorHint(feedback);
+            var retryMsg = $"[ERROR] {feedback}\n\n{hint}[Retry {_retryCount}/{_settings.MaxRetryCount}] Fix the error above and output a corrected ```csharp code block implementing IAgentAction. Do NOT explain, just output the fixed code.";
+            _history.AddToolResult(retryMsg);
             TransitionTo(AgentState.WaitingForLLM);
+        }
+
+        private static string BuildErrorHint(string feedback)
+        {
+            var sb = new StringBuilder();
+            if (feedback.Contains("CS0738") || feedback.Contains("CS0535") || feedback.Contains("IAgentAction"))
+            {
+                sb.AppendLine("[HINT] IAgentAction requires: string ActionName { get; }, string Description { get; }, ActionResult Execute(ActionContext context).");
+                sb.AppendLine("Return ActionResult.Ok(\"msg\") for success or ActionResult.Fail(\"msg\") for failure.");
+                sb.AppendLine();
+            }
+            if (feedback.Contains("CS0117"))
+            {
+                if (feedback.Contains("AssetFinder"))
+                    sb.AppendLine("[HINT] AssetFinder API: Find(string filter, int limit = 50) → List<string> paths. Example: AssetFinder.Find(\"t:Sprite\", 50)");
+                if (feedback.Contains("RectTransformHelper"))
+                    sb.AppendLine("[HINT] RectTransformHelper only has: SetAnchorPreset(go, AnchorPreset), SetSize(go, w, h), SetPosition(go, x, y). For anchors/pivot, use RectTransform directly.");
+                if (feedback.Contains("ComponentHelper"))
+                    sb.AppendLine("[HINT] ComponentHelper only has: SetImageColor(go, color), SetImageSprite(go, path), SetText(go, text), AddCanvasGroup(go, ...). For other properties, use GetComponent<T>() directly.");
+                if (feedback.Contains("LayoutHelper"))
+                    sb.AppendLine("[HINT] LayoutHelper: AddVerticalLayout(go, spacing, align, pad), AddHorizontalLayout(go, spacing, align, pad), AddGridLayout(go, cellSize, spacing), AddLayoutElement(go, minW, minH, prefW, prefH).");
+                sb.AppendLine();
+            }
+            if (feedback.Contains("CS7036"))
+            {
+                if (feedback.Contains("CreatePanel"))
+                    sb.AppendLine("[HINT] UICreator.CreatePanel(string name, Transform parent, Color color) — color is required.");
+                if (feedback.Contains("CreateButton"))
+                    sb.AppendLine("[HINT] UICreator.CreateButton(string name, Transform parent, string text, Vector2 size) — size is required.");
+                if (feedback.Contains("CreateImage"))
+                    sb.AppendLine("[HINT] UICreator.CreateImage(string name, Transform parent, string spritePath, Vector2 size) — spritePath and size are required.");
+                sb.AppendLine();
+            }
+            if (feedback.Contains("CS1955") && feedback.Contains("ActionResult"))
+            {
+                sb.AppendLine("[HINT] Use ActionResult.Ok(\"message\") or ActionResult.Fail(\"message\"), not ActionResult.Success(...).");
+                sb.AppendLine();
+            }
+            if (feedback.Contains("CS0120") && feedback.Contains("ActionResult"))
+            {
+                sb.AppendLine("[HINT] ActionResult.Success is an instance property. Use the static factory: ActionResult.Ok(\"message\") or ActionResult.Fail(\"message\").");
+                sb.AppendLine();
+            }
+            return sb.ToString();
         }
 
         private void HandleError(string msg)

@@ -1,4 +1,5 @@
 using Indey.UIPrefabBuilder.Config;
+using Indey.UIPrefabBuilder.Logging;
 using UnityEditor;
 using UnityEngine;
 
@@ -8,49 +9,77 @@ namespace Indey.UIPrefabBuilder.UI
     {
         private string _apiKeyDisplay = "";
         private bool _showKey;
+        private bool _keyLoaded;
 
-        public void Draw()
+        private void EnsureKeyLoaded()
         {
+            if (_keyLoaded) return;
+            _keyLoaded = true;
+            _apiKeyDisplay = SecureKeyStore.LoadApiKey();
+        }
+
+        public void DrawLLMSettings()
+        {
+            EnsureKeyLoaded();
+
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-            GUILayout.Label("Settings", EditorStyles.boldLabel);
-            GUILayout.Space(6);
+            GUILayout.Label("LLM Configuration", EditorStyles.miniBoldLabel);
+            GUILayout.Space(4);
 
             var settings = BuilderSettings.Get();
 
-            // LLM Settings
-            GUILayout.Label("LLM Configuration", EditorStyles.miniBoldLabel);
             settings.BaseUrl = EditorGUILayout.TextField("Base URL", settings.BaseUrl);
             settings.ModelName = EditorGUILayout.TextField("Model", settings.ModelName);
 
             EditorGUILayout.BeginHorizontal();
-            GUILayout.Label("API Key", GUILayout.Width(100));
+            GUILayout.Label("API Key", GUILayout.Width(60));
             if (_showKey)
                 _apiKeyDisplay = EditorGUILayout.TextField(_apiKeyDisplay);
             else
-                EditorGUILayout.PasswordField(_apiKeyDisplay, GUILayout.ExpandWidth(true));
-            if (GUILayout.Button(_showKey ? "Hide" : "Show", GUILayout.Width(45)))
-            {
+                _apiKeyDisplay = EditorGUILayout.PasswordField(_apiKeyDisplay, GUILayout.ExpandWidth(true));
+            if (GUILayout.Button(_showKey ? "Hide" : "Show", EditorStyles.miniButton, GUILayout.Width(40)))
                 _showKey = !_showKey;
-                if (_showKey) _apiKeyDisplay = SecureKeyStore.LoadApiKey();
-            }
-            if (GUILayout.Button("Save", GUILayout.Width(40)))
-            {
-                SecureKeyStore.SaveApiKey(_apiKeyDisplay);
-                Debug.Log("[UIPrefabBuilder] API Key saved.");
-            }
             EditorGUILayout.EndHorizontal();
 
-            GUILayout.Space(8);
+            GUILayout.Space(2);
+            if (GUILayout.Button("Save LLM Settings", EditorStyles.miniButton))
+            {
+                SecureKeyStore.SaveApiKey(_apiKeyDisplay);
+                settings.Save();
+                ConsoleLogger.Log("LLM settings saved");
+            }
+
+            EditorGUILayout.EndVertical();
+        }
+
+        public void DrawAgentSettings()
+        {
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
             GUILayout.Label("Agent Configuration", EditorStyles.miniBoldLabel);
+            GUILayout.Space(4);
+
+            var settings = BuilderSettings.Get();
+
             settings.RequestTimeoutSeconds = EditorGUILayout.IntField("Timeout (s)", settings.RequestTimeoutSeconds);
             settings.MaxRetryCount = EditorGUILayout.IntField("Max Retries", settings.MaxRetryCount);
             settings.ExecuteTimeoutSeconds = EditorGUILayout.IntField("Exec Timeout (s)", settings.ExecuteTimeoutSeconds);
             settings.AutoExecute = EditorGUILayout.Toggle("Auto Execute", settings.AutoExecute);
 
-            GUILayout.Space(8);
-            if (GUILayout.Button("Save Settings")) settings.Save();
+            GUILayout.Space(2);
+            if (GUILayout.Button("Save Agent Settings", EditorStyles.miniButton))
+            {
+                settings.Save();
+                ConsoleLogger.Log("Agent settings saved");
+            }
 
             EditorGUILayout.EndVertical();
+        }
+
+        public void Draw()
+        {
+            DrawLLMSettings();
+            GUILayout.Space(6);
+            DrawAgentSettings();
         }
     }
 }

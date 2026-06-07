@@ -139,7 +139,9 @@ namespace Indey.UIPrefabBuilder.Compiler
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     CreateNoWindow = true,
-                    WorkingDirectory = TempDir
+                    WorkingDirectory = TempDir,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
                 };
 
                 using var proc = Process.Start(psi);
@@ -174,7 +176,7 @@ namespace Indey.UIPrefabBuilder.Compiler
         private static string BuildCompilerArgs(string srcFile, string outFile, List<string> refs)
         {
             var sb = new StringBuilder();
-            sb.Append($"-target:library -out:\"{outFile}\" -langversion:9.0 -nowarn:CS0162,CS0168,CS0219 -nologo ");
+            sb.Append($"-target:library -out:\"{outFile}\" -langversion:9.0 -nowarn:CS0162,CS0168,CS0219 -nologo -utf8output ");
             sb.Append("-unsafe- ");
             foreach (var r in refs) sb.Append($"-reference:\"{r}\" ");
             sb.Append($"\"{srcFile}\"");

@@ -127,6 +127,65 @@ namespace Indey.UIPrefabBuilder.UI
             if (File.Exists(path)) File.Delete(path);
         }
 
+        public static string ExportToMarkdown(List<ChatBubble> bubbles, string modelName = "")
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("# UIPrefabBuilder Chat Export");
+            sb.AppendLine($"- **Date**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            if (!string.IsNullOrEmpty(modelName))
+                sb.AppendLine($"- **Model**: {modelName}");
+            sb.AppendLine();
+            sb.AppendLine("---");
+            sb.AppendLine();
+
+            foreach (var b in bubbles)
+            {
+                switch (b.Type)
+                {
+                    case BubbleType.User:
+                        sb.AppendLine("## User");
+                        sb.AppendLine(b.Content);
+                        sb.AppendLine();
+                        break;
+                    case BubbleType.Thinking:
+                        sb.AppendLine("## Thinking");
+                        sb.AppendLine("<details><summary>Thinking process</summary>");
+                        sb.AppendLine();
+                        sb.AppendLine(b.Content);
+                        sb.AppendLine();
+                        sb.AppendLine("</details>");
+                        sb.AppendLine();
+                        break;
+                    case BubbleType.AI: case BubbleType.AIStream:
+                        sb.AppendLine("## Assistant");
+                        sb.AppendLine(b.Content);
+                        sb.AppendLine();
+                        break;
+                    case BubbleType.Code:
+                        sb.AppendLine("## Generated Code");
+                        sb.AppendLine("```csharp");
+                        sb.AppendLine(b.Content);
+                        sb.AppendLine("```");
+                        sb.AppendLine();
+                        break;
+                    case BubbleType.Result:
+                        sb.AppendLine("## Result");
+                        sb.AppendLine($"> {b.Content}");
+                        sb.AppendLine();
+                        break;
+                    case BubbleType.Error:
+                        sb.AppendLine("## Error");
+                        sb.AppendLine($"> **ERROR**: {b.Content}");
+                        sb.AppendLine();
+                        break;
+                }
+                sb.AppendLine("---");
+                sb.AppendLine();
+            }
+
+            return sb.ToString();
+        }
+
         private string GetTitle(List<ChatBubble> bubbles)
         {
             var first = bubbles.FirstOrDefault(b => b.Type == BubbleType.User);

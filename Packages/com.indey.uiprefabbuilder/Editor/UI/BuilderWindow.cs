@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Text;
 using Indey.UIPrefabBuilder.Config;
 using Indey.UIPrefabBuilder.Core;
+using Indey.UIPrefabBuilder.Logging;
 using UnityEditor;
 using UnityEngine;
 
@@ -9,45 +12,64 @@ namespace Indey.UIPrefabBuilder.UI
 {
     public class BuilderWindow : EditorWindow
     {
-        private enum Tab { Chat, History, Skills }
-
         [MenuItem("Window/UI Prefab Builder")]
         public static void Open() => GetWindow<BuilderWindow>("UI Prefab Builder").Show();
 
         private AgentEngine _agent;
-        private Tab _currentTab = Tab.Chat;
         private string _input = "";
-        private Vector2 _chatScroll, _inputScroll, _historyScroll, _skillsScroll;
-        private bool _showSettings;
+        private Vector2 _chatScroll, _inputScroll, _historyScroll, _rightScroll;
         private bool _needsRepaint;
         private float _lastRepaint;
 
         private readonly List<ChatBubble> _bubbles = new List<ChatBubble>();
         private string _streamBuffer = "";
+        private string _thinkingStreamBuffer = "";
         private bool _isStreaming;
+        private bool _isThinking;
+        private bool _showHistory;
 
         // Styles
         private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble;
-        private GUIStyle _inputStyle, _buttonStyle, _tabActive, _tabInactive, _statusLabel, _toolbarBtn;
+        private GUIStyle _inputStyle, _statusLabel;
         private bool _stylesInit;
 
+        // Sub-panels
         private SessionManager _sessions;
         private SettingsPanel _settingsPanel;
+        private ConsolePanel _consolePanel;
+
+        // Split views
+        private SplitView _hSplitLeft;   // left | center+right
+        private SplitView _hSplitRight;  // center | right
+        private SplitView _vSplitLeft;   // left-top | left-bottom (console)
 
         private void OnEnable()
         {
+            ConsoleLogger.Initialize();
+
             var settings = BuilderSettings.Get();
             _agent = new AgentEngine(settings);
             _agent.OnStateChanged += s => { _needsRepaint = true; };
             _agent.OnStreamToken += t => { _streamBuffer += t; _isStreaming = true; _needsRepaint = true; };
-            _agent.OnThinking += t => { AddBubble(BubbleType.Thinking, t); };
+            _agent.OnThinkingToken += t => { _thinkingStreamBuffer += t; _isThinking = true; _needsRepaint = true; };
+            _agent.OnThinking += t => { FinalizeThinkingStream(t); };
             _agent.OnComplete += full => { FinishStream(full); };
-            _agent.OnError += e => { AddBubble(BubbleType.Error, e); _isStreaming = false; };
+            _agent.OnError += e => { AddBubble(BubbleType.Error, e); _isStreaming = false; _isThinking = false; };
             _agent.OnExecuted += r => { AddBubble(r.Success ? BubbleType.Result : BubbleType.Error, r.Message); };
+
             _sessions = new SessionManager();
             _settingsPanel = new SettingsPanel();
+            _consolePanel = new ConsolePanel();
             _sessions.RestoreLastSession(_agent.History, _bubbles);
+
+            _hSplitLeft = new SplitView("UIPrefabBuilder_HSplitLeft", SplitDirection.Horizontal, 220f, 150f, 400f);
+            _hSplitRight = new SplitView("UIPrefabBuilder_HSplitRight", SplitDirection.Horizontal, 220f, 150f, 400f);
+            _vSplitLeft = new SplitView("UIPrefabBuilder_VSplitLeft", SplitDirection.Vertical, 200f, 80f);
+
+            ConsoleLogger.OnLogAdded += _ => _needsRepaint = true;
+
             EditorApplication.update += Tick;
+            ConsoleLogger.Log("BuilderWindow opened");
         }
 
         private void OnDisable()
@@ -70,78 +92,164 @@ namespace Indey.UIPrefabBuilder.UI
         {
             InitStyles();
             DrawHeader();
-            if (_showSettings) { _settingsPanel.Draw(); return; }
-            DrawTabBar();
-            switch (_currentTab)
-            {
-                case Tab.Chat: DrawChatTab(); break;
-                case Tab.History: DrawHistoryTab(); break;
-                case Tab.Skills: DrawSkillsTab(); break;
-            }
-            DrawStatusBar();
+
+            var bodyRect = new Rect(0, EditorStyles.toolbar.fixedHeight, position.width, position.height - EditorStyles.toolbar.fixedHeight);
+
+            // Right split: measure from right edge inward
+            var rightWidth = _hSplitRight.SplitPosition;
+            var rightPanelRect = new Rect(bodyRect.xMax - rightWidth, bodyRect.y, rightWidth, bodyRect.height);
+            var leftAndCenterRect = new Rect(bodyRect.x, bodyRect.y, bodyRect.width - rightWidth - 4f, bodyRect.height);
+
+            // Left split within leftAndCenter
+            var leftPanelRect = _hSplitLeft.BeginSplit(leftAndCenterRect);
+            var centerPanelRect = _hSplitLeft.EndSplit(leftAndCenterRect);
+
+            // Right splitter handle (between center and right)
+            var rightSplitterRect = new Rect(rightPanelRect.x - 4f, bodyRect.y, 4f, bodyRect.height);
+            HandleRightSplitter(rightSplitterRect, bodyRect);
+            EditorGUI.DrawRect(rightSplitterRect, new Color(0.15f, 0.15f, 0.15f, 1f));
+
+            DrawLeftPanel(leftPanelRect);
+            DrawCenterPanel(centerPanelRect);
+            DrawRightPanel(rightPanelRect);
+
             HandleKeyboard();
         }
+
+        #region Right Splitter (custom, drags from right)
+        private bool _rightSplitterDragging;
+
+        private void HandleRightSplitter(Rect splitterRect, Rect bodyRect)
+        {
+            var hitRect = new Rect(splitterRect.x - 2, splitterRect.y, splitterRect.width + 4, splitterRect.height);
+            EditorGUIUtility.AddCursorRect(hitRect, MouseCursor.ResizeHorizontal);
+            var e = Event.current;
+            switch (e.type)
+            {
+                case EventType.MouseDown:
+                    if (hitRect.Contains(e.mousePosition)) { _rightSplitterDragging = true; e.Use(); }
+                    break;
+                case EventType.MouseDrag:
+                    if (_rightSplitterDragging)
+                    {
+                        var newWidth = bodyRect.xMax - e.mousePosition.x;
+                        newWidth = Mathf.Clamp(newWidth, 150f, Mathf.Min(400f, bodyRect.width - _hSplitLeft.SplitPosition - 200f));
+                        // Store via EditorPrefs since SplitView doesn't expose setter
+                        EditorPrefs.SetFloat("UIPrefabBuilder_HSplitRight", newWidth);
+                        _hSplitRight = new SplitView("UIPrefabBuilder_HSplitRight", SplitDirection.Horizontal, newWidth, 150f, 400f);
+                        e.Use();
+                    }
+                    break;
+                case EventType.MouseUp:
+                    if (_rightSplitterDragging) { _rightSplitterDragging = false; e.Use(); }
+                    break;
+            }
+        }
+        #endregion
 
         #region Header
         private void DrawHeader()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-            GUILayout.Label("UI Prefab Builder", _headerStyle, GUILayout.Width(140));
+            GUILayout.Label("UIPrefabBuilder", _headerStyle, GUILayout.Width(120));
             GUILayout.FlexibleSpace();
-            var settings = BuilderSettings.Get();
-            EditorGUI.BeginChangeCheck();
-            var model = EditorGUILayout.TextField(settings.ModelName, GUILayout.Width(150));
-            if (EditorGUI.EndChangeCheck()) { settings.ModelName = model; settings.Save(); }
-            if (GUILayout.Button(new GUIContent("+", "New Chat"), _toolbarBtn, GUILayout.Width(24))) NewChat();
-            var settingsIcon = _showSettings ? EditorGUIUtility.IconContent("d_clear") : EditorGUIUtility.IconContent("d_Settings");
-            if (GUILayout.Button(settingsIcon, _toolbarBtn, GUILayout.Width(26))) _showSettings = !_showSettings;
+
+            if (GUILayout.Button("New Chat", EditorStyles.toolbarButton, GUILayout.Width(65))) NewChat();
+            if (GUILayout.Button(_showHistory ? "Close History" : "History", EditorStyles.toolbarButton, GUILayout.Width(85)))
+                _showHistory = !_showHistory;
+            if (GUILayout.Button("Export", EditorStyles.toolbarButton, GUILayout.Width(50))) ExportChat();
+
             EditorGUILayout.EndHorizontal();
         }
         #endregion
 
-        #region TabBar
-        private void DrawTabBar()
+        #region Left Panel
+        private void DrawLeftPanel(Rect rect)
         {
-            EditorGUILayout.BeginHorizontal();
-            DrawTab("Chat", Tab.Chat);
-            DrawTab("History", Tab.History);
-            DrawTab("Skills", Tab.Skills);
-            GUILayout.FlexibleSpace();
-            EditorGUILayout.EndHorizontal();
-            DrawContextBar();
+            var topRect = _vSplitLeft.BeginSplit(rect);
+            var bottomRect = _vSplitLeft.EndSplit(rect);
+
+            DrawLeftTopPlaceholder(topRect);
+            _consolePanel.Draw(bottomRect);
         }
 
-        private void DrawTab(string label, Tab tab)
+        private void DrawLeftTopPlaceholder(Rect rect)
         {
-            var style = _currentTab == tab ? _tabActive : _tabInactive;
-            if (GUILayout.Button(label, style, GUILayout.Width(70))) _currentTab = tab;
-        }
-
-        private void DrawContextBar()
-        {
-            EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
-            var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
-            GUILayout.Label($"Scene: {scene}", _statusLabel, GUILayout.ExpandWidth(false));
+            GUILayout.BeginArea(rect, EditorStyles.helpBox);
+            GUILayout.Label("Project Config", EditorStyles.miniBoldLabel);
             GUILayout.Space(8);
-            var sel = Selection.activeGameObject;
-            if (sel != null) GUILayout.Label($"Selected: {sel.name}", _statusLabel, GUILayout.ExpandWidth(false));
-            GUILayout.FlexibleSpace();
-            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.HelpBox("This area is reserved for project constraint configuration in a future release.", MessageType.Info);
+            GUILayout.EndArea();
         }
         #endregion
 
-        #region Chat Tab
-        private void DrawChatTab()
+        #region Center Panel (Chat)
+        private void DrawCenterPanel(Rect rect)
         {
-            var chatRect = EditorGUILayout.BeginVertical(GUILayout.ExpandHeight(true));
-            _chatScroll = EditorGUILayout.BeginScrollView(_chatScroll);
+            GUILayout.BeginArea(rect);
+
+            if (_showHistory)
+            {
+                DrawHistoryOverlay();
+            }
+            else
+            {
+                DrawChatArea();
+            }
+
+            DrawStatusBar();
+            DrawInputArea();
+
+            GUILayout.EndArea();
+        }
+
+        private void DrawChatArea()
+        {
+            _chatScroll = EditorGUILayout.BeginScrollView(_chatScroll, GUILayout.ExpandHeight(true));
+
             foreach (var b in _bubbles)
                 DrawBubble(b);
+
+            // Thinking stream (real-time)
+            if (_isThinking && !string.IsNullOrEmpty(_thinkingStreamBuffer))
+            {
+                DrawBubble(new ChatBubble { Type = BubbleType.Thinking, Content = _thinkingStreamBuffer });
+            }
+
+            // Content stream (real-time)
             if (_isStreaming && !string.IsNullOrEmpty(_streamBuffer))
+            {
                 DrawBubble(new ChatBubble { Type = BubbleType.AIStream, Content = _streamBuffer });
+            }
+
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawHistoryOverlay()
+        {
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox, GUILayout.ExpandHeight(true));
+            GUILayout.Label("Chat History", EditorStyles.boldLabel);
+            GUILayout.Space(4);
+
+            _historyScroll = EditorGUILayout.BeginScrollView(_historyScroll);
+            var sessions = _sessions.ListSessions();
+            foreach (var s in sessions)
+            {
+                EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
+                EditorGUILayout.BeginVertical();
+                GUILayout.Label(s.Title, EditorStyles.boldLabel);
+                GUILayout.Label(s.UpdatedAt.ToString("g"), EditorStyles.miniLabel);
+                EditorGUILayout.EndVertical();
+                if (GUILayout.Button("Load", GUILayout.Width(50)))
+                {
+                    _sessions.LoadSession(s.SessionId, _agent.History, _bubbles);
+                    _showHistory = false;
+                }
+                if (GUILayout.Button("\u00d7", GUILayout.Width(24))) _sessions.DeleteSession(s.SessionId);
+                EditorGUILayout.EndHorizontal();
+            }
             EditorGUILayout.EndScrollView();
             EditorGUILayout.EndVertical();
-            DrawInputArea();
         }
 
         private void DrawBubble(ChatBubble b)
@@ -160,11 +268,13 @@ namespace Indey.UIPrefabBuilder.UI
 
             EditorGUILayout.BeginHorizontal();
             if (b.Type == BubbleType.User) GUILayout.FlexibleSpace();
-            EditorGUILayout.BeginVertical(style, GUILayout.MaxWidth(position.width * 0.8f));
+
+            EditorGUILayout.BeginVertical(style, GUILayout.MaxWidth(position.width * 0.6f));
+
             if (b.Type == BubbleType.Thinking)
             {
-                b.Expanded = EditorGUILayout.Foldout(b.Expanded, "Thinking...");
-                if (b.Expanded) GUILayout.Label(b.Content, EditorStyles.wordWrappedMiniLabel);
+                GUILayout.Label("Thinking...", EditorStyles.miniBoldLabel);
+                GUILayout.Label(b.Content, EditorStyles.wordWrappedMiniLabel);
             }
             else if (b.Type == BubbleType.Code)
             {
@@ -178,6 +288,7 @@ namespace Indey.UIPrefabBuilder.UI
             {
                 GUILayout.Label(b.Content, EditorStyles.wordWrappedLabel);
             }
+
             EditorGUILayout.EndVertical();
             if (b.Type != BubbleType.User) GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
@@ -187,10 +298,12 @@ namespace Indey.UIPrefabBuilder.UI
         private void DrawInputArea()
         {
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+
+            // Context buttons row
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("@Scene", EditorStyles.miniButton, GUILayout.Width(60)))
+            if (GUILayout.Button("@Scene", EditorStyles.miniButton, GUILayout.Width(55)))
                 _input += $"\n[Context: {UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}]";
-            if (GUILayout.Button("@Selection", EditorStyles.miniButton, GUILayout.Width(70)))
+            if (GUILayout.Button("@Selection", EditorStyles.miniButton, GUILayout.Width(65)))
             {
                 var sel = Selection.activeGameObject;
                 if (sel != null) _input += $"\n[Selection: {ContextBuilder.GetPath(sel)}]";
@@ -198,63 +311,82 @@ namespace Indey.UIPrefabBuilder.UI
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
 
-            _inputScroll = EditorGUILayout.BeginScrollView(_inputScroll, GUILayout.Height(60));
+            // Input text area
+            _inputScroll = EditorGUILayout.BeginScrollView(_inputScroll, GUILayout.Height(55));
             _input = EditorGUILayout.TextArea(_input, _inputStyle, GUILayout.ExpandHeight(true));
             EditorGUILayout.EndScrollView();
 
+            // Bottom row: Send/Stop + Confirm/Undo
             EditorGUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
+
             var state = _agent?.State ?? AgentState.Idle;
             if (state != AgentState.Idle && state != AgentState.Error && state != AgentState.WaitingConfirmation)
             {
-                if (GUILayout.Button("Stop", GUILayout.Width(60))) _agent?.Cancel();
+                if (GUILayout.Button("Stop", GUILayout.Width(55))) _agent?.Cancel();
             }
             else
             {
                 GUI.enabled = !string.IsNullOrWhiteSpace(_input);
-                if (GUILayout.Button("Send", GUILayout.Width(60))) Send();
+                if (GUILayout.Button("Send", GUILayout.Width(55))) Send();
                 GUI.enabled = true;
             }
 
             if (state == AgentState.WaitingConfirmation)
             {
-                if (GUILayout.Button("Confirm", GUILayout.Width(70))) _agent?.Confirm();
-                if (GUILayout.Button("Undo", GUILayout.Width(50))) _agent?.Rollback();
+                if (GUILayout.Button("Confirm", GUILayout.Width(60))) _agent?.Confirm();
+                if (GUILayout.Button("Undo", GUILayout.Width(45))) _agent?.Rollback();
             }
             EditorGUILayout.EndHorizontal();
             EditorGUILayout.EndVertical();
         }
-        #endregion
 
-        #region History Tab
-        private void DrawHistoryTab()
+        private void DrawStatusBar()
         {
-            _historyScroll = EditorGUILayout.BeginScrollView(_historyScroll);
-            var sessions = _sessions.ListSessions();
-            foreach (var s in sessions)
-            {
-                EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
-                EditorGUILayout.BeginVertical();
-                GUILayout.Label(s.Title, EditorStyles.boldLabel);
-                GUILayout.Label(s.UpdatedAt.ToString("g"), EditorStyles.miniLabel);
-                EditorGUILayout.EndVertical();
-                if (GUILayout.Button("Load", GUILayout.Width(50)))
-                {
-                    _sessions.LoadSession(s.SessionId, _agent.History, _bubbles);
-                    _currentTab = Tab.Chat;
-                }
-                if (GUILayout.Button("×", GUILayout.Width(24))) _sessions.DeleteSession(s.SessionId);
-                EditorGUILayout.EndHorizontal();
-            }
-            EditorGUILayout.EndScrollView();
+            var state = _agent?.State ?? AgentState.Idle;
+            var (label, color) = GetStateInfo(state);
+
+            EditorGUILayout.BeginHorizontal();
+            var prev = GUI.color;
+            GUI.color = color;
+            GUILayout.Label("\u25cf", GUILayout.Width(12));
+            GUI.color = prev;
+            GUILayout.Label(label, _statusLabel, GUILayout.Width(90));
+            GUILayout.FlexibleSpace();
+            GUILayout.Label($"Msgs: {_agent?.History?.Count ?? 0}", _statusLabel);
+            GUILayout.Space(4);
+            if (GUILayout.Button("Clear", EditorStyles.miniButton, GUILayout.Width(42))) ClearChat();
+            EditorGUILayout.EndHorizontal();
         }
         #endregion
 
-        #region Skills Tab
-        private void DrawSkillsTab()
+        #region Right Panel
+        private void DrawRightPanel(Rect rect)
         {
-            _skillsScroll = EditorGUILayout.BeginScrollView(_skillsScroll);
-            if (GUILayout.Button("Refresh Skills")) _agent?.RefreshSkills();
+            GUILayout.BeginArea(rect);
+            _rightScroll = EditorGUILayout.BeginScrollView(_rightScroll);
+
+            _settingsPanel.DrawLLMSettings();
+            GUILayout.Space(6);
+            _settingsPanel.DrawAgentSettings();
+            GUILayout.Space(6);
+            DrawSkillsList();
+
+            EditorGUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
+        private void DrawSkillsList()
+        {
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Label("Skills", EditorStyles.miniBoldLabel);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("Refresh", EditorStyles.miniButton, GUILayout.Width(55))) _agent?.RefreshSkills();
+            if (GUILayout.Button("Open", EditorStyles.miniButton, GUILayout.Width(40))) OpenSkillsDirectory();
+            EditorGUILayout.EndHorizontal();
+            GUILayout.Space(4);
+
             var skills = _agent?.Skills?.AllSkills;
             if (skills != null)
             {
@@ -266,31 +398,12 @@ namespace Indey.UIPrefabBuilder.UI
                     EditorGUILayout.EndVertical();
                 }
             }
-            EditorGUILayout.EndScrollView();
+
+            EditorGUILayout.EndVertical();
         }
         #endregion
 
-        #region Status Bar
-        private void DrawStatusBar()
-        {
-            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-            var state = _agent?.State ?? AgentState.Idle;
-            var (label, color) = GetStateInfo(state);
-            var prev = GUI.color; GUI.color = color;
-            GUILayout.Label("●", GUILayout.Width(14));
-            GUI.color = prev;
-            GUILayout.Label(label, _statusLabel, GUILayout.Width(100));
-            GUILayout.FlexibleSpace();
-            GUILayout.Label($"Msgs: {_agent?.History?.Count ?? 0}", _statusLabel);
-            GUILayout.Space(8);
-            if (GUILayout.Button("Undo All AI", EditorStyles.toolbarButton, GUILayout.Width(80)))
-            {
-                // TransactionManager rollback happens via agent
-            }
-            if (GUILayout.Button("Clear", EditorStyles.toolbarButton, GUILayout.Width(50))) ClearChat();
-            EditorGUILayout.EndHorizontal();
-        }
-
+        #region State Info
         private (string, Color) GetStateInfo(AgentState s) => s switch
         {
             AgentState.Idle => ("Idle", Color.gray),
@@ -314,8 +427,20 @@ namespace Indey.UIPrefabBuilder.UI
             _agent?.StartTask(_input.Trim());
             _input = "";
             _streamBuffer = "";
+            _thinkingStreamBuffer = "";
             _isStreaming = false;
+            _isThinking = false;
             GUI.FocusControl(null);
+        }
+
+        private void FinalizeThinkingStream(string fullThinking)
+        {
+            if (!string.IsNullOrWhiteSpace(_thinkingStreamBuffer))
+                AddBubble(BubbleType.Thinking, _thinkingStreamBuffer);
+            else if (!string.IsNullOrWhiteSpace(fullThinking))
+                AddBubble(BubbleType.Thinking, fullThinking);
+            _thinkingStreamBuffer = "";
+            _isThinking = false;
         }
 
         private void FinishStream(string full)
@@ -336,7 +461,10 @@ namespace Indey.UIPrefabBuilder.UI
             _agent.RefreshSkills();
             _sessions.NewSession();
             _streamBuffer = "";
+            _thinkingStreamBuffer = "";
             _isStreaming = false;
+            _isThinking = false;
+            ConsoleLogger.Log("New chat session created");
         }
 
         private void ClearChat()
@@ -345,11 +473,35 @@ namespace Indey.UIPrefabBuilder.UI
             _agent?.History?.Clear();
             _agent?.RefreshSkills();
             _streamBuffer = "";
+            _thinkingStreamBuffer = "";
             _isStreaming = false;
+            _isThinking = false;
+        }
+
+        private void ExportChat()
+        {
+            if (_bubbles.Count == 0) return;
+            var modelName = BuilderSettings.Get().ModelName;
+            var md = SessionManager.ExportToMarkdown(_bubbles, modelName);
+            var defaultName = $"chat_export_{DateTime.Now:yyyyMMdd_HHmmss}.md";
+            var path = EditorUtility.SaveFilePanel("Export Chat", "", defaultName, "md");
+            if (string.IsNullOrEmpty(path)) return;
+            File.WriteAllText(path, md, Encoding.UTF8);
+            ConsoleLogger.Log($"Chat exported to: {path}");
+            EditorUtility.RevealInFinder(path);
         }
         #endregion
 
         #region Helpers
+        private static void OpenSkillsDirectory()
+        {
+            var path = Path.GetFullPath("Packages/com.indey.uiprefabbuilder/Skills~");
+            if (Directory.Exists(path))
+                EditorUtility.RevealInFinder(path);
+            else
+                ConsoleLogger.Warning("Skills~ directory not found: " + path);
+        }
+
         private void AddBubble(BubbleType type, string content)
         {
             if (string.IsNullOrWhiteSpace(content)) return;
@@ -379,11 +531,7 @@ namespace Indey.UIPrefabBuilder.UI
             _codeBubble = CreateBubbleStyle(new Color(0.1f, 0.1f, 0.15f, 0.4f));
             _resultBubble = CreateBubbleStyle(new Color(0.1f, 0.5f, 0.2f, 0.25f));
             _inputStyle = new GUIStyle(EditorStyles.textArea) { wordWrap = true, fontSize = 13 };
-            _buttonStyle = new GUIStyle(GUI.skin.button) { fontStyle = FontStyle.Bold };
-            _tabActive = new GUIStyle(EditorStyles.toolbarButton) { fontStyle = FontStyle.Bold };
-            _tabInactive = new GUIStyle(EditorStyles.toolbarButton);
             _statusLabel = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleLeft };
-            _toolbarBtn = new GUIStyle(EditorStyles.toolbarButton) { fontSize = 14 };
         }
 
         private static GUIStyle CreateBubbleStyle(Color bg)
@@ -391,7 +539,13 @@ namespace Indey.UIPrefabBuilder.UI
             var tex = new Texture2D(1, 1);
             tex.SetPixel(0, 0, bg);
             tex.Apply();
-            return new GUIStyle(EditorStyles.helpBox) { normal = { background = tex }, padding = new RectOffset(8, 8, 6, 6), margin = new RectOffset(4, 4, 2, 2), wordWrap = true };
+            return new GUIStyle(EditorStyles.helpBox)
+            {
+                normal = { background = tex },
+                padding = new RectOffset(8, 8, 6, 6),
+                margin = new RectOffset(4, 4, 2, 2),
+                wordWrap = true
+            };
         }
         #endregion
     }

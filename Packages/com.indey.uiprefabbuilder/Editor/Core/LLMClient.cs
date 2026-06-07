@@ -30,7 +30,8 @@ namespace Indey.UIPrefabBuilder.Core
         public void StreamChatAsync(
             IReadOnlyList<ChatMessage> messages,
             Action<string> onToken,
-            Action<string> onThinking,
+            Action<string> onThinkingToken,
+            Action<string> onThinkingComplete,
             Action<string> onComplete,
             Action<Exception> onError,
             CancellationToken ct)
@@ -60,11 +61,18 @@ namespace Indey.UIPrefabBuilder.Core
                     var contentType = resp.Content.Headers.ContentType?.MediaType ?? "";
                     if (contentType.Contains("text/event-stream"))
                     {
-                        var full = await ReadSSE(resp, onToken, ct);
-                        var thinking = ExtractThinking(full);
-                        if (!string.IsNullOrEmpty(thinking))
-                            MainThreadDispatcher.Enqueue(() => onThinking?.Invoke(thinking));
-                        MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(full));
+                        var (contentFull, thinkingFull) = await ReadSSE(resp, onToken, onThinkingToken, ct);
+
+                        if (string.IsNullOrEmpty(thinkingFull))
+                        {
+                            var fallback = ExtractThinking(contentFull);
+                            if (!string.IsNullOrEmpty(fallback))
+                                thinkingFull = fallback;
+                        }
+
+                        if (!string.IsNullOrEmpty(thinkingFull))
+                            MainThreadDispatcher.Enqueue(() => onThinkingComplete?.Invoke(thinkingFull));
+                        MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(contentFull));
                     }
                     else
                     {
@@ -98,9 +106,14 @@ namespace Indey.UIPrefabBuilder.Core
             return u + "/v1/chat/completions";
         }
 
-        private static async Task<string> ReadSSE(HttpResponseMessage resp, Action<string> onToken, CancellationToken ct)
+        private static async Task<(string content, string thinking)> ReadSSE(
+            HttpResponseMessage resp,
+            Action<string> onToken,
+            Action<string> onThinkingToken,
+            CancellationToken ct)
         {
-            var full = new StringBuilder();
+            var contentBuf = new StringBuilder();
+            var thinkingBuf = new StringBuilder();
             using var stream = await resp.Content.ReadAsStreamAsync();
             using var reader = new StreamReader(stream);
             while (!reader.EndOfStream && !ct.IsCancellationRequested)
@@ -115,20 +128,26 @@ namespace Indey.UIPrefabBuilder.Core
                     var delta = json["choices"]?[0]?["delta"];
                     if (delta == null) continue;
 
-                    // Support both content and reasoning_content (DeepSeek)
                     var content = delta["content"]?.ToString();
                     var reasoning = delta["reasoning_content"]?.ToString();
 
-                    var text = content ?? reasoning ?? "";
-                    if (string.IsNullOrEmpty(text)) continue;
+                    if (!string.IsNullOrEmpty(reasoning))
+                    {
+                        thinkingBuf.Append(reasoning);
+                        var captured = reasoning;
+                        MainThreadDispatcher.Enqueue(() => onThinkingToken?.Invoke(captured));
+                    }
 
-                    full.Append(text);
-                    var captured = text;
-                    MainThreadDispatcher.Enqueue(() => onToken?.Invoke(captured));
+                    if (!string.IsNullOrEmpty(content))
+                    {
+                        contentBuf.Append(content);
+                        var captured = content;
+                        MainThreadDispatcher.Enqueue(() => onToken?.Invoke(captured));
+                    }
                 }
                 catch { }
             }
-            return full.ToString();
+            return (contentBuf.ToString(), thinkingBuf.ToString());
         }
 
         private static string ExtractContent(string json)

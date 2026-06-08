@@ -16,7 +16,7 @@
   <a href="#-features">Features</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-how-it-works">How It Works</a> •
-  <a href="#-skills-system">Skills</a> •
+  <a href="#-tool-system">Tools</a> •
   <a href="#-configuration">Configuration</a> •
   <a href="#-extending">Extending</a>
 </p>
@@ -35,14 +35,14 @@
 
 | | Feature | Description |
 |---|---------|-------------|
-| 🤖 | **自然语言驱动** | 描述需求，AI 自动生成并执行 UI 构建代码 |
-| ⚡ | **动态编译执行** | LLM 输出 C# 代码 → Roslyn 编译 → 沙箱校验 → 即时执行 |
-| 🔒 | **安全沙箱** | 静态 API 白名单 + 命名空间限制，阻止危险操作 |
-| 🧠 | **ReAct 循环** | 上下文收集 → LLM 推理 → 代码提取 → 编译 → 执行 → 观察 → 重试/确认 |
+| 🤖 | **自然语言驱动** | 描述需求，AI 通过工具调用逐步构建 UI |
+| 🔧 | **Tool Calling 架构** | 基于 OpenAI Function Calling 标准，27 个结构化工具覆盖完整 UGUI 工作流 |
+| 🔄 | **Agentic Loop** | Think → Tool Call → Observe → Think 多步循环，自主规划和执行 |
 | 📡 | **流式响应** | SSE 实时流式输出，支持 Thinking/Reasoning 展示 |
-| 📚 | **Skills 系统** | Anthropic 标准 Skill 格式，意图匹配自动注入相关文档 |
+| 🧰 | **丰富的工具集** | 资源搜索、元素创建、属性修改、布局管理、Prefab 导出、层级检查 |
 | 💾 | **会话管理** | 多会话保存/加载/导出 Markdown |
-| 🎯 | **上下文感知** | `@Scene` / `@Selection` 注入当前场景/选中对象的层级信息 |
+| 🔒 | **安全兜底** | `execute_code` 工具支持动态编译 C# 代码，应对工具未覆盖的复杂场景 |
+| ↩️ | **Undo 支持** | 所有 UI 操作注册 Unity Undo，可随时回滚 |
 
 ---
 
@@ -59,11 +59,19 @@
 ### 使用
 
 ```
-1. 在 Hierarchy 中选中目标 GameObject（或不选，从场景全局操作）
-2. 在聊天输入框输入需求，如："创建一个弹窗，包含标题栏、关闭按钮和竖向按钮列表"
-3. 按 Send（或 Ctrl+Enter）发送
-4. 观察 AI 思考、代码生成、编译执行的全过程
-5. 满意点 Confirm，不满意点 Undo 回滚
+1. 在聊天输入框输入需求，如："创建一个弹窗，包含标题栏、关闭按钮和竖向按钮列表"
+2. 按 Send（或 Ctrl+Enter）发送
+3. 观察 AI 自主搜索资源 → 创建元素 → 设置属性 → 检查结果的全过程
+4. 满意后继续下一个任务，不满意点 Undo 回滚
+```
+
+### 示例指令
+
+```
+"搜索项目里的按钮 Sprite，创建一排三个按钮"
+"创建一个带背景的设置面板，包含音量滑条和开关"
+"给现有的 Canvas 添加一个底部导航栏"
+"把场景里的 Dialog 保存为 Prefab 到 Assets/Prefabs/"
 ```
 
 ---
@@ -72,111 +80,127 @@
 
 ```mermaid
 flowchart LR
-    A[💬 用户输入] --> B[📋 上下文构建]
-    B --> C[🧠 LLM 推理]
-    C --> D[📝 代码提取]
-    D --> E[🔒 沙箱校验]
-    E --> F[⚙️ Roslyn 编译]
-    F --> G[▶️ 执行 IAgentAction]
-    G --> H{✅ 成功?}
-    H -->|是| I[👁️ 用户确认/回滚]
-    H -->|否| J[🔄 错误反馈 → 重试]
-    J --> C
+    A[💬 用户输入] --> B[🧠 LLM 推理]
+    B --> C{调用工具?}
+    C -->|是| D[🔧 执行 Tool]
+    D --> E[📋 返回结果]
+    E --> B
+    C -->|否| F[✅ 输出总结]
 ```
 
 ### 核心架构
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    BuilderWindow (UI)                     │
-├──────────┬──────────────────────────────┬───────────────┤
-│ Console  │         Chat Panel           │   Settings    │
-│  Panel   │  - Streaming messages        │   - LLM      │
-│  - Logs  │  - Thinking display          │   - Agent    │
-│  - Filter│  - @Scene / @Selection       │   - Skills   │
-└──────────┴──────────┬───────────────────┴───────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                    BuilderWindow (UI)                      │
+├──────────┬───────────────────────────────┬────────────────┤
+│ Console  │         Chat Panel            │   Settings     │
+│  Panel   │  - Streaming messages         │   - LLM        │
+│  - Logs  │  - Thinking display           │   - Agent      │
+│  - Filter│  - Tool call results          │                │
+└──────────┴──────────┬────────────────────┴────────────────┘
                       │
               ┌───────▼───────┐
-              │  AgentEngine  │  ← 状态机: Idle → Building → LLM → Extract → Compile → Execute → Confirm
+              │  AgentEngine  │  ← Agentic Loop: Thinking ↔ CallingTool → Completed
               └───────┬───────┘
         ┌─────────────┼─────────────────┐
         ▼             ▼                 ▼
 ┌──────────────┐ ┌──────────┐ ┌─────────────────┐
-│ContextBuilder│ │LLMClient │ │DynamicCompiler  │
-│- Scene tree  │ │- SSE     │ │- Roslyn/csc     │
-│- Selection   │ │- Retry   │ │- SandboxValidator│
-│- Skills docs │ │- Timeout │ │- CodeExtractor  │
-└──────────────┘ └──────────┘ └────────┬────────┘
-                                       ▼
-                              ┌─────────────────┐
-                              │  Helper APIs    │
-                              │  (Undo-safe)    │
-                              ├─────────────────┤
-                              │ • UICreator     │
-                              │ • LayoutHelper  │
-                              │ • PrefabHelper  │
-                              │ • AssetFinder   │
-                              │ • SceneHelper   │
-                              │ • ...           │
-                              └─────────────────┘
+│ ToolRegistry │ │LLMClient │ │ MessageHistory  │
+│- 27 tools    │ │- SSE     │ │- System/User/   │
+│- Definitions │ │- Tool    │ │  Assistant/Tool  │
+│- Executor    │ │  Calling │ │  messages        │
+└──────┬───────┘ └──────────┘ └─────────────────┘
+       ▼
+┌─────────────────┐     ┌─────────────────┐
+│  ToolExecutor   │────→│  Helper APIs    │
+│  - JSON → Call  │     │  (Undo-safe)    │
+│  - Result → JSON│     ├─────────────────┤
+└─────────────────┘     │ • UICreator     │
+                        │ • LayoutHelper  │
+                        │ • PrefabHelper  │
+                        │ • AssetFinder   │
+                        │ • SceneHelper   │
+                        │ • ComponentHelper│
+                        │ • RectTransform │
+                        │   Helper        │
+                        │ • Hierarchy     │
+                        │   Inspector     │
+                        └─────────────────┘
 ```
 
-### Agent 状态机
+### Agent 工作循环
 
-| 状态 | 说明 |
+| 阶段 | 说明 |
 |------|------|
-| `Idle` | 等待用户输入 |
-| `BuildingContext` | 收集场景/选中对象/Skill 上下文 |
-| `WaitingForLLM` | 等待 LLM 流式响应 |
-| `ExtractingCode` | 从响应中提取 C# 代码块 |
-| `Compiling` | Roslyn 编译 + 沙箱检查 |
-| `Executing` | 在主线程执行 `IAgentAction.Execute()` |
-| `ObservingResult` | 对比执行前后 Hierarchy 差异 |
-| `WaitingConfirmation` | 等待用户 Confirm / Undo |
-| `Error` | 错误状态，可重试 |
+| **Thinking** | 将消息历史 + 工具定义发给 LLM，等待推理结果 |
+| **CallingTool** | 解析 LLM 返回的 `tool_calls`，逐个执行并收集结果 |
+| **Thinking** (再次) | 工具结果回传 LLM，决定下一步操作 |
+| **Completed** | LLM 不再调用工具，输出最终总结 |
 
 ---
 
-## 📚 Skills System
+## 🔧 Tool System
 
-Skills 使用 **Anthropic 标准格式**（`SKILL.md` + 可选 `references/`），通过意图匹配自动注入到 LLM Prompt。
+Agent 通过 **OpenAI Function Calling** 标准与 LLM 交互，共 27 个内置工具：
 
-### 内置 Skills（8 个）
+### 资源探索
 
-| Skill | 功能 |
-|-------|------|
-| `creating-ui-elements` | Canvas、Panel、Button、Text、Image、InputField、ScrollView 等 |
-| `finding-assets` | AssetDatabase 搜索 Sprite/Font/Prefab 等资源 |
-| `managing-rect-transform` | 锚点、大小、位置、旋转 |
-| `modifying-ui-properties` | 颜色、图片、文本、CanvasGroup |
-| `applying-layout-groups` | Vertical / Horizontal / Grid 布局组 |
-| `managing-prefabs` | 创建、实例化、应用 Prefab |
-| `managing-scenes` | 场景保存、对象查找 |
-| `inspecting-hierarchy` | 描述层级结构和组件信息 |
+| 工具 | 功能 |
+|------|------|
+| `search_assets` | 通过 AssetDatabase 搜索项目资源（Sprite、Prefab、Font 等） |
+| `get_asset_info` | 获取指定路径资源的详细信息 |
 
-### 自定义 Skill
+### 场景感知
 
-```
-Packages/com.indey.uiprefabbuilder/Skills~/
-└── my-custom-skill/
-    ├── SKILL.md          ← YAML frontmatter + 操作指南
-    └── references/       ← 可选的参考代码片段
-        └── example.cs
-```
+| 工具 | 功能 |
+|------|------|
+| `get_scene_overview` | 获取当前场景所有 Canvas 和 UI 结构概览 |
+| `find_by_name` | 按名称查找场景中的 GameObject |
+| `inspect_hierarchy` | 描述 GameObject 的层级树 |
+| `inspect_components` | 列出 GameObject 上所有组件及其属性 |
 
-`SKILL.md` 模板：
+### UI 创建
 
-```yaml
----
-name: my-custom-skill
-description: 简短描述这个 Skill 的用途
----
+| 工具 | 功能 |
+|------|------|
+| `create_canvas` | 创建 Canvas（可选 RenderMode） |
+| `create_panel` | 创建面板（Image，自动 StretchAll） |
+| `create_button` | 创建按钮（Button + Text 子节点） |
+| `create_text` | 创建文本（自动检测 TextMeshPro） |
+| `create_image` | 创建图片（可指定 Sprite 路径） |
+| `create_inputfield` | 创建输入框 |
+| `create_slider` | 创建滑动条 |
+| `create_toggle` | 创建开关 |
+| `create_scrollview` | 创建滚动视图（ScrollRect + Viewport + Content） |
 
-# 操作指南
+### 属性修改
 
-当用户想要 ... 时，按以下步骤操作：
-...
-```
+| 工具 | 功能 |
+|------|------|
+| `set_anchor` | 设置锚点预设（10 种预设） |
+| `set_size` | 设置 RectTransform 大小 |
+| `set_position` | 设置 RectTransform 位置 |
+| `set_image_sprite` | 设置/更换 Image 的 Sprite |
+| `set_image_color` | 设置 Image 颜色 |
+| `set_text` | 设置 Text/TMP 文本内容 |
+| `add_canvas_group` | 添加 CanvasGroup（透明度、交互控制） |
+
+### 布局管理
+
+| 工具 | 功能 |
+|------|------|
+| `add_vertical_layout` | 添加垂直布局组 |
+| `add_horizontal_layout` | 添加水平布局组 |
+| `add_grid_layout` | 添加网格布局组 |
+| `add_layout_element` | 添加 LayoutElement 控制子元素尺寸 |
+
+### Prefab & 代码
+
+| 工具 | 功能 |
+|------|------|
+| `save_as_prefab` | 将场景 GameObject 保存为 Prefab |
+| `execute_code` | 动态编译执行 C# 代码（兜底方案） |
 
 ---
 
@@ -187,32 +211,47 @@ description: 简短描述这个 Skill 的用途
 | Base URL | OpenAI 兼容 API 端点 | `https://api.openai.com/v1` |
 | Model | 模型标识符 | `gpt-4o-mini` |
 | API Key | API 密钥（加密存储） | — |
-| Request Timeout | 请求超时秒数 | 120 |
-| Max Retries | 编译/执行失败最大重试次数 | 5 |
-| Auto Execute | 是否自动执行（无需确认） | `false` |
+| Request Timeout | 请求超时秒数 | 60 |
+| Max Retries | 最大重试次数 | 5 |
+| Auto Execute | 是否自动执行 | `true` |
 
 ---
 
 ## 🔧 Extending
 
-### 实现自定义 Helper API
+### 添加自定义工具
+
+1. 在 `ToolDefinitions.cs` 中添加工具定义（OpenAI function schema）：
 
 ```csharp
-public static class MyCustomHelper
+Def("my_tool",
+    "Description of what this tool does.",
+    Props(
+        P("param1", "string", "Parameter description", true),
+        P("param2", "number", "Optional param", false, 42)
+    )),
+```
+
+2. 在 `ToolExecutor.cs` 的 `ExecuteInternal` 中添加 case 分支：
+
+```csharp
+case "my_tool": return DoMyTool(args);
+```
+
+3. 实现执行方法：
+
+```csharp
+private string DoMyTool(JObject args)
 {
-    public static void DoSomething(GameObject target)
-    {
-        Undo.RecordObject(target, "My Custom Action");
-        // 你的逻辑...
-    }
+    var param1 = Str(args, "param1");
+    // 你的逻辑...
+    return Ok("Tool executed successfully.");
 }
 ```
 
-将类放入 `Editor/Skills/` 目录，在对应 Skill 的 `SKILL.md` 中引用即可。
+### execute_code 兜底
 
-### IAgentAction 接口
-
-LLM 生成的代码必须实现此接口：
+当内置工具无法满足需求时，`execute_code` 工具允许 LLM 生成 C# 代码动态编译执行。代码必须实现 `IAgentAction` 接口：
 
 ```csharp
 public interface IAgentAction
@@ -223,10 +262,20 @@ public interface IAgentAction
 }
 ```
 
-`ActionContext` 提供：
-- `SelectedObject` — 当前选中的 GameObject
-- `Canvas` — 场景中的 Canvas
-- `ActionLog` — 执行日志记录
+### Skills 文档系统
+
+Skills 使用 **Anthropic 标准格式**（`SKILL.md` + 可选 `references/`）。内置 8 个 Skills 作为知识库：
+
+| Skill | 功能 |
+|-------|------|
+| `creating-ui-elements` | UI 元素创建指南 |
+| `finding-assets` | 资源搜索模式 |
+| `managing-rect-transform` | 锚点与变换操作 |
+| `modifying-ui-properties` | 属性修改方法 |
+| `applying-layout-groups` | 布局组用法 |
+| `managing-prefabs` | Prefab 工作流 |
+| `managing-scenes` | 场景操作 |
+| `inspecting-hierarchy` | 层级检查 |
 
 ---
 
@@ -236,47 +285,51 @@ public interface IAgentAction
 <tr>
 <td width="50%">
 
-### 🧬 Code-as-Action 范式
+### 🔧 Tool Calling 架构
 
-区别于传统 JSON Tool Calling，本项目让 LLM 直接输出 **C# 代码**实现 `IAgentAction` 接口。这赋予了：
-- 完整的编程灵活性（循环、条件、组合逻辑）
-- 类型安全的 Unity API 调用
-- 自然的错误信息反馈
+基于 OpenAI Function Calling 标准，Agent 通过结构化工具与 Unity 交互：
+- 27 个类型安全的工具，覆盖 UGUI 全流程
+- JSON Schema 参数校验，减少 LLM 幻觉
+- 工具结果实时反馈，支持多步规划
 
 </td>
 <td width="50%">
 
-### ⚡ 编辑器内动态编译
+### 🔄 Agentic Loop
 
-利用 Unity 内置的 Roslyn/csc 直接编译 LLM 输出的代码：
-- 零外部依赖，无需额外 SDK
-- 自动引用所有已加载程序集
-- 编译→校验→执行全流程 < 2s
+Think↔Act 多步循环，而非单次代码生成：
+- LLM 自主决定调用哪些工具、按什么顺序
+- 每步观察结果后动态调整策略
+- 单次任务最多 30 步，防止无限循环
 
 </td>
 </tr>
 <tr>
 <td>
 
-### 🔒 多层安全机制
+### 📡 SSE 流式 + Tool Calls
 
 ```
-Layer 1: System Prompt 规则约束
-Layer 2: SandboxValidator 静态分析
-Layer 3: 命名空间白名单限制
-Layer 4: Unity Undo 完整回滚
-Layer 5: 用户确认门控
+LLM Response Stream
+├── content delta     → 实时显示文字
+├── thinking delta    → 推理过程展示
+└── tool_calls delta  → 增量拼装工具调用
+    ├── id + name
+    └── arguments (chunked)
 ```
 
 </td>
 <td>
 
-### 🧠 Observe-Retry 智能循环
+### 🔒 安全机制
 
-编译/运行失败时自动将错误信息 + Hierarchy 差异反馈给 LLM，附带定向修复提示：
-- 常见 API 误用纠正
-- 类型签名提示
-- 最多 5 次自动重试
+```
+Layer 1: System Prompt 行为约束
+Layer 2: 工具参数类型校验
+Layer 3: Unity Undo 完整回滚
+Layer 4: execute_code 沙箱校验
+Layer 5: 30 步上限防止失控
+```
 
 </td>
 </tr>
@@ -288,7 +341,7 @@ Layer 5: 用户确认门控
 
 | 包 | 版本 | 用途 |
 |----|------|------|
-| `com.unity.nuget.newtonsoft-json` | 3.0.2 | JSON 序列化（LLM 请求/会话） |
+| `com.unity.nuget.newtonsoft-json` | 3.0.2 | JSON 序列化（LLM 请求 / Tool Calling / 会话） |
 | `com.unity.ugui` | — | Unity UI 组件 |
 | TextMeshPro | ≥3.0 | 文本组件（可选，自动检测） |
 
@@ -298,9 +351,10 @@ Layer 5: 用户确认门控
 
 - [ ] 多模态支持（截图/设计稿 → UI）
 - [ ] 项目级约束配置（设计规范、命名规则）
-- [ ] Prefab 模板库
-- [ ] 自动执行模式完善
-- [ ] 更多内置 Skills（动画、事件绑定等）
+- [ ] Prefab 模板库 & 常用 UI 一键生成
+- [ ] 自定义工具插件化注册
+- [ ] 更多内置工具（动画、事件绑定、Navigation 等）
+- [ ] MCP Server 模式（从外部 IDE 调用）
 - [ ] 单元测试覆盖
 
 ---
@@ -312,5 +366,5 @@ MIT License - 详见 [LICENSE](LICENSE)
 ---
 
 <p align="center">
-  <sub>Built with ❤️ by <strong>Indey</strong> | Powered by LLM + Unity Editor</sub>
+  <sub>Built with ❤️ by <strong>Indey</strong> | Powered by LLM Tool Calling + Unity Editor</sub>
 </p>

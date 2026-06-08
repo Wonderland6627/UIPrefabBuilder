@@ -85,6 +85,8 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("## Output Rules");
             sb.AppendLine("- Optionally think in <thinking>...</thinking>.");
             sb.AppendLine("- Always output exactly one ```csharp block implementing IAgentAction.");
+            sb.AppendLine($"- Generated code MUST use C# {GetMaxLangVersion()} syntax ONLY. No features from higher C# versions.");
+            sb.AppendLine("- FORBIDDEN: global using, file-scoped namespaces, record struct, raw string literals, required members, primary constructors, collection expressions.");
             sb.AppendLine("- Use helpers: UICreator, RectTransformHelper, LayoutHelper, PrefabHelper, AssetFinder, ComponentHelper, SceneHelper, HierarchyInspector.");
             sb.AppendLine("- For RectTransform operations not covered by RectTransformHelper, use the Unity RectTransform API directly (anchorMin, anchorMax, pivot, sizeDelta, anchoredPosition).");
             sb.AppendLine("- For component property changes not covered by ComponentHelper, use the Unity component API directly (GetComponent<T>(), AddComponent<T>()).");
@@ -352,6 +354,13 @@ public class ActionResult {
                 sb.AppendLine("[HINT] ActionResult.Success is an instance property. Use the static factory: ActionResult.Ok(\"message\") or ActionResult.Fail(\"message\").");
                 sb.AppendLine();
             }
+            if (feedback.Contains("CS8652") || feedback.Contains("CS8400") || feedback.Contains("CS8773")
+                || feedback.Contains("CS8936") || feedback.Contains("feature"))
+            {
+                sb.AppendLine($"[HINT] This project targets C# {GetMaxLangVersion()}. Do NOT use features from higher C# versions.");
+                sb.AppendLine("Forbidden: global using, file-scoped namespaces (namespace X;), record struct, raw string literals, required members, primary constructors, collection expressions.");
+                sb.AppendLine();
+            }
             return sb.ToString();
         }
 
@@ -361,6 +370,17 @@ public class ActionResult {
             _state = AgentState.Error;
             OnStateChanged?.Invoke(_state);
             OnError?.Invoke(msg);
+        }
+
+        internal static string GetMaxLangVersion()
+        {
+#if UNITY_2022_2_OR_NEWER
+            return "9.0";
+#elif UNITY_2021_2_OR_NEWER
+            return "9.0";
+#else
+            return "8.0";
+#endif
         }
 
         public void Dispose() { _cts?.Cancel(); _llm?.Dispose(); }

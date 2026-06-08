@@ -177,8 +177,9 @@ namespace Indey.UIPrefabBuilder.Compiler
 
         private static string BuildCompilerArgs(string srcFile, string outFile, List<string> refs)
         {
+            var langVer = AgentEngine.GetMaxLangVersion();
             var sb = new StringBuilder();
-            sb.Append($"-target:library -out:\"{outFile}\" -langversion:9.0 -nowarn:CS0162,CS0168,CS0219 -nologo -utf8output ");
+            sb.Append($"-target:library -out:\"{outFile}\" -langversion:{langVer} -nowarn:CS0162,CS0168,CS0219 -nologo -utf8output ");
             sb.Append("-unsafe- ");
             foreach (var r in refs) sb.Append($"-reference:\"{r}\" ");
             sb.Append($"\"{srcFile}\"");

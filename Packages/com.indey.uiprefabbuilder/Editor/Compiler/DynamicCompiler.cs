@@ -177,7 +177,7 @@ namespace Indey.UIPrefabBuilder.Compiler
 
         private static string BuildCompilerArgs(string srcFile, string outFile, List<string> refs)
         {
-            var langVer = AgentEngine.GetMaxLangVersion();
+            var langVer = GetMaxLangVersion();
             var sb = new StringBuilder();
             sb.Append($"-target:library -out:\"{outFile}\" -langversion:{langVer} -nowarn:CS0162,CS0168,CS0219 -nologo -utf8output ");
             sb.Append("-unsafe- ");
@@ -259,5 +259,16 @@ using UnityEngine.UI;
 using UnityEditor;
 using Indey.UIPrefabBuilder.Core;
 using Indey.UIPrefabBuilder.Skills;";
+
+        internal static string GetMaxLangVersion()
+        {
+#if UNITY_2022_2_OR_NEWER
+            return "9.0";
+#elif UNITY_2021_2_OR_NEWER
+            return "9.0";
+#else
+            return "8.0";
+#endif
+        }
     }
 }

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace Indey.UIPrefabBuilder.Core
 {
-    public enum ChatRole { System, User, Assistant }
+    public enum ChatRole { System, User, Assistant, Tool }
 
     [Serializable]
     public class ChatMessage
@@ -11,7 +11,11 @@ namespace Indey.UIPrefabBuilder.Core
         public ChatRole Role;
         public string Content;
         public long Timestamp;
+        public string ToolCallId;
+        public List<ToolCallInfo> ToolCalls;
+
         public ChatMessage() { }
+
         public ChatMessage(ChatRole role, string content)
         {
             Role = role;
@@ -23,7 +27,7 @@ namespace Indey.UIPrefabBuilder.Core
     public class MessageHistory
     {
         private readonly List<ChatMessage> _messages = new List<ChatMessage>();
-        private const int MaxMessages = 50;
+        private const int MaxMessages = 80;
 
         public IReadOnlyList<ChatMessage> Messages => _messages;
         public int Count => _messages.Count;
@@ -49,6 +53,31 @@ namespace Indey.UIPrefabBuilder.Core
         {
             if (string.IsNullOrWhiteSpace(content)) return;
             _messages.Add(new ChatMessage(ChatRole.Assistant, content));
+            Trim();
+        }
+
+        public void AddAssistantWithToolCalls(LLMResponse response)
+        {
+            var msg = new ChatMessage
+            {
+                Role = ChatRole.Assistant,
+                Content = response.Content ?? "",
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                ToolCalls = response.ToolCalls
+            };
+            _messages.Add(msg);
+            Trim();
+        }
+
+        public void AddToolResult(string toolCallId, string toolName, string result)
+        {
+            _messages.Add(new ChatMessage
+            {
+                Role = ChatRole.Tool,
+                Content = result ?? "",
+                ToolCallId = toolCallId,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            });
             Trim();
         }
 

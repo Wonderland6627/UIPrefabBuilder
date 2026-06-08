@@ -11,6 +11,21 @@ using Newtonsoft.Json.Linq;
 
 namespace Indey.UIPrefabBuilder.Core
 {
+    public class ToolCallInfo
+    {
+        public string Id;
+        public string Name;
+        public string Arguments;
+    }
+
+    public class LLMResponse
+    {
+        public string Content;
+        public string Thinking;
+        public List<ToolCallInfo> ToolCalls;
+        public bool HasToolCalls => ToolCalls != null && ToolCalls.Count > 0;
+    }
+
     public class LLMClient : IDisposable
     {
         private readonly HttpClient _http;
@@ -24,15 +39,14 @@ namespace Indey.UIPrefabBuilder.Core
             RefreshApiKey();
         }
 
-        /// <summary>Must be called from main thread before each request cycle.</summary>
         public void RefreshApiKey() => _cachedApiKey = SecureKeyStore.LoadApiKey();
 
-        public void StreamChatAsync(
+        public void ChatWithToolsAsync(
             IReadOnlyList<ChatMessage> messages,
+            JArray tools,
             Action<string> onToken,
             Action<string> onThinkingToken,
-            Action<string> onThinkingComplete,
-            Action<string> onComplete,
+            Action<LLMResponse> onComplete,
             Action<Exception> onError,
             CancellationToken ct)
         {
@@ -42,9 +56,10 @@ namespace Indey.UIPrefabBuilder.Core
                 {
                     ct.ThrowIfCancellationRequested();
                     var apiKey = _cachedApiKey;
-                    if (string.IsNullOrEmpty(apiKey)) throw new InvalidOperationException("API Key not configured. Open Settings to set it.");
+                    if (string.IsNullOrEmpty(apiKey))
+                        throw new InvalidOperationException("API Key not configured. Open Settings to set it.");
 
-                    var body = BuildRequestBody(messages);
+                    var body = BuildRequestBody(messages, tools);
                     var url = NormalizeUrl(_settings.BaseUrl);
 
                     using var req = new HttpRequestMessage(HttpMethod.Post, url);
@@ -59,54 +74,97 @@ namespace Indey.UIPrefabBuilder.Core
                     }
 
                     var contentType = resp.Content.Headers.ContentType?.MediaType ?? "";
+                    LLMResponse result;
                     if (contentType.Contains("text/event-stream"))
-                    {
-                        var (contentFull, thinkingFull) = await ReadSSE(resp, onToken, onThinkingToken, ct);
-
-                        if (string.IsNullOrEmpty(thinkingFull))
-                        {
-                            var fallback = ExtractThinking(contentFull);
-                            if (!string.IsNullOrEmpty(fallback))
-                                thinkingFull = fallback;
-                        }
-
-                        if (!string.IsNullOrEmpty(thinkingFull))
-                            MainThreadDispatcher.Enqueue(() => onThinkingComplete?.Invoke(thinkingFull));
-                        MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(contentFull));
-                    }
+                        result = await ReadSSEWithTools(resp, onToken, onThinkingToken, ct);
                     else
-                    {
-                        var text = await resp.Content.ReadAsStringAsync();
-                        var content = ExtractContent(text);
-                        MainThreadDispatcher.Enqueue(() => onToken?.Invoke(content));
-                        MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(content));
-                    }
+                        result = ParseNonStreamResponse(await resp.Content.ReadAsStringAsync());
+
+                    MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(result));
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception e) { MainThreadDispatcher.Enqueue(() => onError?.Invoke(e)); }
             }, ct);
         }
 
-        private string BuildRequestBody(IReadOnlyList<ChatMessage> messages)
+        #region Legacy streaming (kept for backward compatibility)
+
+        public void StreamChatAsync(
+            IReadOnlyList<ChatMessage> messages,
+            Action<string> onToken,
+            Action<string> onThinkingToken,
+            Action<string> onThinkingComplete,
+            Action<string> onComplete,
+            Action<Exception> onError,
+            CancellationToken ct)
+        {
+            ChatWithToolsAsync(messages, null, onToken, onThinkingToken,
+                response =>
+                {
+                    if (!string.IsNullOrEmpty(response.Thinking))
+                        onThinkingComplete?.Invoke(response.Thinking);
+                    onComplete?.Invoke(response.Content ?? "");
+                },
+                onError, ct);
+        }
+
+        #endregion
+
+        private string BuildRequestBody(IReadOnlyList<ChatMessage> messages, JArray tools)
         {
             var arr = new JArray();
             foreach (var m in messages)
-                arr.Add(new JObject { ["role"] = m.Role.ToString().ToLowerInvariant(), ["content"] = m.Content });
+            {
+                var msg = new JObject { ["role"] = m.Role.ToString().ToLowerInvariant() };
 
-            var obj = new JObject { ["model"] = _settings.ModelName, ["stream"] = true, ["messages"] = arr };
+                if (!string.IsNullOrEmpty(m.Content))
+                    msg["content"] = m.Content;
+
+                if (m.ToolCallId != null)
+                {
+                    msg["role"] = "tool";
+                    msg["tool_call_id"] = m.ToolCallId;
+                    msg["content"] = m.Content ?? "";
+                }
+
+                if (m.ToolCalls != null && m.ToolCalls.Count > 0)
+                {
+                    var calls = new JArray();
+                    foreach (var tc in m.ToolCalls)
+                    {
+                        calls.Add(new JObject
+                        {
+                            ["id"] = tc.Id,
+                            ["type"] = "function",
+                            ["function"] = new JObject
+                            {
+                                ["name"] = tc.Name,
+                                ["arguments"] = tc.Arguments
+                            }
+                        });
+                    }
+                    msg["tool_calls"] = calls;
+                    if (msg["content"] == null)
+                        msg["content"] = "";
+                }
+
+                arr.Add(msg);
+            }
+
+            var obj = new JObject
+            {
+                ["model"] = _settings.ModelName,
+                ["stream"] = true,
+                ["messages"] = arr
+            };
+
+            if (tools != null && tools.Count > 0)
+                obj["tools"] = tools;
+
             return obj.ToString(Newtonsoft.Json.Formatting.None);
         }
 
-        private static string NormalizeUrl(string baseUrl)
-        {
-            if (string.IsNullOrWhiteSpace(baseUrl)) return "https://api.openai.com/v1/chat/completions";
-            var u = baseUrl.TrimEnd('/');
-            if (u.EndsWith("/chat/completions")) return u;
-            if (u.EndsWith("/v1")) return u + "/chat/completions";
-            return u + "/v1/chat/completions";
-        }
-
-        private static async Task<(string content, string thinking)> ReadSSE(
+        private static async Task<LLMResponse> ReadSSEWithTools(
             HttpResponseMessage resp,
             Action<string> onToken,
             Action<string> onThinkingToken,
@@ -114,6 +172,8 @@ namespace Indey.UIPrefabBuilder.Core
         {
             var contentBuf = new StringBuilder();
             var thinkingBuf = new StringBuilder();
+            var toolCalls = new Dictionary<int, ToolCallInfo>();
+
             using var stream = await resp.Content.ReadAsStreamAsync();
             using var reader = new StreamReader(stream);
             while (!reader.EndOfStream && !ct.IsCancellationRequested)
@@ -125,7 +185,10 @@ namespace Indey.UIPrefabBuilder.Core
                 try
                 {
                     var json = JObject.Parse(data);
-                    var delta = json["choices"]?[0]?["delta"];
+                    var choice = json["choices"]?[0];
+                    if (choice == null) continue;
+
+                    var delta = choice["delta"];
                     if (delta == null) continue;
 
                     var content = delta["content"]?.ToString();
@@ -144,16 +207,105 @@ namespace Indey.UIPrefabBuilder.Core
                         var captured = content;
                         MainThreadDispatcher.Enqueue(() => onToken?.Invoke(captured));
                     }
+
+                    var deltaToolCalls = delta["tool_calls"] as JArray;
+                    if (deltaToolCalls != null)
+                    {
+                        foreach (JObject tc in deltaToolCalls)
+                        {
+                            var index = (int)(tc["index"] ?? 0);
+                            if (!toolCalls.TryGetValue(index, out var info))
+                            {
+                                info = new ToolCallInfo { Arguments = "" };
+                                toolCalls[index] = info;
+                            }
+
+                            var id = tc["id"]?.ToString();
+                            if (!string.IsNullOrEmpty(id))
+                                info.Id = id;
+
+                            var fn = tc["function"];
+                            if (fn != null)
+                            {
+                                var fnName = fn["name"]?.ToString();
+                                if (!string.IsNullOrEmpty(fnName))
+                                    info.Name = fnName;
+
+                                var fnArgs = fn["arguments"]?.ToString();
+                                if (!string.IsNullOrEmpty(fnArgs))
+                                    info.Arguments += fnArgs;
+                            }
+                        }
+                    }
                 }
                 catch { }
             }
-            return (contentBuf.ToString(), thinkingBuf.ToString());
+
+            var thinkingStr = thinkingBuf.ToString();
+            var contentStr = contentBuf.ToString();
+
+            if (string.IsNullOrEmpty(thinkingStr))
+            {
+                var fallback = ExtractThinking(contentStr);
+                if (!string.IsNullOrEmpty(fallback))
+                    thinkingStr = fallback;
+            }
+
+            var result = new LLMResponse
+            {
+                Content = contentStr,
+                Thinking = thinkingStr
+            };
+
+            if (toolCalls.Count > 0)
+            {
+                result.ToolCalls = new List<ToolCallInfo>();
+                foreach (var kvp in toolCalls)
+                    result.ToolCalls.Add(kvp.Value);
+            }
+
+            return result;
         }
 
-        private static string ExtractContent(string json)
+        private static LLMResponse ParseNonStreamResponse(string json)
         {
-            try { return JObject.Parse(json)["choices"]?[0]?["message"]?["content"]?.ToString() ?? json; }
-            catch { return json; }
+            try
+            {
+                var obj = JObject.Parse(json);
+                var message = obj["choices"]?[0]?["message"];
+                var content = message?["content"]?.ToString() ?? "";
+                var result = new LLMResponse { Content = content };
+
+                var msgToolCalls = message?["tool_calls"] as JArray;
+                if (msgToolCalls != null && msgToolCalls.Count > 0)
+                {
+                    result.ToolCalls = new List<ToolCallInfo>();
+                    foreach (JObject tc in msgToolCalls)
+                    {
+                        result.ToolCalls.Add(new ToolCallInfo
+                        {
+                            Id = tc["id"]?.ToString(),
+                            Name = tc["function"]?["name"]?.ToString(),
+                            Arguments = tc["function"]?["arguments"]?.ToString() ?? "{}"
+                        });
+                    }
+                }
+
+                return result;
+            }
+            catch
+            {
+                return new LLMResponse { Content = json };
+            }
+        }
+
+        private static string NormalizeUrl(string baseUrl)
+        {
+            if (string.IsNullOrWhiteSpace(baseUrl)) return "https://api.openai.com/v1/chat/completions";
+            var u = baseUrl.TrimEnd('/');
+            if (u.EndsWith("/chat/completions")) return u;
+            if (u.EndsWith("/v1")) return u + "/chat/completions";
+            return u + "/v1/chat/completions";
         }
 
         private static string ExtractThinking(string text)

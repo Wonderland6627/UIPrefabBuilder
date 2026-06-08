@@ -29,7 +29,7 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _showHistory;
 
         // Styles
-        private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble;
+        private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble, _toolCallBubble;
         private GUIStyle _inputStyle, _statusLabel;
         private bool _stylesInit;
 
@@ -55,7 +55,12 @@ namespace Indey.UIPrefabBuilder.UI
             _agent.OnThinking += t => { FinalizeThinkingStream(t); };
             _agent.OnComplete += full => { FinishStream(full); };
             _agent.OnError += e => { AddBubble(BubbleType.Error, e); _isStreaming = false; _isThinking = false; };
-            _agent.OnExecuted += r => { AddBubble(r.Success ? BubbleType.Result : BubbleType.Error, r.Message); };
+            _agent.OnExecuted += r => { };
+            _agent.OnToolCall += (name, args, result) =>
+            {
+                if (result != null)
+                    AddBubble(BubbleType.ToolCall, FormatToolCall(name, args, result));
+            };
 
             _sessions = new SessionManager();
             _settingsPanel = new SettingsPanel();
@@ -263,6 +268,7 @@ namespace Indey.UIPrefabBuilder.UI
                 case BubbleType.Code: style = _codeBubble; break;
                 case BubbleType.Result: style = _resultBubble; break;
                 case BubbleType.Error: style = _resultBubble; break;
+                case BubbleType.ToolCall: style = _toolCallBubble; break;
                 default: style = _aiBubble; break;
             }
 
@@ -321,7 +327,10 @@ namespace Indey.UIPrefabBuilder.UI
             GUILayout.FlexibleSpace();
 
             var state = _agent?.State ?? AgentState.Idle;
-            if (state != AgentState.Idle && state != AgentState.Error && state != AgentState.WaitingConfirmation)
+            bool isRunning = state == AgentState.Thinking || state == AgentState.CallingTool
+                || state == AgentState.WaitingForLLM || state == AgentState.BuildingContext
+                || state == AgentState.Compiling || state == AgentState.Executing;
+            if (isRunning)
             {
                 if (GUILayout.Button("Stop", GUILayout.Width(55))) _agent?.Cancel();
             }
@@ -407,14 +416,17 @@ namespace Indey.UIPrefabBuilder.UI
         private (string, Color) GetStateInfo(AgentState s) => s switch
         {
             AgentState.Idle => ("Idle", Color.gray),
+            AgentState.Thinking => ("Thinking...", new Color(0.3f, 0.6f, 1f)),
+            AgentState.CallingTool => ("Calling tool...", new Color(1f, 0.7f, 0.2f)),
+            AgentState.WaitingConfirmation => ("Confirm?", new Color(0.2f, 0.9f, 0.4f)),
+            AgentState.Completed => ("Done", new Color(0.2f, 0.8f, 0.2f)),
+            AgentState.Error => ("Error", Color.red),
             AgentState.BuildingContext => ("Context...", new Color(0.4f, 0.7f, 1f)),
             AgentState.WaitingForLLM => ("Thinking...", new Color(0.3f, 0.6f, 1f)),
             AgentState.ExtractingCode => ("Extracting...", new Color(0.5f, 0.5f, 1f)),
             AgentState.Compiling => ("Compiling...", new Color(1f, 0.8f, 0.2f)),
             AgentState.Executing => ("Executing...", new Color(1f, 0.6f, 0.2f)),
             AgentState.ObservingResult => ("Observing...", new Color(0.2f, 0.8f, 0.2f)),
-            AgentState.WaitingConfirmation => ("Confirm?", new Color(0.2f, 0.9f, 0.4f)),
-            AgentState.Error => ("Error", Color.red),
             _ => ("Unknown", Color.gray)
         };
         #endregion
@@ -446,10 +458,9 @@ namespace Indey.UIPrefabBuilder.UI
         private void FinishStream(string full)
         {
             _isStreaming = false;
-            AddBubble(BubbleType.AI, full);
+            if (!string.IsNullOrWhiteSpace(full))
+                AddBubble(BubbleType.AI, full);
             _streamBuffer = "";
-            var code = Indey.UIPrefabBuilder.Compiler.CodeExtractor.ExtractFirst(full);
-            if (!string.IsNullOrEmpty(code)) AddBubble(BubbleType.Code, code);
             _sessions.SaveCurrentSession(_agent.History, _bubbles);
         }
 
@@ -510,6 +521,26 @@ namespace Indey.UIPrefabBuilder.UI
             _needsRepaint = true;
         }
 
+        private static string FormatToolCall(string name, string args, string result)
+        {
+            var sb = new StringBuilder();
+            sb.Append($"\u2699 {name}");
+            try
+            {
+                var resObj = Newtonsoft.Json.Linq.JObject.Parse(result);
+                var success = (bool)(resObj["success"] ?? false);
+                var msg = resObj["message"]?.ToString() ?? resObj["error"]?.ToString();
+                sb.Append(success ? " \u2714" : " \u2716");
+                if (!string.IsNullOrEmpty(msg)) sb.Append($" {msg}");
+            }
+            catch
+            {
+                if (result.Length > 120) sb.Append($": {result.Substring(0, 120)}...");
+                else sb.Append($": {result}");
+            }
+            return sb.ToString();
+        }
+
         private void HandleKeyboard()
         {
             var e = Event.current;
@@ -530,6 +561,7 @@ namespace Indey.UIPrefabBuilder.UI
             _thinkBubble = CreateBubbleStyle(new Color(0.5f, 0.4f, 0.7f, 0.2f));
             _codeBubble = CreateBubbleStyle(new Color(0.1f, 0.1f, 0.15f, 0.4f));
             _resultBubble = CreateBubbleStyle(new Color(0.1f, 0.5f, 0.2f, 0.25f));
+            _toolCallBubble = CreateBubbleStyle(new Color(0.15f, 0.35f, 0.5f, 0.3f));
             _inputStyle = new GUIStyle(EditorStyles.textArea) { wordWrap = true, fontSize = 13 };
             _statusLabel = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleLeft };
         }
@@ -550,7 +582,7 @@ namespace Indey.UIPrefabBuilder.UI
         #endregion
     }
 
-    public enum BubbleType { User, AI, AIStream, Thinking, Code, Result, Error }
+    public enum BubbleType { User, AI, AIStream, Thinking, Code, Result, Error, ToolCall }
 
     public class ChatBubble
     {

@@ -9,9 +9,10 @@ namespace Indey.UIPrefabBuilder.Config
         [SerializeField] private string baseUrl = "https://api.openai.com/v1";
         [SerializeField] private string modelName = "gpt-4o-mini";
         [SerializeField] private int requestTimeoutSeconds = 60;
-        [SerializeField] private int maxRetryCount = 5;
+        [SerializeField] private int maxRetryCount = 2;
         [SerializeField] private int executeTimeoutSeconds = 5;
         [SerializeField] private bool autoExecute = true;
+        [SerializeField] private int maxAgentSteps = 0;
 
         public string BaseUrl { get => baseUrl; set => baseUrl = value; }
         public string ModelName { get => modelName; set => modelName = value; }
@@ -19,6 +20,8 @@ namespace Indey.UIPrefabBuilder.Config
         public int MaxRetryCount { get => maxRetryCount; set => maxRetryCount = value; }
         public int ExecuteTimeoutSeconds { get => executeTimeoutSeconds; set => executeTimeoutSeconds = value; }
         public bool AutoExecute { get => autoExecute; set => autoExecute = value; }
+        /// <summary>0 = unlimited (soft cap at 500 for safety)</summary>
+        public int MaxAgentSteps { get => maxAgentSteps; set => maxAgentSteps = value; }
 
         public static BuilderSettings Get() => instance;
 

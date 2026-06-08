@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Indey.UIPrefabBuilder.Core;
+using Indey.UIPrefabBuilder.Logging;
 using Newtonsoft.Json;
 using UnityEditor;
 using UnityEngine;
@@ -37,18 +38,43 @@ namespace Indey.UIPrefabBuilder.UI
     public class SessionManager
     {
         private string _currentId;
-        private static readonly string SessionDir = Path.Combine(Application.dataPath, "../Library/UIPrefabBuilder/Sessions");
+
+        public static string SessionDir
+        {
+            get
+            {
+                var baseDir = ConsoleLogger.BaseDirectory;
+                if (string.IsNullOrEmpty(baseDir))
+                    baseDir = Path.Combine(Path.GetDirectoryName(Application.dataPath), "Library", "UIPrefabBuilder");
+                return Path.Combine(baseDir, "Sessions");
+            }
+        }
+
+        public static string DataDirectory
+        {
+            get
+            {
+                var baseDir = ConsoleLogger.BaseDirectory;
+                if (string.IsNullOrEmpty(baseDir))
+                    baseDir = Path.Combine(Path.GetDirectoryName(Application.dataPath), "Library", "UIPrefabBuilder");
+                return baseDir;
+            }
+        }
+
+        public string CurrentSessionId => _currentId;
 
         public SessionManager()
         {
             Directory.CreateDirectory(SessionDir);
             _currentId = EditorPrefs.GetString("UIPrefabBuilder_LastSession", Guid.NewGuid().ToString("N"));
+            ConsoleLogger.SetSession(_currentId);
         }
 
         public void NewSession()
         {
             _currentId = Guid.NewGuid().ToString("N");
             EditorPrefs.SetString("UIPrefabBuilder_LastSession", _currentId);
+            ConsoleLogger.SetSession(_currentId);
         }
 
         public void SaveCurrentSession(MessageHistory history, List<ChatBubble> bubbles)
@@ -63,6 +89,7 @@ namespace Indey.UIPrefabBuilder.UI
                 Messages = history.Messages.Select(m => new SerializedMessage { Role = m.Role.ToString(), Content = m.Content }).ToList(),
                 Bubbles = bubbles.Select(b => new SerializedBubble { Type = b.Type.ToString(), Content = b.Content }).ToList()
             };
+            Directory.CreateDirectory(SessionDir);
             var path = Path.Combine(SessionDir, _currentId + ".json");
             File.WriteAllText(path, JsonConvert.SerializeObject(session, Formatting.Indented));
             EditorPrefs.SetString("UIPrefabBuilder_LastSession", _currentId);
@@ -101,6 +128,7 @@ namespace Indey.UIPrefabBuilder.UI
                 }
                 _currentId = id;
                 EditorPrefs.SetString("UIPrefabBuilder_LastSession", id);
+                ConsoleLogger.SetSession(id);
             }
             catch (Exception e) { Debug.LogWarning("[UIPrefabBuilder] Failed to load session: " + e.Message); }
         }
@@ -125,6 +153,8 @@ namespace Indey.UIPrefabBuilder.UI
         {
             var path = Path.Combine(SessionDir, id + ".json");
             if (File.Exists(path)) File.Delete(path);
+            var logPath = Path.Combine(DataDirectory, "Logs", id + ".log");
+            if (File.Exists(logPath)) File.Delete(logPath);
         }
 
         public static string ExportToMarkdown(List<ChatBubble> bubbles, string modelName = "")
@@ -166,6 +196,11 @@ namespace Indey.UIPrefabBuilder.UI
                         sb.AppendLine("```csharp");
                         sb.AppendLine(b.Content);
                         sb.AppendLine("```");
+                        sb.AppendLine();
+                        break;
+                    case BubbleType.ToolCall:
+                        sb.AppendLine("## Tool Call");
+                        sb.AppendLine($"> {b.Content}");
                         sb.AppendLine();
                         break;
                     case BubbleType.Result:

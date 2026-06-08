@@ -21,8 +21,11 @@ namespace Indey.UIPrefabBuilder.Logging
         private static readonly List<LogEntry> _entries = new List<LogEntry>();
         private static readonly object _lock = new object();
         private static string _logFilePath;
-        private static string _logDirectory;
+        private static string _baseDirectory;
+        private static string _currentSessionId;
         private static bool _initialized;
+
+        public static string BaseDirectory => _baseDirectory;
 
         public static IReadOnlyList<LogEntry> Entries
         {
@@ -36,19 +39,38 @@ namespace Indey.UIPrefabBuilder.Logging
             if (_initialized) return;
             _initialized = true;
 
-            var projectName = SanitizeFileName(GetProjectName());
-            var date = DateTime.Now.ToString("yyyy-MM-dd");
-            var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            _logDirectory = Path.Combine(appData, "UIPrefabBuilder", "Logs", projectName);
-            Directory.CreateDirectory(_logDirectory);
-            _logFilePath = Path.Combine(_logDirectory, date + ".log");
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            _baseDirectory = Path.Combine(projectRoot, "Library", "UIPrefabBuilder");
+            Directory.CreateDirectory(Path.Combine(_baseDirectory, "Sessions"));
+            Directory.CreateDirectory(Path.Combine(_baseDirectory, "Logs"));
 
-            Log($"Logger initialized. Project: {projectName}");
+            Log($"Logger initialized. BaseDir: {_baseDirectory}");
+        }
+
+        public static void SetSession(string sessionId)
+        {
+            if (string.IsNullOrEmpty(sessionId)) return;
+            _currentSessionId = sessionId;
+
+            var logsDir = Path.Combine(_baseDirectory, "Logs");
+            Directory.CreateDirectory(logsDir);
+            _logFilePath = Path.Combine(logsDir, sessionId + ".log");
+
+            Log($"--- Session started: {sessionId} ---");
         }
 
         public static void Log(string message) => AddEntry(LogLevel.Info, message);
         public static void Warning(string message) => AddEntry(LogLevel.Warning, message);
         public static void Error(string message) => AddEntry(LogLevel.Error, message);
+
+        public static void LogBlock(string tag, string content)
+        {
+            if (string.IsNullOrEmpty(content)) return;
+            var lines = content.Split('\n');
+            var header = lines.Length > 1 ? $"[{tag}] ({lines.Length} lines, {content.Length} chars)" : $"[{tag}] {content}";
+            AddEntry(LogLevel.Info, header);
+            WriteRawToFile($"--- {tag} START ---\n{content}\n--- {tag} END ---");
+        }
 
         public static void Clear()
         {
@@ -57,14 +79,18 @@ namespace Indey.UIPrefabBuilder.Logging
 
         public static void OpenLogDirectory()
         {
-            if (string.IsNullOrEmpty(_logDirectory)) return;
-            Directory.CreateDirectory(_logDirectory);
+            var dir = Path.Combine(_baseDirectory ?? "", "Logs");
+            if (!Directory.Exists(dir))
+            {
+                dir = _baseDirectory;
+                if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
+            }
 #if UNITY_EDITOR_WIN
-            System.Diagnostics.Process.Start("explorer.exe", _logDirectory.Replace('/', '\\'));
+            System.Diagnostics.Process.Start("explorer.exe", dir.Replace('/', '\\'));
 #elif UNITY_EDITOR_OSX
-            System.Diagnostics.Process.Start("open", _logDirectory);
+            System.Diagnostics.Process.Start("open", dir);
 #else
-            System.Diagnostics.Process.Start("xdg-open", _logDirectory);
+            System.Diagnostics.Process.Start("xdg-open", dir);
 #endif
         }
 
@@ -98,34 +124,17 @@ namespace Indey.UIPrefabBuilder.Logging
                 var line = $"[{entry.Timestamp:HH:mm:ss.fff}] [{entry.Level.ToString().ToUpperInvariant()}] {entry.Message}";
                 File.AppendAllText(_logFilePath, line + Environment.NewLine, Encoding.UTF8);
             }
-            catch
-            {
-                // Silently ignore file write errors to avoid infinite recursion
-            }
+            catch { }
         }
 
-        private static string GetProjectName()
+        private static void WriteRawToFile(string text)
         {
-            var productName = Application.productName;
-            if (!string.IsNullOrWhiteSpace(productName) && productName != "DefaultCompany")
-                return productName;
-
-            var dataPath = Application.dataPath;
-            var projectDir = Path.GetDirectoryName(dataPath);
-            return string.IsNullOrEmpty(projectDir) ? "UnknownProject" : Path.GetFileName(projectDir);
-        }
-
-        private static string SanitizeFileName(string name)
-        {
-            var sb = new StringBuilder(name.Length);
-            foreach (var c in name)
+            if (string.IsNullOrEmpty(_logFilePath)) return;
+            try
             {
-                if (Path.GetInvalidFileNameChars().Length > 0 && Array.IndexOf(Path.GetInvalidFileNameChars(), c) >= 0)
-                    sb.Append('_');
-                else
-                    sb.Append(c);
+                File.AppendAllText(_logFilePath, text + Environment.NewLine, Encoding.UTF8);
             }
-            return sb.ToString();
+            catch { }
         }
     }
 }

@@ -25,7 +25,7 @@ namespace Indey.UIPrefabBuilder.Core
         private CancellationTokenSource _cts;
         private string _pendingMessage;
         private int _currentStep;
-        private int _maxSteps = 30;
+        private const int HardCap = 500;
 
         public AgentState State => _state;
         public MessageHistory History => _history;
@@ -66,7 +66,13 @@ namespace Indey.UIPrefabBuilder.Core
                 && _state != AgentState.WaitingConfirmation && _state != AgentState.Completed)
                 return;
 
-            ConsoleLogger.Log($"StartTask: {(msg.Length > 80 ? msg.Substring(0, 80) + "..." : msg)}");
+            var effectiveMax = EffectiveMaxSteps;
+            ConsoleLogger.Log($"=== NEW TASK ===");
+            ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
+            ConsoleLogger.Log($"[Config] tools={_toolRegistry.ToolNames.Count}");
+            ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
+            ConsoleLogger.LogBlock("USER_REQUEST", msg);
+
             _pendingMessage = msg;
             _currentStep = 0;
             LatestCode = "";
@@ -100,21 +106,32 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine();
             sb.AppendLine("## How You Work");
             sb.AppendLine("You have tools to inspect the project, search assets, create and modify UI elements, and manage prefabs.");
-            sb.AppendLine("Use tools step by step to accomplish the user's request. Observe results before proceeding.");
+            sb.AppendLine("Plan your approach first, then execute efficiently.");
+            sb.AppendLine();
+            sb.AppendLine("## Efficiency Rules (IMPORTANT)");
+            sb.AppendLine("- **Batch tool calls**: Always call multiple tools in parallel when they are independent. For example, create an element AND set its anchor/size/position in the same step, or search assets and inspect scene overview simultaneously.");
+            sb.AppendLine("- **Minimize verification**: Only use `inspect_hierarchy` / `inspect_components` when something may have gone wrong or before a complex next step. Do NOT inspect after every single tool call.");
+            sb.AppendLine("- **Use `execute_code` for batch creation**: When creating many similar elements (e.g. 10+ item slots, grid cells), write a single `execute_code` call instead of creating them one by one with individual tool calls.");
+            sb.AppendLine("- **Combine create + configure**: After creating a UI element, immediately set its anchor, size, position, and sprite in the same step rather than spreading across multiple steps.");
             sb.AppendLine();
             sb.AppendLine("## Guidelines");
-            sb.AppendLine("- **Explore first**: If the task references project assets (sprites, prefabs, textures), use `search_assets` to discover what's available before creating anything.");
-            sb.AppendLine("- **Verify the scene**: Use `get_scene_overview` to see existing Canvas/UI before creating duplicates.");
-            sb.AppendLine("- **Step by step**: Create elements one at a time or in logical groups, then set their properties (anchor, size, position, sprite).");
-            sb.AppendLine("- **Verify your work**: After creating UI, use `inspect_hierarchy` to confirm the structure is correct.");
-            sb.AppendLine("- **Choose sprites wisely**: When multiple sprites are available, pick by naming convention (e.g. `btn_green` for confirm, `dialog_*` for backgrounds).");
-            sb.AppendLine("- **Anchor patterns**: Use StretchAll for overlays/masks, MiddleCenter for dialogs, top/bottom presets for HUD elements.");
-            sb.AppendLine("- **Layout groups**: Use `add_horizontal_layout` / `add_vertical_layout` for automatic child arrangement instead of manual positioning.");
+            sb.AppendLine("- **Explore first**: Use `search_assets` and `get_scene_overview` together before creating anything.");
+            sb.AppendLine("- **Choose sprites wisely**: Pick by naming convention (e.g. `btn_green` for confirm, `dialog_*` for backgrounds).");
+            sb.AppendLine("- **Anchor patterns**: StretchAll for overlays/masks, MiddleCenter for dialogs, top/bottom presets for HUD.");
+            sb.AppendLine("- **Layout groups**: Prefer `add_horizontal_layout` / `add_vertical_layout` / `add_grid_layout` for automatic arrangement.");
             sb.AppendLine();
+
+            var skillsDocs = _skillRegistry.LoadRelevantDocs("", 6000);
+            if (!string.IsNullOrWhiteSpace(skillsDocs))
+            {
+                sb.AppendLine("## Reference Knowledge");
+                sb.AppendLine(skillsDocs);
+                sb.AppendLine();
+            }
+
             sb.AppendLine("## Safety");
-            sb.AppendLine("- Never delete files or assets.");
-            sb.AppendLine("- Never quit Unity.");
-            sb.AppendLine("- Use `execute_code` only as a last resort when other tools cannot achieve the desired result.");
+            sb.AppendLine("- Never delete files or assets. Never quit Unity.");
+            sb.AppendLine("- Use `execute_code` as a power tool for batch operations, complex setups, or when other tools cannot achieve the desired result.");
             sb.AppendLine();
             sb.AppendLine("When you finish the task, respond with a brief summary of what you created.");
             _history.SetSystemPrompt(sb.ToString());
@@ -127,17 +144,32 @@ namespace Indey.UIPrefabBuilder.Core
             if (s == AgentState.Thinking) DoThink();
         }
 
+        private int EffectiveMaxSteps => _settings.MaxAgentSteps <= 0 ? HardCap : _settings.MaxAgentSteps;
+
         private void DoThink()
         {
-            if (_currentStep >= _maxSteps)
+            var max = EffectiveMaxSteps;
+            if (_currentStep >= max)
             {
-                HandleError($"Agent stopped: reached maximum {_maxSteps} steps.");
+                HandleError($"Agent stopped: reached maximum {max} steps.");
                 return;
             }
             _currentStep++;
 
             _llm.RefreshApiKey();
-            ConsoleLogger.Log($"[Agent] Step {_currentStep}/{_maxSteps}, messages={_history.Count}");
+            ConsoleLogger.Log($"[Agent] Step {_currentStep}/{(_settings.MaxAgentSteps <= 0 ? "∞" : max.ToString())}, messages={_history.Count}");
+
+            var messagesSnapshot = new StringBuilder();
+            foreach (var m in _history.Messages)
+            {
+                var preview = m.Content ?? "";
+                if (preview.Length > 200) preview = preview.Substring(0, 200) + "...";
+                messagesSnapshot.AppendLine($"  [{m.Role}] {preview}");
+                if (m.ToolCalls != null)
+                    foreach (var tc in m.ToolCalls)
+                        messagesSnapshot.AppendLine($"    -> tool_call: {tc.Name}({(tc.Arguments?.Length > 100 ? tc.Arguments.Substring(0, 100) + "..." : tc.Arguments)})");
+            }
+            ConsoleLogger.LogBlock($"LLM_REQUEST_STEP_{_currentStep}", messagesSnapshot.ToString());
 
             _llm.ChatWithToolsAsync(
                 _history.Messages,
@@ -151,6 +183,12 @@ namespace Indey.UIPrefabBuilder.Core
 
         private void HandleLLMResponse(LLMResponse response)
         {
+            ConsoleLogger.Log($"[Agent] LLM responded: content={response.Content?.Length ?? 0} chars, thinking={response.Thinking?.Length ?? 0} chars, tool_calls={response.ToolCalls?.Count ?? 0}");
+            if (!string.IsNullOrEmpty(response.Thinking))
+                ConsoleLogger.LogBlock($"LLM_THINKING_STEP_{_currentStep}", response.Thinking);
+            if (!string.IsNullOrEmpty(response.Content))
+                ConsoleLogger.LogBlock($"LLM_CONTENT_STEP_{_currentStep}", response.Content);
+
             if (!string.IsNullOrEmpty(response.Thinking))
             {
                 LatestThinking = response.Thinking;
@@ -182,7 +220,8 @@ namespace Indey.UIPrefabBuilder.Core
             {
                 if (_cts.IsCancellationRequested) return;
 
-                ConsoleLogger.Log($"[Agent] Tool call: {call.Name}");
+                ConsoleLogger.Log($"[Agent] Tool call: {call.Name} (id={call.Id})");
+                ConsoleLogger.LogBlock($"TOOL_ARGS_{call.Name}", call.Arguments);
                 OnToolCall?.Invoke(call.Name, call.Arguments, null);
 
                 string result;
@@ -193,8 +232,10 @@ namespace Indey.UIPrefabBuilder.Core
                 catch (Exception e)
                 {
                     result = new JObject { ["success"] = false, ["error"] = e.Message }.ToString();
+                    ConsoleLogger.Error($"[Agent] Tool exception: {call.Name} -> {e.Message}");
                 }
 
+                ConsoleLogger.LogBlock($"TOOL_RESULT_{call.Name}", result);
                 _history.AddToolResult(call.Id, call.Name, result);
                 OnToolCall?.Invoke(call.Name, call.Arguments, result);
 

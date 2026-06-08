@@ -61,6 +61,7 @@ namespace Indey.UIPrefabBuilder.UI
             var settings = BuilderSettings.Get();
 
             settings.RequestTimeoutSeconds = EditorGUILayout.IntField("Timeout (s)", settings.RequestTimeoutSeconds);
+            settings.MaxAgentSteps = EditorGUILayout.IntField("Max Steps (0=∞)", settings.MaxAgentSteps);
             settings.MaxRetryCount = EditorGUILayout.IntField("Max Retries", settings.MaxRetryCount);
             settings.ExecuteTimeoutSeconds = EditorGUILayout.IntField("Exec Timeout (s)", settings.ExecuteTimeoutSeconds);
             settings.AutoExecute = EditorGUILayout.Toggle("Auto Execute", settings.AutoExecute);

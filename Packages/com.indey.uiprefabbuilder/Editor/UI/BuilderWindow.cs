@@ -30,6 +30,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         // Styles
         private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble, _toolCallBubble;
+        private GUIStyle _toolCallLabel;
         private GUIStyle _inputStyle, _statusLabel;
         private bool _stylesInit;
 
@@ -259,6 +260,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawBubble(ChatBubble b)
         {
+            bool isUser = b.Type == BubbleType.User;
             GUIStyle style;
             switch (b.Type)
             {
@@ -272,10 +274,21 @@ namespace Indey.UIPrefabBuilder.UI
                 default: style = _aiBubble; break;
             }
 
-            EditorGUILayout.BeginHorizontal();
-            if (b.Type == BubbleType.User) GUILayout.FlexibleSpace();
+            float maxBubbleWidth = position.width * 0.55f;
 
-            EditorGUILayout.BeginVertical(style, GUILayout.MaxWidth(position.width * 0.6f));
+            EditorGUILayout.BeginHorizontal();
+
+            if (isUser)
+            {
+                GUILayout.FlexibleSpace();
+                GUILayout.Space(20);
+            }
+            else
+            {
+                GUILayout.Space(4);
+            }
+
+            EditorGUILayout.BeginVertical(style, GUILayout.MaxWidth(maxBubbleWidth));
 
             if (b.Type == BubbleType.Thinking)
             {
@@ -290,13 +303,27 @@ namespace Indey.UIPrefabBuilder.UI
                 if (GUILayout.Button("Copy", GUILayout.Width(50))) EditorGUIUtility.systemCopyBuffer = b.Content;
                 EditorGUILayout.EndHorizontal();
             }
+            else if (b.Type == BubbleType.ToolCall)
+            {
+                GUILayout.Label(b.Content, _toolCallLabel);
+            }
             else
             {
                 GUILayout.Label(b.Content, EditorStyles.wordWrappedLabel);
             }
 
             EditorGUILayout.EndVertical();
-            if (b.Type != BubbleType.User) GUILayout.FlexibleSpace();
+
+            if (isUser)
+            {
+                GUILayout.Space(4);
+            }
+            else
+            {
+                GUILayout.Space(20);
+                GUILayout.FlexibleSpace();
+            }
+
             EditorGUILayout.EndHorizontal();
             GUILayout.Space(4);
         }
@@ -494,8 +521,9 @@ namespace Indey.UIPrefabBuilder.UI
             if (_bubbles.Count == 0) return;
             var modelName = BuilderSettings.Get().ModelName;
             var md = SessionManager.ExportToMarkdown(_bubbles, modelName);
+            var defaultDir = SessionManager.DataDirectory;
             var defaultName = $"chat_export_{DateTime.Now:yyyyMMdd_HHmmss}.md";
-            var path = EditorUtility.SaveFilePanel("Export Chat", "", defaultName, "md");
+            var path = EditorUtility.SaveFilePanel("Export Chat", defaultDir, defaultName, "md");
             if (string.IsNullOrEmpty(path)) return;
             File.WriteAllText(path, md, Encoding.UTF8);
             ConsoleLogger.Log($"Chat exported to: {path}");
@@ -556,12 +584,17 @@ namespace Indey.UIPrefabBuilder.UI
             if (_stylesInit) return;
             _stylesInit = true;
             _headerStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 13, alignment = TextAnchor.MiddleLeft };
-            _userBubble = CreateBubbleStyle(new Color(0.2f, 0.45f, 0.85f, 0.25f));
-            _aiBubble = CreateBubbleStyle(new Color(0.25f, 0.25f, 0.3f, 0.3f));
+            _userBubble = CreateBubbleStyle(new Color(0.15f, 0.38f, 0.75f, 0.35f));
+            _aiBubble = CreateBubbleStyle(new Color(0.22f, 0.22f, 0.28f, 0.35f));
             _thinkBubble = CreateBubbleStyle(new Color(0.5f, 0.4f, 0.7f, 0.2f));
             _codeBubble = CreateBubbleStyle(new Color(0.1f, 0.1f, 0.15f, 0.4f));
             _resultBubble = CreateBubbleStyle(new Color(0.1f, 0.5f, 0.2f, 0.25f));
-            _toolCallBubble = CreateBubbleStyle(new Color(0.15f, 0.35f, 0.5f, 0.3f));
+            _toolCallBubble = CreateBubbleStyle(new Color(0.12f, 0.3f, 0.45f, 0.25f));
+            _toolCallLabel = new GUIStyle(EditorStyles.wordWrappedMiniLabel)
+            {
+                richText = false,
+                normal = { textColor = new Color(0.6f, 0.8f, 0.9f) }
+            };
             _inputStyle = new GUIStyle(EditorStyles.textArea) { wordWrap = true, fontSize = 13 };
             _statusLabel = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleLeft };
         }

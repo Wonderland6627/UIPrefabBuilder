@@ -72,6 +72,29 @@ namespace Indey.UIPrefabBuilder.Logging
             WriteRawToFile($"--- {tag} START ---\n{content}\n--- {tag} END ---");
         }
 
+        /// <summary>
+        /// Compact log for tool calls: single line with name + truncated args/result.
+        /// </summary>
+        public static void LogToolCall(string toolName, string args, string result)
+        {
+            var argPreview = TruncateForLog(args, 150);
+            var line = $"[Tool] {toolName}({argPreview})";
+            AddEntry(LogLevel.Info, line);
+
+            if (!string.IsNullOrEmpty(result))
+            {
+                var resultPreview = TruncateForLog(result, 200);
+                AddEntry(LogLevel.Info, $"[Tool] {toolName} => {resultPreview}");
+            }
+        }
+
+        private static string TruncateForLog(string text, int maxLen)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            text = text.Replace("\r\n", " ").Replace("\n", " ");
+            return text.Length <= maxLen ? text : text.Substring(0, maxLen) + "...";
+        }
+
         public static void Clear()
         {
             lock (_lock) _entries.Clear();

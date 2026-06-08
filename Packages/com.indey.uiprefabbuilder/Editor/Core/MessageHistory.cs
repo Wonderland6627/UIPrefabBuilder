@@ -90,7 +90,54 @@ namespace Indey.UIPrefabBuilder.Core
         private void Trim()
         {
             while (_messages.Count > MaxMessages && _messages.Count > 1)
-                _messages.RemoveAt(1);
+            {
+                int removeIdx = FindRemovableGroupStart();
+                if (removeIdx < 0) break;
+                RemoveMessageGroup(removeIdx);
+            }
+        }
+
+        /// <summary>
+        /// Finds the start index of the earliest removable message group.
+        /// A "group" is either: a standalone message, or an assistant+tool_results block.
+        /// Never removes index 0 (system prompt).
+        /// </summary>
+        private int FindRemovableGroupStart()
+        {
+            for (int i = 1; i < _messages.Count; i++)
+            {
+                var msg = _messages[i];
+                if (msg.Role == ChatRole.Tool) continue;
+                return i;
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// Removes a message at the given index. If it's an assistant message with tool_calls,
+        /// also removes all immediately following tool result messages that belong to it.
+        /// </summary>
+        private void RemoveMessageGroup(int startIdx)
+        {
+            var msg = _messages[startIdx];
+            _messages.RemoveAt(startIdx);
+
+            if (msg.Role != ChatRole.Assistant || msg.ToolCalls == null || msg.ToolCalls.Count == 0)
+                return;
+
+            var toolCallIds = new HashSet<string>();
+            foreach (var tc in msg.ToolCalls)
+            {
+                if (!string.IsNullOrEmpty(tc.Id))
+                    toolCallIds.Add(tc.Id);
+            }
+
+            while (startIdx < _messages.Count
+                   && _messages[startIdx].Role == ChatRole.Tool
+                   && toolCallIds.Contains(_messages[startIdx].ToolCallId))
+            {
+                _messages.RemoveAt(startIdx);
+            }
         }
     }
 }

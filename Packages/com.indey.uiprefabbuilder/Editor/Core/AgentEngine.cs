@@ -129,9 +129,40 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine();
             }
 
+            sb.AppendLine("## execute_code Usage");
+            sb.AppendLine("The `execute_code` tool compiles and runs C# code at runtime. Your code must implement `IAgentAction`.");
+            sb.AppendLine("If your code does NOT contain `class` and `IAgentAction`, it will be auto-wrapped (just write the body).");
+            sb.AppendLine("");
+            sb.AppendLine("### Auto-wrapped mode (preferred for simple tasks):");
+            sb.AppendLine("```csharp");
+            sb.AppendLine("// Just write statements - they run inside Execute(ActionContext context)");
+            sb.AppendLine("var canvas = GameObject.Find(\"MyCanvas\");");
+            sb.AppendLine("var scaler = canvas.GetComponent<CanvasScaler>();");
+            sb.AppendLine("scaler.referenceResolution = new Vector2(1080, 2340);");
+            sb.AppendLine("// Auto-returns ActionResult.Ok(\"Done.\") at the end");
+            sb.AppendLine("```");
+            sb.AppendLine("");
+            sb.AppendLine("### Full class mode (for complex logic):");
+            sb.AppendLine("```csharp");
+            sb.AppendLine("public class MyAction : IAgentAction");
+            sb.AppendLine("{");
+            sb.AppendLine("    public string ActionName => \"MyAction\";");
+            sb.AppendLine("    public string Description => \"Does something\";");
+            sb.AppendLine("    public ActionResult Execute(ActionContext context)");
+            sb.AppendLine("    {");
+            sb.AppendLine("        var go = GameObject.Find(\"TargetName\");");
+            sb.AppendLine("        if (go == null) return ActionResult.Fail(\"Not found\");");
+            sb.AppendLine("        // ... do work ...");
+            sb.AppendLine("        return ActionResult.Ok(\"Success\");");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+            sb.AppendLine("```");
+            sb.AppendLine("Available in context: `context.CanvasRoot` (first Canvas), `context.TargetObject` (selected object).");
+            sb.AppendLine("Available APIs: UnityEngine, UnityEngine.UI, UnityEditor, System.Linq, Indey.UIPrefabBuilder.Core/Skills.");
+            sb.AppendLine("");
             sb.AppendLine("## Safety");
             sb.AppendLine("- Never delete files or assets. Never quit Unity.");
-            sb.AppendLine("- Use `execute_code` as a power tool for batch operations, complex setups, or when other tools cannot achieve the desired result.");
+            sb.AppendLine("- If `execute_code` fails more than 2 times, stop trying and use other available tools instead.");
             sb.AppendLine();
             sb.AppendLine("When you finish the task, respond with a brief summary of what you created.");
             _history.SetSystemPrompt(sb.ToString());
@@ -159,18 +190,6 @@ namespace Indey.UIPrefabBuilder.Core
             _llm.RefreshApiKey();
             ConsoleLogger.Log($"[Agent] Step {_currentStep}/{(_settings.MaxAgentSteps <= 0 ? "∞" : max.ToString())}, messages={_history.Count}");
 
-            var messagesSnapshot = new StringBuilder();
-            foreach (var m in _history.Messages)
-            {
-                var preview = m.Content ?? "";
-                if (preview.Length > 200) preview = preview.Substring(0, 200) + "...";
-                messagesSnapshot.AppendLine($"  [{m.Role}] {preview}");
-                if (m.ToolCalls != null)
-                    foreach (var tc in m.ToolCalls)
-                        messagesSnapshot.AppendLine($"    -> tool_call: {tc.Name}({(tc.Arguments?.Length > 100 ? tc.Arguments.Substring(0, 100) + "..." : tc.Arguments)})");
-            }
-            ConsoleLogger.LogBlock($"LLM_REQUEST_STEP_{_currentStep}", messagesSnapshot.ToString());
-
             _llm.ChatWithToolsAsync(
                 _history.Messages,
                 _toolRegistry.Definitions,
@@ -183,10 +202,15 @@ namespace Indey.UIPrefabBuilder.Core
 
         private void HandleLLMResponse(LLMResponse response)
         {
-            ConsoleLogger.Log($"[Agent] LLM responded: content={response.Content?.Length ?? 0} chars, thinking={response.Thinking?.Length ?? 0} chars, tool_calls={response.ToolCalls?.Count ?? 0}");
+            var toolCount = response.ToolCalls?.Count ?? 0;
+            var toolNames = toolCount > 0
+                ? string.Join(", ", response.ToolCalls.ConvertAll(tc => tc.Name))
+                : "none";
+            ConsoleLogger.Log($"[Agent] Step {_currentStep} response: tools=[{toolNames}], content={response.Content?.Length ?? 0}c, thinking={response.Thinking?.Length ?? 0}c");
+
             if (!string.IsNullOrEmpty(response.Thinking))
                 ConsoleLogger.LogBlock($"LLM_THINKING_STEP_{_currentStep}", response.Thinking);
-            if (!string.IsNullOrEmpty(response.Content))
+            if (!string.IsNullOrEmpty(response.Content) && toolCount == 0)
                 ConsoleLogger.LogBlock($"LLM_CONTENT_STEP_{_currentStep}", response.Content);
 
             if (!string.IsNullOrEmpty(response.Thinking))
@@ -220,8 +244,6 @@ namespace Indey.UIPrefabBuilder.Core
             {
                 if (_cts.IsCancellationRequested) return;
 
-                ConsoleLogger.Log($"[Agent] Tool call: {call.Name} (id={call.Id})");
-                ConsoleLogger.LogBlock($"TOOL_ARGS_{call.Name}", call.Arguments);
                 OnToolCall?.Invoke(call.Name, call.Arguments, null);
 
                 string result;
@@ -235,7 +257,7 @@ namespace Indey.UIPrefabBuilder.Core
                     ConsoleLogger.Error($"[Agent] Tool exception: {call.Name} -> {e.Message}");
                 }
 
-                ConsoleLogger.LogBlock($"TOOL_RESULT_{call.Name}", result);
+                ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
                 _history.AddToolResult(call.Id, call.Name, result);
                 OnToolCall?.Invoke(call.Name, call.Arguments, result);
 
@@ -264,9 +286,28 @@ namespace Indey.UIPrefabBuilder.Core
         private void HandleError(string msg)
         {
             ConsoleLogger.Error(msg);
+            DumpRecentContext();
             _state = AgentState.Error;
             OnStateChanged?.Invoke(_state);
             OnError?.Invoke(msg);
+        }
+
+        private void DumpRecentContext()
+        {
+            var sb = new StringBuilder();
+            var messages = _history.Messages;
+            int start = Math.Max(1, messages.Count - 6);
+            for (int i = start; i < messages.Count; i++)
+            {
+                var m = messages[i];
+                var preview = m.Content ?? "";
+                if (preview.Length > 300) preview = preview.Substring(0, 300) + "...";
+                sb.AppendLine($"  [{m.Role}] {preview}");
+                if (m.ToolCalls != null)
+                    foreach (var tc in m.ToolCalls)
+                        sb.AppendLine($"    -> tool_call: {tc.Name}({(tc.Arguments?.Length > 120 ? tc.Arguments.Substring(0, 120) + "..." : tc.Arguments)})");
+            }
+            ConsoleLogger.LogBlock("ERROR_CONTEXT_LAST_MESSAGES", sb.ToString());
         }
 
         public void Dispose()

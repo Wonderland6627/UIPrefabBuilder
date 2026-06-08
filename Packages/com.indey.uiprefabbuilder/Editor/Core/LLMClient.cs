@@ -62,23 +62,63 @@ namespace Indey.UIPrefabBuilder.Core
                     var body = BuildRequestBody(messages, tools);
                     var url = NormalizeUrl(_settings.BaseUrl);
 
-                    using var req = new HttpRequestMessage(HttpMethod.Post, url);
-                    req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + apiKey);
-                    req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                    var maxRetries = _settings.MaxRetryCount > 0 ? _settings.MaxRetryCount : 3;
+                    Exception lastEx = null;
+                    LLMResponse result = null;
 
-                    using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-                    if (!resp.IsSuccessStatusCode)
+                    for (int attempt = 0; attempt < maxRetries; attempt++)
                     {
-                        var err = await resp.Content.ReadAsStringAsync();
-                        throw new InvalidOperationException($"HTTP {(int)resp.StatusCode}: {err}");
+                        ct.ThrowIfCancellationRequested();
+                        if (attempt > 0)
+                            await Task.Delay(1000 * attempt, ct);
+
+                        HttpResponseMessage resp = null;
+                        try
+                        {
+                            using var req = new HttpRequestMessage(HttpMethod.Post, url);
+                            req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + apiKey);
+                            req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+                            resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+
+                            if (!resp.IsSuccessStatusCode)
+                            {
+                                var errBody = await resp.Content.ReadAsStringAsync();
+                                var statusCode = (int)resp.StatusCode;
+
+                                if (statusCode == 400 || statusCode == 401 || statusCode == 403 || statusCode == 404)
+                                    throw new InvalidOperationException($"HTTP {statusCode}: {errBody}");
+
+                                lastEx = new InvalidOperationException($"HTTP {statusCode}: {errBody}");
+                                resp.Dispose();
+                                continue;
+                            }
+
+                            var contentType = resp.Content.Headers.ContentType?.MediaType ?? "";
+                            if (contentType.Contains("text/event-stream"))
+                                result = await ReadSSEWithTools(resp, onToken, onThinkingToken, ct);
+                            else
+                                result = ParseNonStreamResponse(await resp.Content.ReadAsStringAsync());
+
+                            lastEx = null;
+                            break;
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (InvalidOperationException) { throw; }
+                        catch (Exception e)
+                        {
+                            lastEx = e;
+                        }
+                        finally
+                        {
+                            resp?.Dispose();
+                        }
                     }
 
-                    var contentType = resp.Content.Headers.ContentType?.MediaType ?? "";
-                    LLMResponse result;
-                    if (contentType.Contains("text/event-stream"))
-                        result = await ReadSSEWithTools(resp, onToken, onThinkingToken, ct);
-                    else
-                        result = ParseNonStreamResponse(await resp.Content.ReadAsStringAsync());
+                    if (lastEx != null)
+                        throw lastEx;
+                    if (result == null)
+                        throw new InvalidOperationException("No response after retries.");
 
                     MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(result));
                 }

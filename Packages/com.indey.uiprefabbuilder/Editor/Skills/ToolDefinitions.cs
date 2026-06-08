@@ -107,7 +107,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 )),
 
             Def("create_scrollview",
-                "Create a ScrollRect with viewport and content.",
+                "Create a complete ScrollRect with Viewport (Mask) and Content (ContentSizeFitter) children. Vertical scroll by default. Content child can be targeted by name 'Content' for adding layout groups.",
                 Props(
                     P("name", "string", "Name of the ScrollView", true),
                     P("parent", "string", "Name of the parent GameObject", true),

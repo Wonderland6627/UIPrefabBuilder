@@ -92,8 +92,30 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var go = CreateUI(name, parent);
             go.AddComponent<Image>().color = new Color(0.1f, 0.1f, 0.1f, 0.5f);
-            go.AddComponent<ScrollRect>();
             SetSize(go, size);
+
+            var viewport = CreateUI("Viewport", go.transform);
+            var viewportImg = viewport.AddComponent<Image>();
+            viewportImg.color = Color.white;
+            viewport.AddComponent<Mask>().showMaskGraphic = false;
+            var viewportRT = viewport.GetComponent<RectTransform>();
+            Stretch(viewportRT);
+
+            var content = CreateUI("Content", viewport.transform);
+            var contentRT = content.GetComponent<RectTransform>();
+            contentRT.anchorMin = new Vector2(0, 1);
+            contentRT.anchorMax = new Vector2(1, 1);
+            contentRT.pivot = new Vector2(0.5f, 1);
+            contentRT.sizeDelta = new Vector2(0, size.y);
+            var csf = content.AddComponent<ContentSizeFitter>();
+            csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            var scrollRect = go.AddComponent<ScrollRect>();
+            scrollRect.viewport = viewportRT;
+            scrollRect.content = contentRT;
+            scrollRect.horizontal = false;
+            scrollRect.vertical = true;
+
             return go;
         }
 

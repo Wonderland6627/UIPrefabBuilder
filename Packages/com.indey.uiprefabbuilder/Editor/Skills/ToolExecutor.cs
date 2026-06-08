@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using Indey.UIPrefabBuilder.Compiler;
 using Indey.UIPrefabBuilder.Core;
@@ -312,22 +313,69 @@ namespace Indey.UIPrefabBuilder.Skills
             var code = Str(args, "code");
             if (string.IsNullOrWhiteSpace(code)) return Error("No code provided.");
 
-            var compileResult = _compiler.CompileInternal(code);
+            CompileResult compileResult;
+            try
+            {
+                compileResult = _compiler.CompileInternal(code);
+            }
+            catch (Exception e)
+            {
+                return Error($"Compile exception: {e.Message}");
+            }
+
             if (!compileResult.Success)
                 return Error("Compile error: " + string.Join("; ", compileResult.Errors));
 
-            var actionType = DynamicCompiler.FindActionType(compileResult.Assembly);
+            if (compileResult.Assembly == null)
+                return Error("Compilation produced no assembly.");
+
+            Type actionType;
+            try
+            {
+                actionType = DynamicCompiler.FindActionType(compileResult.Assembly);
+            }
+            catch (ReflectionTypeLoadException e)
+            {
+                var loaderErrors = string.Join("; ", Array.ConvertAll(
+                    e.LoaderExceptions ?? Array.Empty<Exception>(), ex => ex?.Message ?? "null"));
+                return Error($"Type loading failed: {loaderErrors}");
+            }
+
             if (actionType == null)
                 return Error("No IAgentAction implementation found in code.");
 
-            var action = (IAgentAction)Activator.CreateInstance(actionType);
+            IAgentAction action;
+            try
+            {
+                action = (IAgentAction)Activator.CreateInstance(actionType);
+            }
+            catch (Exception e)
+            {
+                return Error($"Failed to instantiate action: {e.Message}");
+            }
+
             var ctx = new ActionContext
             {
                 TargetObject = Selection.activeGameObject,
                 CanvasRoot = UnityEngine.Object.FindObjectOfType<Canvas>()?.gameObject
             };
-            var actionResult = action.Execute(ctx);
-            return actionResult.Success ? Ok(actionResult.Message) : Error(actionResult.Message);
+
+            ActionResult actionResult;
+            try
+            {
+                actionResult = action.Execute(ctx);
+            }
+            catch (Exception e)
+            {
+                return Error($"Runtime error in execute_code: {e.GetType().Name}: {e.Message}");
+            }
+
+            if (actionResult == null)
+                return Error("execute_code returned null ActionResult.");
+
+            return actionResult.Success
+                ? Ok(actionResult.Message ?? "Done.")
+                : Error(actionResult.Message ?? "Unknown error.");
         }
 
         #region Helpers
@@ -335,6 +383,22 @@ namespace Indey.UIPrefabBuilder.Skills
         private static GameObject FindGO(string name)
         {
             if (string.IsNullOrEmpty(name)) return null;
+
+            if (name.Contains("/"))
+            {
+                var parts = name.Split('/');
+                var root = UnityEngine.Object.FindObjectsOfType<GameObject>()
+                    .FirstOrDefault(g => g.name == parts[0]);
+                if (root == null) return null;
+                var current = root.transform;
+                for (int i = 1; i < parts.Length; i++)
+                {
+                    current = current.Find(parts[i]);
+                    if (current == null) return null;
+                }
+                return current.gameObject;
+            }
+
             var all = UnityEngine.Object.FindObjectsOfType<GameObject>();
             return all.FirstOrDefault(g => g.name == name);
         }

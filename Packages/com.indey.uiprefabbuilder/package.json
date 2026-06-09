@@ -2,13 +2,24 @@
   "name": "com.indey.uiprefabbuilder",
   "version": "0.1.0",
   "displayName": "UI Prefab Builder",
-  "description": "AI-powered UI Prefab construction agent running natively inside Unity Editor",
+  "description": "AI-powered UI Prefab construction agent running natively inside Unity Editor. Describe your UI in natural language, the agent builds it with 50+ structured tools.",
   "unity": "2021.3",
+  "unityRelease": "0f1",
+  "documentationUrl": "https://github.com/Wonderland6627/UIPrefabBuilder#readme",
+  "changelogUrl": "https://github.com/Wonderland6627/UIPrefabBuilder/blob/main/Packages/com.indey.uiprefabbuilder/CHANGELOG.md",
+  "licensesUrl": "https://github.com/Wonderland6627/UIPrefabBuilder/blob/main/Packages/com.indey.uiprefabbuilder/LICENSE",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wonderland6627/UIPrefabBuilder.git",
+    "directory": "Packages/com.indey.uiprefabbuilder"
+  },
   "dependencies": {
     "com.unity.nuget.newtonsoft-json": "3.0.2"
   },
-  "keywords": ["ui", "prefab", "ai", "agent", "ugui"],
+  "keywords": ["ui", "prefab", "ai", "agent", "ugui", "llm", "tool-calling"],
   "author": {
-    "name": "Indey"
+    "name": "Indey",
+    "url": "https://github.com/Wonderland6627"
   }
 }

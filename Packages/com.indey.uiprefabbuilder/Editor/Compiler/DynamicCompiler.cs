@@ -210,15 +210,33 @@ namespace Indey.UIPrefabBuilder.Compiler
             if (code.Contains("IAgentAction") && code.Contains("class"))
                 return PrependUsings(code);
 
+            var lines = code.Split('\n');
+            var extraUsings = new List<string>();
+            var bodyLines = new List<string>();
+            foreach (var line in lines)
+            {
+                var trimmed = line.TrimStart();
+                if (trimmed.StartsWith("using ") && trimmed.TrimEnd().EndsWith(";") && !trimmed.Contains("("))
+                    extraUsings.Add(trimmed.TrimEnd());
+                else
+                    bodyLines.Add(line);
+            }
+
             var className = "Gen_" + Guid.NewGuid().ToString("N").Substring(0, 8);
             var sb = new StringBuilder();
             sb.AppendLine(StandardUsings);
+            foreach (var u in extraUsings)
+            {
+                if (!StandardUsings.Contains(u))
+                    sb.AppendLine(u);
+            }
             sb.AppendLine($"public class {className} : IAgentAction {{");
             sb.AppendLine("  public string ActionName => \"Generated\";");
             sb.AppendLine("  public string Description => \"Auto-wrapped\";");
             sb.AppendLine("  public ActionResult Execute(ActionContext context) {");
             sb.AppendLine("    try {");
-            sb.AppendLine(code);
+            foreach (var line in bodyLines)
+                sb.AppendLine(line);
             sb.AppendLine("      return ActionResult.Ok(\"Done.\");");
             sb.AppendLine("    } catch (Exception e) { return ActionResult.Fail(e.Message); }");
             sb.AppendLine("  }");

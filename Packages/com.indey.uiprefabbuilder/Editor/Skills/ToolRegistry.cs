@@ -41,10 +41,7 @@ namespace Indey.UIPrefabBuilder.Skills
 
         public string Execute(string toolName, string argumentsJson)
         {
-            ConsoleLogger.Log($"[Tool] {toolName}({TruncateArgs(argumentsJson)})");
-            var result = _executor.Execute(toolName, argumentsJson);
-            ConsoleLogger.Log($"[Tool] {toolName} => {TruncateResult(result)}");
-            return result;
+            return _executor.Execute(toolName, argumentsJson);
         }
 
         public IReadOnlyCollection<string> ToolNames
@@ -56,16 +53,5 @@ namespace Indey.UIPrefabBuilder.Skills
             }
         }
 
-        private static string TruncateArgs(string json)
-        {
-            if (string.IsNullOrEmpty(json)) return "{}";
-            return json.Length > 120 ? json.Substring(0, 120) + "..." : json;
-        }
-
-        private static string TruncateResult(string result)
-        {
-            if (string.IsNullOrEmpty(result)) return "(empty)";
-            return result.Length > 200 ? result.Substring(0, 200) + "..." : result;
-        }
     }
 }

@@ -157,14 +157,19 @@ namespace Indey.UIPrefabBuilder.Core
             {
                 var msg = new JObject { ["role"] = m.Role.ToString().ToLowerInvariant() };
 
-                if (!string.IsNullOrEmpty(m.Content))
-                    msg["content"] = m.Content;
-
                 if (m.ToolCallId != null)
                 {
                     msg["role"] = "tool";
                     msg["tool_call_id"] = m.ToolCallId;
                     msg["content"] = m.Content ?? "";
+                }
+                else if (m.HasMultimodalContent)
+                {
+                    msg["content"] = BuildMultimodalContent(m);
+                }
+                else if (!string.IsNullOrEmpty(m.Content))
+                {
+                    msg["content"] = m.Content;
                 }
 
                 if (m.ToolCalls != null && m.ToolCalls.Count > 0)
@@ -201,7 +206,48 @@ namespace Indey.UIPrefabBuilder.Core
             if (tools != null && tools.Count > 0)
                 obj["tools"] = tools;
 
+            if (_settings.EnableExtendedThinking)
+            {
+                if (_settings.ModelName.IndexOf("claude", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    obj["thinking"] = new JObject
+                    {
+                        ["type"] = "enabled",
+                        ["budget_tokens"] = _settings.ThinkingBudgetTokens > 0
+                            ? _settings.ThinkingBudgetTokens : 4096
+                    };
+                }
+            }
+
+            if (_settings.Temperature >= 0)
+                obj["temperature"] = _settings.Temperature;
+
             return obj.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        private static JArray BuildMultimodalContent(ChatMessage m)
+        {
+            var contentArr = new JArray();
+            foreach (var part in m.ContentParts)
+            {
+                if (part.Type == "text")
+                {
+                    contentArr.Add(new JObject { ["type"] = "text", ["text"] = part.Text });
+                }
+                else if (part.Type == "image_url")
+                {
+                    contentArr.Add(new JObject
+                    {
+                        ["type"] = "image_url",
+                        ["image_url"] = new JObject
+                        {
+                            ["url"] = part.ImageUrl.Url,
+                            ["detail"] = part.ImageUrl.Detail ?? "low"
+                        }
+                    });
+                }
+            }
+            return contentArr;
         }
 
         private static async Task<LLMResponse> ReadSSEWithTools(

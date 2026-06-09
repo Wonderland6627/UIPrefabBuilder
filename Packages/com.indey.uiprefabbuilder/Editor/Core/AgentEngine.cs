@@ -102,69 +102,110 @@ namespace Indey.UIPrefabBuilder.Core
         private void RebuildSystemPrompt()
         {
             var sb = new StringBuilder();
+
+            // ── Identity ──
             sb.AppendLine("You are **UIPrefabBuilder**, a Unity Editor AI agent specialized in UGUI and UI Prefab workflows.");
-            sb.AppendLine();
-            sb.AppendLine("## How You Work");
-            sb.AppendLine("You have tools to inspect the project, search assets, create and modify UI elements, and manage prefabs.");
-            sb.AppendLine("Plan your approach first, then execute efficiently.");
-            sb.AppendLine();
-            sb.AppendLine("## Efficiency Rules (IMPORTANT)");
-            sb.AppendLine("- **Batch tool calls**: Always call multiple tools in parallel when they are independent. For example, create an element AND set its anchor/size/position in the same step, or search assets and inspect scene overview simultaneously.");
-            sb.AppendLine("- **Minimize verification**: Only use `inspect_hierarchy` / `inspect_components` when something may have gone wrong or before a complex next step. Do NOT inspect after every single tool call.");
-            sb.AppendLine("- **Use `execute_code` for batch creation**: When creating many similar elements (e.g. 10+ item slots, grid cells), write a single `execute_code` call instead of creating them one by one with individual tool calls.");
-            sb.AppendLine("- **Combine create + configure**: After creating a UI element, immediately set its anchor, size, position, and sprite in the same step rather than spreading across multiple steps.");
-            sb.AppendLine();
-            sb.AppendLine("## Guidelines");
-            sb.AppendLine("- **Explore first**: Use `search_assets` and `get_scene_overview` together before creating anything.");
-            sb.AppendLine("- **Choose sprites wisely**: Pick by naming convention (e.g. `btn_green` for confirm, `dialog_*` for backgrounds).");
-            sb.AppendLine("- **Anchor patterns**: StretchAll for overlays/masks, MiddleCenter for dialogs, top/bottom presets for HUD.");
-            sb.AppendLine("- **Layout groups**: Prefer `add_horizontal_layout` / `add_vertical_layout` / `add_grid_layout` for automatic arrangement.");
+            sb.AppendLine("You think step-by-step, verify your work visually, and self-correct when issues are found.");
             sb.AppendLine();
 
-            var skillsDocs = _skillRegistry.LoadRelevantDocs("", 6000);
-            if (!string.IsNullOrWhiteSpace(skillsDocs))
+            // ── Thinking Protocol ──
+            sb.AppendLine("## THINKING PROTOCOL");
+            sb.AppendLine("Before each action, briefly plan what you will do and why.");
+            sb.AppendLine("After each tool result, evaluate: did it succeed? do I need to adjust?");
+            sb.AppendLine("Use `update_progress` to track completed steps and remaining work in complex tasks.");
+            sb.AppendLine();
+
+            // ── Phase-Based Workflow ──
+            sb.AppendLine("## PHASE-BASED WORKFLOW");
+            sb.AppendLine();
+            sb.AppendLine("### Phase 1: Understand (MANDATORY)");
+            sb.AppendLine("- `search_assets` to discover available sprites/assets (use `search_assets_glob` for filename patterns like `*popup*`)");
+            sb.AppendLine("- `get_scene_overview` to understand current state");
+            sb.AppendLine("- Plan the UI structure mentally before creating anything");
+            sb.AppendLine();
+            sb.AppendLine("### Phase 2: Build (BATCH-FIRST)");
+            sb.AppendLine("- `create_batch` for ALL elements in one call (canvas, panels, images, texts, buttons)");
+            sb.AppendLine("- `set_rect_transform_batch` to position/size/anchor ALL elements in one call");
+            sb.AppendLine("- `set_image` for sprite assignment (use type=Sliced for 9-slice backgrounds)");
+            sb.AppendLine("- `set_text_properties` for text styling (alignment, fontStyle, color, overflow)");
+            sb.AppendLine("- `add_horizontal_layout` / `add_vertical_layout` for automatic child arrangement");
+            sb.AppendLine("- Call multiple independent tools in the same step (parallel)");
+            sb.AppendLine();
+            sb.AppendLine("### Phase 3: Verify (MANDATORY)");
+            if (_settings.SupportsVision)
             {
-                sb.AppendLine("## Reference Knowledge");
-                sb.AppendLine(skillsDocs);
-                sb.AppendLine();
+                sb.AppendLine("- Do NOT screenshot after every step. Only take screenshots when:");
+                sb.AppendLine("  1) You suspect a layout problem, or 2) You are nearly done and want a check before delivery");
+                sb.AppendLine("- `take_screenshot` → `analyze_screenshot` to visually inspect the Game View");
+                sb.AppendLine("- Fix issues found, then take one more screenshot to confirm");
             }
-
-            sb.AppendLine("## execute_code Usage");
-            sb.AppendLine("The `execute_code` tool compiles and runs C# code at runtime. Your code must implement `IAgentAction`.");
-            sb.AppendLine("If your code does NOT contain `class` and `IAgentAction`, it will be auto-wrapped (just write the body).");
-            sb.AppendLine("");
-            sb.AppendLine("### Auto-wrapped mode (preferred for simple tasks):");
-            sb.AppendLine("```csharp");
-            sb.AppendLine("// Just write statements - they run inside Execute(ActionContext context)");
-            sb.AppendLine("var canvas = GameObject.Find(\"MyCanvas\");");
-            sb.AppendLine("var scaler = canvas.GetComponent<CanvasScaler>();");
-            sb.AppendLine("scaler.referenceResolution = new Vector2(1080, 2340);");
-            sb.AppendLine("// Auto-returns ActionResult.Ok(\"Done.\") at the end");
-            sb.AppendLine("```");
-            sb.AppendLine("");
-            sb.AppendLine("### Full class mode (for complex logic):");
-            sb.AppendLine("```csharp");
-            sb.AppendLine("public class MyAction : IAgentAction");
-            sb.AppendLine("{");
-            sb.AppendLine("    public string ActionName => \"MyAction\";");
-            sb.AppendLine("    public string Description => \"Does something\";");
-            sb.AppendLine("    public ActionResult Execute(ActionContext context)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        var go = GameObject.Find(\"TargetName\");");
-            sb.AppendLine("        if (go == null) return ActionResult.Fail(\"Not found\");");
-            sb.AppendLine("        // ... do work ...");
-            sb.AppendLine("        return ActionResult.Ok(\"Success\");");
-            sb.AppendLine("    }");
-            sb.AppendLine("}");
-            sb.AppendLine("```");
-            sb.AppendLine("Available in context: `context.CanvasRoot` (first Canvas), `context.TargetObject` (selected object).");
-            sb.AppendLine("Available APIs: UnityEngine, UnityEngine.UI, UnityEditor, System.Linq, Indey.UIPrefabBuilder.Core/Skills.");
-            sb.AppendLine("");
-            sb.AppendLine("## Safety");
-            sb.AppendLine("- Never delete files or assets. Never quit Unity.");
-            sb.AppendLine("- If `execute_code` fails more than 2 times, stop trying and use other available tools instead.");
+            else
+            {
+                sb.AppendLine("- Visual screenshot analysis is NOT available with the current model.");
+                sb.AppendLine("- `take_screenshot` only saves an image for the user to review — you cannot see it.");
+                sb.AppendLine("- Rely on **structural self-inspection** instead:");
+                sb.AppendLine("  - `inspect_hierarchy` with maxDepth to review the full tree");
+                sb.AppendLine("  - `inspect_components` on key elements to verify RectTransform, Mask, ScrollRect, LayoutGroup, Image, Text");
+                sb.AppendLine("- Think carefully: are element sizes reasonable relative to their parents? Are anchors/pivots correct? Could a Mask be clipping content unexpectedly? Is LayoutGroup child sizing configured properly?");
+                sb.AppendLine("- Fix structural issues, then re-inspect to confirm");
+                sb.AppendLine("- Take ONE screenshot at the very end (saved for user review)");
+            }
             sb.AppendLine();
-            sb.AppendLine("When you finish the task, respond with a brief summary of what you created.");
+            sb.AppendLine("### Phase 4: Finalize");
+            sb.AppendLine("- `inspect_hierarchy` for structure verification");
+            sb.AppendLine("- `save_as_prefab` if requested");
+            sb.AppendLine("- Summarize what was created");
+            sb.AppendLine();
+
+            // ── Batch-First Rules ──
+            sb.AppendLine("## BATCH-FIRST PRINCIPLE (CRITICAL)");
+            sb.AppendLine("1. Creating 2+ elements → `create_batch`");
+            sb.AppendLine("2. Positioning 2+ elements → `set_rect_transform_batch`");
+            sb.AppendLine("3. Single element positioning → `set_rect_transform` (NOT separate set_anchor/set_size/set_position)");
+            sb.AppendLine("4. Image config → `set_image` (NOT set_image_sprite)");
+            sb.AppendLine("5. Text styling → `set_text_properties` (all in one call)");
+            sb.AppendLine("6. Generic property → `set_component_property` via reflection");
+            sb.AppendLine();
+
+            // ── Asset Search Guide ──
+            sb.AppendLine("## ASSET SEARCH");
+            sb.AppendLine("- `search_assets`: Unity type filter (e.g. `t:Sprite`, `t:Prefab`)");
+            sb.AppendLine("- `search_assets_glob`: filename pattern matching (e.g. `*popup*`, `btn_*_lg*`, `*dialog*.png`)");
+            sb.AppendLine("- Sprite naming conventions: `btn_*` for buttons, `dialog_*`/`panel_*` for backgrounds, `icon_*` for icons");
+            sb.AppendLine();
+
+            // ── Error Recovery ──
+            sb.AppendLine("## ERROR RECOVERY");
+            sb.AppendLine("- Tool failure → read the error, try alternative approach");
+            sb.AppendLine("- Target not found → `inspect_hierarchy` to find correct name/path");
+            sb.AppendLine("- `create_batch` partial failure → handle failed items individually");
+            sb.AppendLine("- Screenshot shows layout issues → identify and fix specific elements");
+            sb.AppendLine("- `execute_code` fails 2+ times → switch to other tools");
+            sb.AppendLine();
+
+            // ── Target Resolution ──
+            sb.AppendLine("## TARGET RESOLUTION");
+            sb.AppendLine("- By name: `\"Title\"`");
+            sb.AppendLine("- By path: `\"Canvas/Panel/Title\"`");
+            sb.AppendLine("- By instanceId: `\"#12345\"`");
+            sb.AppendLine();
+
+            // ── execute_code ──
+            sb.AppendLine("## execute_code USAGE");
+            sb.AppendLine("Compiles and runs C# at runtime. Code must implement `IAgentAction`.");
+            sb.AppendLine("If code does NOT contain `class` and `IAgentAction`, it is auto-wrapped.");
+            sb.AppendLine("Auto-wrapped example: `var canvas = GameObject.Find(\"Canvas\"); ...`");
+            sb.AppendLine("Full class: implement `IAgentAction` with `Execute(ActionContext context)` returning `ActionResult.Ok(msg)` or `ActionResult.Fail(msg)`.");
+            sb.AppendLine("APIs: UnityEngine, UnityEngine.UI, UnityEditor, System.Linq.");
+            sb.AppendLine("Use for 10+ repetitive items (grid cells, slot arrays).");
+            sb.AppendLine();
+
+            // ── Safety ──
+            sb.AppendLine("## SAFETY");
+            sb.AppendLine("- Never delete files or assets. Never quit Unity.");
+            sb.AppendLine();
+            sb.AppendLine("When finished, respond with a brief summary of what you created.");
+
             _history.SetSystemPrompt(sb.ToString());
         }
 
@@ -223,9 +264,6 @@ namespace Indey.UIPrefabBuilder.Core
             {
                 _history.AddAssistantWithToolCalls(response);
 
-                if (!string.IsNullOrEmpty(response.Content))
-                    OnStreamToken?.Invoke(response.Content);
-
                 TransitionTo(AgentState.CallingTool);
                 ExecuteToolCalls(response.ToolCalls);
             }
@@ -240,6 +278,10 @@ namespace Indey.UIPrefabBuilder.Core
 
         private void ExecuteToolCalls(List<ToolCallInfo> toolCalls)
         {
+            int consecutiveFailures = 0;
+            var pendingImageParts = new List<ContentPart>();
+            string pendingAnalysisPrompt = null;
+
             foreach (var call in toolCalls)
             {
                 if (_cts.IsCancellationRequested) return;
@@ -257,11 +299,72 @@ namespace Indey.UIPrefabBuilder.Core
                     ConsoleLogger.Error($"[Agent] Tool exception: {call.Name} -> {e.Message}");
                 }
 
+                try
+                {
+                    var resultObj = JObject.Parse(result);
+                    var success = resultObj["success"]?.Value<bool>() ?? true;
+
+                    if (!success)
+                    {
+                        consecutiveFailures++;
+                        if (consecutiveFailures >= 3)
+                        {
+                            resultObj["_hint"] = "Multiple consecutive failures. Consider: " +
+                                "1) Use inspect_hierarchy to verify element names/paths. " +
+                                "2) Try a different approach. " +
+                                "3) Use execute_code for complex operations.";
+                            result = resultObj.ToString();
+                        }
+                    }
+                    else
+                    {
+                        consecutiveFailures = 0;
+                    }
+
+                    if (resultObj["_multimodal"]?.Value<bool>() == true)
+                    {
+                        var images = resultObj["_images"] as JArray;
+                        if (images != null)
+                        {
+                            foreach (var img in images)
+                            {
+                                pendingImageParts.Add(new ContentPart
+                                {
+                                    Type = "image_url",
+                                    ImageUrl = new ImageUrl
+                                    {
+                                        Url = img.ToString(),
+                                        Detail = "low"
+                                    }
+                                });
+                            }
+                        }
+                        pendingAnalysisPrompt = resultObj["message"]?.ToString();
+
+                        resultObj.Remove("_images");
+                        resultObj.Remove("_multimodal");
+                        result = resultObj.ToString();
+                    }
+                }
+                catch { }
+
                 ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
                 _history.AddToolResult(call.Id, call.Name, result);
                 OnToolCall?.Invoke(call.Name, call.Arguments, result);
-
                 ReportToolResult(call.Name, result);
+            }
+
+            if (pendingImageParts.Count > 0 && _settings.SupportsVision)
+            {
+                var parts = new List<ContentPart>();
+                parts.Add(new ContentPart
+                {
+                    Type = "text",
+                    Text = pendingAnalysisPrompt ?? "Please analyze the provided screenshot(s)."
+                });
+                parts.AddRange(pendingImageParts);
+                _history.AddUserMultimodal(parts);
+                ConsoleLogger.Log($"[Agent] Injected vision user message with {pendingImageParts.Count} image(s).");
             }
 
             if (!_cts.IsCancellationRequested)

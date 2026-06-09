@@ -50,7 +50,12 @@ namespace Indey.UIPrefabBuilder.UI
 
             var settings = BuilderSettings.Get();
             _agent = new AgentEngine(settings);
-            _agent.OnStateChanged += s => { _needsRepaint = true; };
+            _agent.OnStateChanged += s =>
+            {
+                if (s == AgentState.Thinking || s == AgentState.CallingTool)
+                    FinalizeContentStream();
+                _needsRepaint = true;
+            };
             _agent.OnStreamToken += t => { _streamBuffer += t; _isStreaming = true; _needsRepaint = true; };
             _agent.OnThinkingToken += t => { _thinkingStreamBuffer += t; _isThinking = true; _needsRepaint = true; };
             _agent.OnThinking += t => { FinalizeThinkingStream(t); };
@@ -480,6 +485,14 @@ namespace Indey.UIPrefabBuilder.UI
                 AddBubble(BubbleType.Thinking, fullThinking);
             _thinkingStreamBuffer = "";
             _isThinking = false;
+        }
+
+        private void FinalizeContentStream()
+        {
+            if (!string.IsNullOrWhiteSpace(_streamBuffer))
+                AddBubble(BubbleType.AI, _streamBuffer);
+            _streamBuffer = "";
+            _isStreaming = false;
         }
 
         private void FinishStream(string full)

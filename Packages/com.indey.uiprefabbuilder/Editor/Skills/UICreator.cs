@@ -119,6 +119,24 @@ namespace Indey.UIPrefabBuilder.Skills
             return go;
         }
 
+        public static GameObject CreateDropdown(string name, Transform parent, string options, Vector2 size)
+        {
+            var go = CreateUI(name, parent);
+            var img = go.AddComponent<Image>(); img.color = Color.white;
+            var dd = go.AddComponent<Dropdown>();
+            dd.options.Clear();
+            if (!string.IsNullOrEmpty(options))
+            {
+                foreach (var opt in options.Split(','))
+                    dd.options.Add(new Dropdown.OptionData(opt.Trim()));
+            }
+            var label = CreateUI("Label", go.transform);
+            Stretch(label.GetComponent<RectTransform>());
+            AddText(label, dd.options.Count > 0 ? dd.options[0].text : "", 14, Color.black, TextAnchor.MiddleLeft);
+            SetSize(go, size);
+            return go;
+        }
+
         public static List<GameObject> CreateBatch(List<UIElementConfig> items)
         {
             var results = new List<GameObject>();
@@ -130,8 +148,13 @@ namespace Indey.UIPrefabBuilder.Skills
                     case "canvas": results.Add(CreateCanvas(item.Name)); break;
                     case "panel": results.Add(CreatePanel(item.Name, item.Parent, item.Color ?? new Color(0, 0, 0, 0.7f))); break;
                     case "button": results.Add(CreateButton(item.Name, item.Parent, item.Text ?? "Button", item.Size ?? new Vector2(160, 30))); break;
-                    case "text": results.Add(CreateText(item.Name, item.Parent, item.Text ?? "", item.FontSize)); break;
+                    case "text": results.Add(CreateText(item.Name, item.Parent, item.Text ?? "", item.FontSize, item.Color)); break;
                     case "image": results.Add(CreateImage(item.Name, item.Parent, item.SpritePath, item.Size ?? new Vector2(100, 100))); break;
+                    case "inputfield": results.Add(CreateInputField(item.Name, item.Parent, item.Text ?? "Enter text...", item.Size ?? new Vector2(200, 30))); break;
+                    case "slider": results.Add(CreateSlider(item.Name, item.Parent, 0, 1, 0.5f)); break;
+                    case "toggle": results.Add(CreateToggle(item.Name, item.Parent, item.Text ?? "Toggle", true)); break;
+                    case "dropdown": results.Add(CreateDropdown(item.Name, item.Parent, item.Text ?? "Option A,Option B", item.Size ?? new Vector2(160, 30))); break;
+                    case "scrollview": results.Add(CreateScrollView(item.Name, item.Parent, item.Size ?? new Vector2(300, 200))); break;
                 }
             }
             return results;

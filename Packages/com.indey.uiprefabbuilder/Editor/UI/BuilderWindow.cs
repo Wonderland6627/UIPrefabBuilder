@@ -38,6 +38,7 @@ namespace Indey.UIPrefabBuilder.UI
         private SessionManager _sessions;
         private SettingsPanel _settingsPanel;
         private ConsolePanel _consolePanel;
+        private ProjectConfigPanel _projectConfigPanel;
 
         // Split views
         private SplitView _hSplitLeft;   // left | center+right
@@ -71,6 +72,7 @@ namespace Indey.UIPrefabBuilder.UI
             _sessions = new SessionManager();
             _settingsPanel = new SettingsPanel();
             _consolePanel = new ConsolePanel();
+            _projectConfigPanel = new ProjectConfigPanel();
             _sessions.RestoreLastSession(_agent.History, _bubbles);
 
             _hSplitLeft = new SplitView("UIPrefabBuilder_HSplitLeft", SplitDirection.Horizontal, 220f, 150f, 400f);
@@ -180,17 +182,8 @@ namespace Indey.UIPrefabBuilder.UI
             var topRect = _vSplitLeft.BeginSplit(rect);
             var bottomRect = _vSplitLeft.EndSplit(rect);
 
-            DrawLeftTopPlaceholder(topRect);
+            _projectConfigPanel.Draw(topRect);
             _consolePanel.Draw(bottomRect);
-        }
-
-        private void DrawLeftTopPlaceholder(Rect rect)
-        {
-            GUILayout.BeginArea(rect, EditorStyles.helpBox);
-            GUILayout.Label("Project Config", EditorStyles.miniBoldLabel);
-            GUILayout.Space(8);
-            EditorGUILayout.HelpBox("This area is reserved for project constraint configuration in a future release.", MessageType.Info);
-            GUILayout.EndArea();
         }
         #endregion
 

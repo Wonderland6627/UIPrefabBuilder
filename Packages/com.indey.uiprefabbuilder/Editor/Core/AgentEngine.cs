@@ -206,6 +206,14 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine();
             sb.AppendLine("When finished, respond with a brief summary of what you created.");
 
+            // ── Project Config ──
+            var projectConfig = Config.ProjectConfig.Current;
+            if (projectConfig != null && projectConfig.HasAnyConfig())
+            {
+                sb.AppendLine();
+                sb.Append(projectConfig.BuildPromptSection());
+            }
+
             _history.SetSystemPrompt(sb.ToString());
         }
 

@@ -464,6 +464,11 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("referenceImagePath", "string", "Optional asset path to a reference/mockup image for comparison", false)
                 )),
 
+            // ── Project Config ──
+            Def("get_project_config",
+                "Get the project-specific configuration including design basics (orientation, resolution), sprite mapping (role→asset path), prefab mapping (role→prefab path), and component overrides. Use this to understand project conventions before building UI.",
+                Props()),
+
             // ── Progress Tracking ──
             Def("update_progress",
                 "Track your progress on the current task. Use this to record completed steps, remaining work, and known issues. Helps maintain direction in long tasks.",

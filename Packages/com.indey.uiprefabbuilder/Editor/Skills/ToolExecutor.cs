@@ -105,6 +105,8 @@ namespace Indey.UIPrefabBuilder.Skills
                 // Screenshot & Visual Analysis
                 case "take_screenshot": return DoTakeScreenshot(args);
                 case "analyze_screenshot": return DoAnalyzeScreenshot(args);
+                // Project Config
+                case "get_project_config": return DoGetProjectConfig();
                 // Progress
                 case "update_progress": return DoUpdateProgress(args);
                 // Code
@@ -807,6 +809,7 @@ namespace Indey.UIPrefabBuilder.Skills
                             tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
                             tex.Apply();
                             RenderTexture.active = prev;
+                            FlipTextureVertically(tex);
                             var bytes = tex.EncodeToPNG();
                             UnityEngine.Object.DestroyImmediate(tex);
                             return bytes;
@@ -837,10 +840,30 @@ namespace Indey.UIPrefabBuilder.Skills
             camera.targetTexture = prevTarget;
             RenderTexture.active = null;
 
+            FlipTextureVertically(tex);
             var bytes = tex.EncodeToPNG();
             UnityEngine.Object.DestroyImmediate(tex);
             UnityEngine.Object.DestroyImmediate(rt);
             return bytes;
+        }
+
+        private static void FlipTextureVertically(Texture2D tex)
+        {
+            var pixels = tex.GetPixels();
+            int w = tex.width, h = tex.height;
+            for (int y = 0; y < h / 2; y++)
+            {
+                int topRow = y * w;
+                int bottomRow = (h - 1 - y) * w;
+                for (int x = 0; x < w; x++)
+                {
+                    var tmp = pixels[topRow + x];
+                    pixels[topRow + x] = pixels[bottomRow + x];
+                    pixels[bottomRow + x] = tmp;
+                }
+            }
+            tex.SetPixels(pixels);
+            tex.Apply();
         }
 
         private string DoTakeScreenshot(JObject args)
@@ -941,6 +964,20 @@ namespace Indey.UIPrefabBuilder.Skills
                 ["message"] = message,
                 ["_multimodal"] = true,
                 ["_images"] = images
+            }.ToString();
+        }
+
+        #endregion
+
+        #region Project Config
+
+        private string DoGetProjectConfig()
+        {
+            var config = Config.ProjectConfig.Current;
+            return new JObject
+            {
+                ["success"] = true,
+                ["config"] = JToken.Parse(config.BuildConfigSummaryJson())
             }.ToString();
         }
 

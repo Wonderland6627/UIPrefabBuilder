@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Indey.UIPrefabBuilder.Config;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UI;
@@ -19,7 +20,11 @@ namespace Indey.UIPrefabBuilder.Skills
             var c = go.AddComponent<Canvas>(); c.renderMode = mode;
             var scaler = go.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920, 1080);
+
+            var config = ProjectConfig.Current;
+            scaler.referenceResolution = new Vector2(config.basicInfo.designWidth, config.basicInfo.designHeight);
+            scaler.matchWidthOrHeight = config.basicInfo.canvasMatchMode;
+
             go.AddComponent<GraphicRaycaster>();
             return go;
         }
@@ -27,7 +32,8 @@ namespace Indey.UIPrefabBuilder.Skills
         public static GameObject CreatePanel(string name, Transform parent, Color color)
         {
             var go = CreateUI(name, parent);
-            var img = go.AddComponent<Image>(); img.color = color;
+            var img = AddImageComponent(go);
+            img.color = color;
             Stretch(go.GetComponent<RectTransform>());
             return go;
         }
@@ -35,8 +41,11 @@ namespace Indey.UIPrefabBuilder.Skills
         public static GameObject CreateButton(string name, Transform parent, string text, Vector2 size)
         {
             var go = CreateUI(name, parent);
-            var img = go.AddComponent<Image>(); img.color = new Color(0.2f, 0.45f, 0.85f);
-            go.AddComponent<Button>().targetGraphic = img;
+            var img = AddImageComponent(go);
+            img.color = new Color(0.2f, 0.45f, 0.85f);
+            var btnComp = AddButtonComponent(go);
+            var selectable = btnComp as UnityEngine.UI.Selectable;
+            if (selectable != null) selectable.targetGraphic = img;
             SetSize(go, size);
             var label = CreateUI("Text", go.transform);
             Stretch(label.GetComponent<RectTransform>());
@@ -54,7 +63,7 @@ namespace Indey.UIPrefabBuilder.Skills
         public static GameObject CreateImage(string name, Transform parent, string spritePath, Vector2 size)
         {
             var go = CreateUI(name, parent);
-            var img = go.AddComponent<Image>();
+            var img = AddImageComponent(go);
             if (!string.IsNullOrEmpty(spritePath))
             {
                 var sp = AssetDatabase.LoadAssetAtPath<Sprite>(spritePath);
@@ -67,8 +76,9 @@ namespace Indey.UIPrefabBuilder.Skills
         public static GameObject CreateInputField(string name, Transform parent, string placeholder, Vector2 size)
         {
             var go = CreateUI(name, parent);
-            go.AddComponent<Image>().color = Color.white;
-            go.AddComponent<InputField>();
+            var img = AddImageComponent(go);
+            img.color = Color.white;
+            AddInputFieldComponent(go);
             SetSize(go, size);
             return go;
         }
@@ -91,7 +101,7 @@ namespace Indey.UIPrefabBuilder.Skills
         public static GameObject CreateScrollView(string name, Transform parent, Vector2 size)
         {
             var go = CreateUI(name, parent);
-            go.AddComponent<Image>().color = new Color(0.1f, 0.1f, 0.1f, 0.5f);
+            AddImageComponent(go).color = new Color(0.1f, 0.1f, 0.1f, 0.5f);
             SetSize(go, size);
 
             var viewport = CreateUI("Viewport", go.transform);
@@ -122,7 +132,8 @@ namespace Indey.UIPrefabBuilder.Skills
         public static GameObject CreateDropdown(string name, Transform parent, string options, Vector2 size)
         {
             var go = CreateUI(name, parent);
-            var img = go.AddComponent<Image>(); img.color = Color.white;
+            var img = AddImageComponent(go);
+            img.color = Color.white;
             var dd = go.AddComponent<Dropdown>();
             dd.options.Clear();
             if (!string.IsNullOrEmpty(options))
@@ -168,8 +179,58 @@ namespace Indey.UIPrefabBuilder.Skills
             return go;
         }
 
+        private static Image AddImageComponent(GameObject go)
+        {
+            var overrideType = ProjectConfig.Current.componentOverrides.imageComponent;
+            if (!string.IsNullOrEmpty(overrideType))
+            {
+                var t = ComponentHelper.FindComponentType(overrideType);
+                if (t != null && typeof(Image).IsAssignableFrom(t))
+                    return (Image)go.AddComponent(t);
+            }
+            return go.AddComponent<Image>();
+        }
+
+        private static Component AddButtonComponent(GameObject go)
+        {
+            var overrideType = ProjectConfig.Current.componentOverrides.buttonComponent;
+            if (!string.IsNullOrEmpty(overrideType))
+            {
+                var t = ComponentHelper.FindComponentType(overrideType);
+                if (t != null)
+                    return go.AddComponent(t);
+            }
+            return go.AddComponent<Button>();
+        }
+
+        private static Component AddInputFieldComponent(GameObject go)
+        {
+            var overrideType = ProjectConfig.Current.componentOverrides.inputFieldComponent;
+            if (!string.IsNullOrEmpty(overrideType))
+            {
+                var t = ComponentHelper.FindComponentType(overrideType);
+                if (t != null)
+                    return go.AddComponent(t);
+            }
+            return go.AddComponent<InputField>();
+        }
+
         private static void AddText(GameObject go, string text, int size, Color color, TextAnchor align)
         {
+            var overrideType = ProjectConfig.Current.componentOverrides.textComponent;
+            if (!string.IsNullOrEmpty(overrideType))
+            {
+                var customType = ComponentHelper.FindComponentType(overrideType);
+                if (customType != null)
+                {
+                    var c = go.AddComponent(customType);
+                    customType.GetProperty("text")?.SetValue(c, text);
+                    customType.GetProperty("fontSize")?.SetValue(c, (float)size);
+                    customType.GetProperty("color")?.SetValue(c, color);
+                    return;
+                }
+            }
+
             if (IsTMP())
             {
                 var c = go.AddComponent(_tmpTextType);

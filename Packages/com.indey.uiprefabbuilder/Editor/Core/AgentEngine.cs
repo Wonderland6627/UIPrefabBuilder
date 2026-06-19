@@ -127,7 +127,7 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("- `create_batch` for ALL elements in one call (canvas, panels, images, texts, buttons)");
             sb.AppendLine("- `set_rect_transform_batch` to position/size/anchor ALL elements in one call");
             sb.AppendLine("- `set_image` for sprite assignment (use type=Sliced for 9-slice backgrounds)");
-            sb.AppendLine("- `set_text_properties` for text styling (alignment, fontStyle, color, overflow)");
+            sb.AppendLine("- `set_text_properties` for text styling (alignment, fontStyle, color, overflow). IMPORTANT: always include the `text` parameter to ensure text content is written.");
             sb.AppendLine("- `add_horizontal_layout` / `add_vertical_layout` for automatic child arrangement");
             sb.AppendLine("- Call multiple independent tools in the same step (parallel)");
             sb.AppendLine();
@@ -145,7 +145,7 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine("- `take_screenshot` only saves an image for the user to review — you cannot see it.");
                 sb.AppendLine("- Rely on **structural self-inspection** instead:");
                 sb.AppendLine("  - `inspect_hierarchy` with maxDepth to review the full tree");
-                sb.AppendLine("  - `inspect_components` on key elements to verify RectTransform, Mask, ScrollRect, LayoutGroup, Image, Text");
+                sb.AppendLine("  - `inspect_components` on key elements to verify RectTransform, Mask, ScrollRect, LayoutGroup, Image, Text. IMPORTANT: check that Text `text` property is NOT empty — if it is, call `set_text` to fix it.");
                 sb.AppendLine("- Think carefully: are element sizes reasonable relative to their parents? Are anchors/pivots correct? Could a Mask be clipping content unexpectedly? Is LayoutGroup child sizing configured properly?");
                 sb.AppendLine("- Fix structural issues, then re-inspect to confirm");
                 sb.AppendLine("- Take ONE screenshot at the very end (saved for user review)");
@@ -163,7 +163,7 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("2. Positioning 2+ elements → `set_rect_transform_batch`");
             sb.AppendLine("3. Single element positioning → `set_rect_transform` (NOT separate set_anchor/set_size/set_position)");
             sb.AppendLine("4. Image config → `set_image` (NOT set_image_sprite)");
-            sb.AppendLine("5. Text styling → `set_text_properties` (all in one call)");
+            sb.AppendLine("5. Text styling → `set_text_properties` (all in one call, ALWAYS pass `text` content to ensure TextMeshPro text is written)");
             sb.AppendLine("6. Generic property → `set_component_property` via reflection");
             sb.AppendLine();
 

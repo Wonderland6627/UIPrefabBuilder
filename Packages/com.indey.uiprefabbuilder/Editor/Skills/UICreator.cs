@@ -227,6 +227,7 @@ namespace Indey.UIPrefabBuilder.Skills
                     customType.GetProperty("text")?.SetValue(c, text);
                     customType.GetProperty("fontSize")?.SetValue(c, (float)size);
                     customType.GetProperty("color")?.SetValue(c, color);
+                    EnsureTMPPersists(c, text);
                     return;
                 }
             }
@@ -237,11 +238,38 @@ namespace Indey.UIPrefabBuilder.Skills
                 _tmpTextType.GetProperty("text")?.SetValue(c, text);
                 _tmpTextType.GetProperty("fontSize")?.SetValue(c, (float)size);
                 _tmpTextType.GetProperty("color")?.SetValue(c, color);
+                EnsureTMPPersists(c, text);
                 return;
             }
             var t = go.AddComponent<Text>();
             t.text = text; t.fontSize = size; t.color = color; t.alignment = align;
             t.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        }
+
+        /// <summary>
+        /// TMP 组件 AddComponent 后立即设置 text 可能因内部状态未初始化而丢失。
+        /// 调用 ForceMeshUpdate 确保内部缓存同步，并通过 EditorUtility.SetDirty 持久化。
+        /// 若 ForceMeshUpdate 后 text 仍为空，则二次赋值兜底。
+        /// </summary>
+        private static void EnsureTMPPersists(Component c, string text)
+        {
+            if (c == null) return;
+            try
+            {
+                var forceMesh = c.GetType().GetMethod("ForceMeshUpdate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+                forceMesh?.Invoke(c, null);
+
+                // 验证 text 是否成功写入，若丢失则二次赋值
+                var textProp = c.GetType().GetProperty("text");
+                if (textProp != null)
+                {
+                    var current = textProp.GetValue(c) as string;
+                    if (string.IsNullOrEmpty(current) && !string.IsNullOrEmpty(text))
+                        textProp.SetValue(c, text);
+                }
+            }
+            catch { }
+            EditorUtility.SetDirty(c);
         }
 
         private static bool IsTMP()

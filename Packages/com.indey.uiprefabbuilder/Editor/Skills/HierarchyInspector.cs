@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using UnityEngine;
 using UnityEngine.UI;
@@ -32,6 +33,16 @@ namespace Indey.UIPrefabBuilder.Skills
                 var txt = c as Text;
                 if (txt != null)
                     sb.AppendLine($"    text=\"{txt.text}\" fontSize={txt.fontSize}");
+
+                // TMP 组件检测：通过反射读取 text 和 fontSize 属性
+                if (txt == null && c.GetType().Name.Contains("TextMeshPro"))
+                {
+                    var textProp = c.GetType().GetProperty("text");
+                    var fontSizeProp = c.GetType().GetProperty("fontSize");
+                    var textVal = textProp?.GetValue(c) as string ?? "";
+                    var fontSizeVal = fontSizeProp?.GetValue(c);
+                    sb.AppendLine($"    text=\"{textVal}\" fontSize={fontSizeVal}");
+                }
             }
             return sb.ToString();
         }

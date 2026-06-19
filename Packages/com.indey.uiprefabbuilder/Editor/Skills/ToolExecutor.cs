@@ -297,6 +297,12 @@ namespace Indey.UIPrefabBuilder.Skills
                             results.Add(ItemFail(name, $"Unknown type: {type}"));
                             fail++; continue;
                     }
+                    // 对于 text 类型，创建后立即验证 text 内容是否写入成功
+                    if (type == "text" && go != null && !string.IsNullOrEmpty(text))
+                    {
+                        ComponentHelper.SetText(go, text);
+                    }
+
                     results.Add(new JObject { ["success"] = true, ["name"] = go.name, ["path"] = GetHierarchyPath(go) });
                     success++;
                 }

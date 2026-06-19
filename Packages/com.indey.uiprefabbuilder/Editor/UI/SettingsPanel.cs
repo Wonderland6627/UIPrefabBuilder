@@ -41,6 +41,9 @@ namespace Indey.UIPrefabBuilder.UI
                 _showKey = !_showKey;
             EditorGUILayout.EndHorizontal();
 
+            settings.Temperature = EditorGUILayout.FloatField("Temperature (-1=default)", settings.Temperature);
+            settings.SupportsVision = EditorGUILayout.Toggle("Supports Vision", settings.SupportsVision);
+
             GUILayout.Space(2);
             if (GUILayout.Button("Save LLM Settings", EditorStyles.miniButton))
             {
@@ -65,6 +68,16 @@ namespace Indey.UIPrefabBuilder.UI
             settings.MaxRetryCount = EditorGUILayout.IntField("Max Retries", settings.MaxRetryCount);
             settings.ExecuteTimeoutSeconds = EditorGUILayout.IntField("Exec Timeout (s)", settings.ExecuteTimeoutSeconds);
             settings.AutoExecute = EditorGUILayout.Toggle("Auto Execute", settings.AutoExecute);
+
+            GUILayout.Space(4);
+            GUILayout.Label("Thinking", EditorStyles.miniBoldLabel);
+            settings.EnableExtendedThinking = EditorGUILayout.Toggle("Extended Thinking (Claude)", settings.EnableExtendedThinking);
+            if (settings.EnableExtendedThinking)
+                settings.ThinkingBudgetTokens = EditorGUILayout.IntField("Thinking Budget", settings.ThinkingBudgetTokens);
+
+            GUILayout.Space(4);
+            GUILayout.Label("Vision", EditorStyles.miniBoldLabel);
+            settings.EnableVisualVerification = EditorGUILayout.Toggle("Visual Verification", settings.EnableVisualVerification);
 
             GUILayout.Space(2);
             if (GUILayout.Button("Save Agent Settings", EditorStyles.miniButton))

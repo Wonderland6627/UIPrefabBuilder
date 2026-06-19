@@ -54,7 +54,7 @@ namespace Indey.UIPrefabBuilder.Skills
         public static void SetText(GameObject go, string text)
         {
             var legacy = go?.GetComponent<Text>();
-            if (legacy != null) { Undo.RecordObject(legacy, "Text"); legacy.text = text; return; }
+            if (legacy != null) { Undo.RecordObject(legacy, "Text"); legacy.text = text; EditorUtility.SetDirty(legacy); return; }
             foreach (var c in go.GetComponents<Component>())
             {
                 var p = c?.GetType().GetProperty("text");
@@ -62,6 +62,8 @@ namespace Indey.UIPrefabBuilder.Skills
                 {
                     Undo.RecordObject(c, "TMP");
                     p.SetValue(c, text);
+                    ForceTMPMeshUpdate(c);
+                    EditorUtility.SetDirty(c);
                     return;
                 }
             }
@@ -135,6 +137,17 @@ namespace Indey.UIPrefabBuilder.Skills
                     if (overflowEnumType != null && Enum.TryParse(overflowEnumType, overflow, true, out var ovVal))
                         SetReflectionProp(c, "overflowMode", ovVal);
                 }
+
+                ForceTMPMeshUpdate(c);
+
+                // 验证 text 是否成功写入，若丢失则二次赋值兜底
+                if (text != null)
+                {
+                    var current = textProp.GetValue(c) as string;
+                    if (string.IsNullOrEmpty(current) && !string.IsNullOrEmpty(text))
+                        textProp.SetValue(c, text);
+                }
+                EditorUtility.SetDirty(c);
                 return;
             }
         }
@@ -322,6 +335,20 @@ namespace Indey.UIPrefabBuilder.Skills
         }
 
         #endregion
+
+        /// <summary>
+        /// 调用 TMP 组件的 ForceMeshUpdate 以确保内部缓存同步（text 赋值后调用）。
+        /// </summary>
+        private static void ForceTMPMeshUpdate(Component c)
+        {
+            if (c == null) return;
+            try
+            {
+                var m = c.GetType().GetMethod("ForceMeshUpdate", BindingFlags.Instance | BindingFlags.Public);
+                m?.Invoke(c, null);
+            }
+            catch { }
+        }
 
         private static void SetReflectionProp(object obj, string propName, object value)
         {

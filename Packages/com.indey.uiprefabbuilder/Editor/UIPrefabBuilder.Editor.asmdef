@@ -1,7 +1,7 @@
 {
     "name": "UIPrefabBuilder.Editor",
     "rootNamespace": "Indey.UIPrefabBuilder",
-    "references": [],
+    "references": ["Newtonsoft.Json"],
     "includePlatforms": ["Editor"],
     "excludePlatforms": [],
     "allowUnsafeCode": false,

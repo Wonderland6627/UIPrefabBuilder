@@ -17,7 +17,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private AgentEngine _agent;
         private string _input = "";
-        private Vector2 _chatScroll, _inputScroll, _historyScroll, _rightScroll;
+        private Vector2 _chatScroll, _inputScroll, _historyScroll;
         private bool _needsRepaint;
         private float _lastRepaint;
 
@@ -182,7 +182,7 @@ namespace Indey.UIPrefabBuilder.UI
             var topRect = _vSplitLeft.BeginSplit(rect);
             var bottomRect = _vSplitLeft.EndSplit(rect);
 
-            _projectConfigPanel.Draw(topRect);
+            _settingsPanel.Draw(topRect);
             _consolePanel.Draw(bottomRect);
         }
         #endregion
@@ -397,43 +397,7 @@ namespace Indey.UIPrefabBuilder.UI
         #region Right Panel
         private void DrawRightPanel(Rect rect)
         {
-            GUILayout.BeginArea(rect);
-            _rightScroll = EditorGUILayout.BeginScrollView(_rightScroll);
-
-            _settingsPanel.DrawLLMSettings();
-            GUILayout.Space(6);
-            _settingsPanel.DrawAgentSettings();
-            GUILayout.Space(6);
-            DrawSkillsList();
-
-            EditorGUILayout.EndScrollView();
-            GUILayout.EndArea();
-        }
-
-        private void DrawSkillsList()
-        {
-            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-            EditorGUILayout.BeginHorizontal();
-            GUILayout.Label("Skills", EditorStyles.miniBoldLabel);
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button("Refresh", EditorStyles.miniButton, GUILayout.Width(55))) _agent?.RefreshSkills();
-            if (GUILayout.Button("Open", EditorStyles.miniButton, GUILayout.Width(40))) OpenSkillsDirectory();
-            EditorGUILayout.EndHorizontal();
-            GUILayout.Space(4);
-
-            var skills = _agent?.Skills?.AllSkills;
-            if (skills != null)
-            {
-                foreach (var s in skills)
-                {
-                    EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-                    GUILayout.Label(s.Name, EditorStyles.boldLabel);
-                    GUILayout.Label(s.Description, EditorStyles.wordWrappedMiniLabel);
-                    EditorGUILayout.EndVertical();
-                }
-            }
-
-            EditorGUILayout.EndVertical();
+            _projectConfigPanel.Draw(rect);
         }
         #endregion
 
@@ -502,7 +466,7 @@ namespace Indey.UIPrefabBuilder.UI
             _sessions.SaveCurrentSession(_agent.History, _bubbles);
             _bubbles.Clear();
             _agent.History.Clear();
-            _agent.RefreshSkills();
+            _agent.Refresh();
             _sessions.NewSession();
             _streamBuffer = "";
             _thinkingStreamBuffer = "";
@@ -515,7 +479,7 @@ namespace Indey.UIPrefabBuilder.UI
         {
             _bubbles.Clear();
             _agent?.History?.Clear();
-            _agent?.RefreshSkills();
+            _agent?.Refresh();
             _streamBuffer = "";
             _thinkingStreamBuffer = "";
             _isStreaming = false;
@@ -538,15 +502,6 @@ namespace Indey.UIPrefabBuilder.UI
         #endregion
 
         #region Helpers
-        private static void OpenSkillsDirectory()
-        {
-            var path = Path.GetFullPath("Packages/com.indey.uiprefabbuilder/Skills~");
-            if (Directory.Exists(path))
-                EditorUtility.RevealInFinder(path);
-            else
-                ConsoleLogger.Warning("Skills~ directory not found: " + path);
-        }
-
         private void AddBubble(BubbleType type, string content)
         {
             if (string.IsNullOrWhiteSpace(content)) return;

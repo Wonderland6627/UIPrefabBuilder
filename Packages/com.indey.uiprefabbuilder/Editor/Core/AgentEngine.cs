@@ -16,7 +16,6 @@ namespace Indey.UIPrefabBuilder.Core
     {
         private readonly BuilderSettings _settings;
         private readonly MessageHistory _history = new MessageHistory();
-        private readonly SkillRegistry _skillRegistry = new SkillRegistry();
         private readonly ToolRegistry _toolRegistry = new ToolRegistry();
         private readonly TransactionManager _txManager = new TransactionManager();
         private LLMClient _llm;
@@ -29,7 +28,6 @@ namespace Indey.UIPrefabBuilder.Core
 
         public AgentState State => _state;
         public MessageHistory History => _history;
-        public SkillRegistry Skills => _skillRegistry;
         public ToolRegistry Tools => _toolRegistry;
         public string LatestCode { get; private set; } = "";
         public string LatestThinking { get; private set; } = "";
@@ -47,14 +45,12 @@ namespace Indey.UIPrefabBuilder.Core
         {
             _settings = settings;
             _llm = new LLMClient(settings);
-            _skillRegistry.DiscoverSkills();
             _toolRegistry.Rebuild();
             RebuildSystemPrompt();
         }
 
-        public void RefreshSkills()
+        public void Refresh()
         {
-            _skillRegistry.DiscoverSkills();
             _toolRegistry.Rebuild();
             RebuildSystemPrompt();
         }

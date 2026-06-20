@@ -89,6 +89,21 @@ namespace Indey.UIPrefabBuilder.UI
             EditorGUILayout.EndVertical();
         }
 
+        private Vector2 _scroll;
+
+        public void Draw(Rect rect)
+        {
+            GUILayout.BeginArea(rect);
+            _scroll = EditorGUILayout.BeginScrollView(_scroll);
+
+            DrawLLMSettings();
+            GUILayout.Space(6);
+            DrawAgentSettings();
+
+            EditorGUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
         public void Draw()
         {
             DrawLLMSettings();

@@ -19,6 +19,7 @@ namespace Indey.UIPrefabBuilder.Config
         public List<SpriteEntry> spriteMapping = new List<SpriteEntry>();
         public List<PrefabEntry> prefabMapping = new List<PrefabEntry>();
         public ComponentOverrides componentOverrides = new ComponentOverrides();
+        public List<string> rules = new List<string>();
 
         public static string ConfigPath
         {
@@ -129,6 +130,7 @@ namespace Indey.UIPrefabBuilder.Config
             return spriteMapping.Count > 0
                 || prefabMapping.Count > 0
                 || componentOverrides.HasOverrides()
+                || rules.Count > 0
                 || !string.IsNullOrEmpty(basicInfo.projectNotes);
         }
 
@@ -201,6 +203,18 @@ namespace Indey.UIPrefabBuilder.Config
                 sb.AppendLine();
             }
 
+            // Rules
+            var activeRules = rules.FindAll(r => !string.IsNullOrWhiteSpace(r));
+            if (activeRules.Count > 0)
+            {
+                sb.AppendLine("### PROJECT RULES (MUST FOLLOW — these are user-defined conventions for this project)");
+                for (int i = 0; i < activeRules.Count; i++)
+                {
+                    sb.AppendLine($"- {activeRules[i]}");
+                }
+                sb.AppendLine();
+            }
+
             return sb.ToString();
         }
 
@@ -252,6 +266,11 @@ namespace Indey.UIPrefabBuilder.Config
             if (!string.IsNullOrEmpty(componentOverrides.inputFieldComponent))
                 overrides["inputField"] = componentOverrides.inputFieldComponent;
             obj["componentOverrides"] = overrides;
+
+            var rulesArr = new Newtonsoft.Json.Linq.JArray();
+            foreach (var r in rules)
+                rulesArr.Add(r);
+            obj["rules"] = rulesArr;
 
             return obj.ToString();
         }

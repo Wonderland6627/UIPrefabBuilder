@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using Indey.UIPrefabBuilder.Config;
 using Indey.UIPrefabBuilder.Logging;
@@ -15,6 +16,9 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _foldSprites = true;
         private bool _foldPrefabs = true;
         private bool _foldComponents;
+        private bool _foldRules;
+        private Vector2 _notesScroll;
+        private readonly List<Vector2> _ruleScrolls = new List<Vector2>();
 
         public void Draw(Rect rect)
         {
@@ -31,6 +35,8 @@ namespace Indey.UIPrefabBuilder.UI
             DrawPrefabMapping(config);
             GUILayout.Space(2);
             DrawComponentOverrides(config);
+            GUILayout.Space(2);
+            DrawRules(config);
 
             EditorGUILayout.EndScrollView();
             GUILayout.EndArea();
@@ -105,7 +111,25 @@ namespace Indey.UIPrefabBuilder.UI
             EditorGUILayout.EndHorizontal();
 
             config.basicInfo.canvasMatchMode = EditorGUILayout.Slider("Match W/H", config.basicInfo.canvasMatchMode, 0f, 1f);
-            config.basicInfo.projectNotes = EditorGUILayout.TextField("Notes", config.basicInfo.projectNotes);
+
+            GUILayout.Label("Notes", EditorStyles.miniLabel);
+            var noteStyle = new GUIStyle(EditorStyles.textArea) { wordWrap = true };
+            var notes = config.basicInfo.projectNotes ?? "";
+            var noteLines = notes.Split('\n').Length;
+            var noteContentHeight = noteLines * 16f + 8f;
+            var noteVisibleHeight = Mathf.Clamp(noteContentHeight, 48f, 150f);
+
+            if (noteContentHeight > noteVisibleHeight)
+            {
+                _notesScroll = EditorGUILayout.BeginScrollView(
+                    _notesScroll, GUILayout.Height(noteVisibleHeight), GUILayout.ExpandWidth(true));
+                config.basicInfo.projectNotes = EditorGUILayout.TextArea(notes, noteStyle, GUILayout.Height(noteContentHeight), GUILayout.ExpandWidth(true));
+                EditorGUILayout.EndScrollView();
+            }
+            else
+            {
+                config.basicInfo.projectNotes = EditorGUILayout.TextArea(notes, noteStyle, GUILayout.Height(noteVisibleHeight), GUILayout.ExpandWidth(true));
+            }
 
             if (EditorGUI.EndChangeCheck()) _dirty = true;
             EditorGUILayout.EndVertical();
@@ -287,6 +311,77 @@ namespace Indey.UIPrefabBuilder.UI
 
             if (removeIndex >= 0) { ov.customComponents.RemoveAt(removeIndex); _dirty = true; }
             EditorGUILayout.EndVertical();
+        }
+
+        #endregion
+
+        #region Rules
+
+        private void DrawRules(ProjectConfig config)
+        {
+            EditorGUILayout.BeginHorizontal();
+            _foldRules = EditorGUILayout.Foldout(_foldRules, $"Rules ({config.rules.Count})", true, EditorStyles.foldoutHeader);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(20)))
+            {
+                config.rules.Add("");
+                _dirty = true;
+            }
+            EditorGUILayout.EndHorizontal();
+
+            if (!_foldRules) return;
+
+            EditorGUILayout.HelpBox(
+                "Each rule is injected into the AI Agent's system prompt.\n" +
+                "Write conventions, coding standards, or project-specific instructions.",
+                MessageType.Info);
+            GUILayout.Space(2);
+
+            var style = new GUIStyle(EditorStyles.textArea) { wordWrap = true };
+            int removeIndex = -1;
+
+            // Ensure scroll list stays in sync
+            while (_ruleScrolls.Count < config.rules.Count) _ruleScrolls.Add(Vector2.zero);
+            while (_ruleScrolls.Count > config.rules.Count) _ruleScrolls.RemoveAt(_ruleScrolls.Count - 1);
+
+            for (int i = 0; i < config.rules.Count; i++)
+            {
+                EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+                EditorGUI.BeginChangeCheck();
+
+                var text = config.rules[i] ?? "";
+                var lines = text.Split('\n').Length;
+                var contentHeight = lines * 16f + 8f;
+                var visibleHeight = Mathf.Clamp(contentHeight, 48f, 200f);
+
+                if (contentHeight > visibleHeight)
+                {
+                    _ruleScrolls[i] = EditorGUILayout.BeginScrollView(
+                        _ruleScrolls[i], GUILayout.Height(visibleHeight), GUILayout.ExpandWidth(true));
+                    config.rules[i] = EditorGUILayout.TextArea(text, style, GUILayout.Height(contentHeight), GUILayout.ExpandWidth(true));
+                    EditorGUILayout.EndScrollView();
+                }
+                else
+                {
+                    config.rules[i] = EditorGUILayout.TextArea(text, style, GUILayout.Height(visibleHeight), GUILayout.ExpandWidth(true));
+                }
+
+                EditorGUILayout.BeginHorizontal();
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Remove", EditorStyles.miniButton, GUILayout.Width(55)))
+                    removeIndex = i;
+                EditorGUILayout.EndHorizontal();
+
+                if (EditorGUI.EndChangeCheck()) _dirty = true;
+                EditorGUILayout.EndVertical();
+            }
+
+            if (removeIndex >= 0)
+            {
+                config.rules.RemoveAt(removeIndex);
+                if (removeIndex < _ruleScrolls.Count) _ruleScrolls.RemoveAt(removeIndex);
+                _dirty = true;
+            }
         }
 
         #endregion

@@ -466,7 +466,7 @@ namespace Indey.UIPrefabBuilder.Skills
 
             // ── Project Config ──
             Def("get_project_config",
-                "Get the project-specific configuration including design basics (orientation, resolution), sprite mapping (role→asset path), prefab mapping (role→prefab path), and component overrides. Use this to understand project conventions before building UI.",
+                "Get the project-specific configuration including design basics (orientation, resolution), sprite mapping (role→asset path), prefab mapping (role→prefab path), component overrides, and project rules. Use this to understand project conventions before building UI.",
                 Props()),
 
             // ── Progress Tracking ──

@@ -36,16 +36,16 @@
 | | Feature | Description |
 |---|---------|-------------|
 | 🤖 | **自然语言驱动** | 描述需求，AI 自主规划并执行完整 UI 构建流程 |
-| 🔧 | **50+ 结构化工具** | 基于 OpenAI Function Calling，覆盖资源搜索、批量创建、属性设置、布局、特效、Prefab 全流程 |
-| 📐 | **项目级配置** | Sprite/Prefab 映射、组件类型覆盖、设计分辨率，自动注入 Agent Prompt |
+| 🔧 | **55 结构化工具** | 基于 OpenAI Function Calling，覆盖资源搜索、批量创建、属性设置、布局、特效、Prefab 全流程 |
+| 📐 | **项目级配置** | Sprite/Prefab 映射、组件类型覆盖、Rules 规则、设计分辨率，自动注入 Agent Prompt |
 | ⚡ | **Batch-First 架构** | `create_batch` 一次创建整棵 UI 树，`set_rect_transform_batch` 一次定位所有元素 |
 | 🔄 | **4 阶段工作流** | Understand → Build → Verify → Finalize，Agent 自主遵循最佳实践 |
 | 📸 | **视觉验证** | 截图 Game View → Vision 模型分析布局问题 → 自动修复（需支持 Vision 的模型） |
 | 🪞 | **通用反射引擎** | `set_component_property` 可通过反射设置任意组件的任意属性 |
 | 📡 | **流式响应** | SSE 实时流式输出，支持 Thinking/Extended Thinking 展示 |
-| 💾 | **会话管理** | 多会话保存/加载/导出，每个会话独立日志文件 |
+| 💾 | **会话管理** | 多会话保存/加载/导出，持久化于 `Library/UIPrefabBuilder/Sessions`，每会话独立日志 |
 | 🧠 | **上下文压缩** | 自动截断/摘要历史工具结果，长任务不会 token 溢出 |
-| ↩️ | **Undo 支持** | 所有 UI 操作注册 Unity Undo，可随时回滚 |
+| ↩️ | **事务级 Undo** | `TransactionManager` 将单次 Agent 任务打包为 Undo 组，可随时 Rollback 整次任务 |
 
 ---
 
@@ -87,19 +87,21 @@ https://github.com/Wonderland6627/UIPrefabBuilder.git?path=Packages/com.indey.ui
 ### 1. 配置 LLM
 
 1. 打开 **Window → UI Prefab Builder**
-2. 在右侧 Settings 面板填入：
+2. 在**左侧** Settings 面板（上半区）填入：
    - **Base URL** — OpenAI 兼容 API 地址（如 `https://api.openai.com/v1`）
    - **API Key** — 你的 API 密钥
    - **Model** — 模型名称（如 `gpt-4o`、`claude-sonnet-4-20250514`）
+3. 在 Settings 面板（下半区 **Agent Configuration**）按需调整超时、步数、Extended Thinking、Visual Verification 等
 
 ### 2. 配置项目规范（推荐）
 
-左侧面板 **Project Config** 中设置项目约定，保存到 `ProjectSettings/UIPrefabBuilderConfig.json`：
+**右侧** **Project Config** 面板中设置项目约定，保存到 `ProjectSettings/UIPrefabBuilderConfig.json`：
 
 - **Basic Info** — 横/竖屏、设计分辨率、CanvasScaler Match W/H、项目备注
 - **Sprite Mapping** — 角色名 → Sprite 路径（如 `confirm_button` → `Assets/Sprites/UI/btn_green.png`）
 - **Prefab Mapping** — 角色名 → Prefab 路径（Agent 优先 `instantiate_prefab` 而非从零创建）
-- **Component Overrides** — 指定 Text/Button/Image/InputField 使用的组件类型（如 TMP）
+- **Component Overrides** — 指定 Text/Button/Image/InputField 及自定义组件类型（如 TMP）
+- **Rules** — 项目级约定规则，自动注入 Agent System Prompt
 
 配置会自动注入 Agent System Prompt，创建 Canvas 时也会应用设计分辨率。
 
@@ -139,55 +141,48 @@ flowchart LR
 
 ### 核心架构
 
+```mermaid
+flowchart TB
+    subgraph UI["BuilderWindow · 三栏布局"]
+        direction LR
+        LEFT["Settings + Console<br/>LLM / Agent 设置 · 实时日志"]
+        CENTER["Chat Panel<br/>流式消息 · Thinking · 工具调用"]
+        RIGHT["Project Config<br/>Sprite/Prefab · Rules"]
+    end
+
+    CENTER --> ENG["AgentEngine<br/>4-Phase Agentic Loop"]
+    RIGHT -.->|BuildPromptSection| ENG
+
+    ENG --> TR["ToolRegistry<br/>Definitions + Executor"]
+    ENG --> LLM["LLMClient<br/>SSE · Tool Call · Vision"]
+    ENG --> MH["MessageHistory<br/>Compression · Multimodal"]
+
+    TR --> TM["TransactionManager<br/>任务级 Undo"]
+    TR --> SK["Skills Layer<br/>ToolExecutor → UICreator / Helpers"]
+
+    SK --> CMP["Compiler<br/>DynamicCompiler · SandboxValidator"]
+    SK --> TX["Transaction<br/>UndoScope · SnapshotService"]
+    SK --> ASY["Async<br/>BackgroundWorker · MainThreadDispatcher"]
+
+    LEFT --> LOG["ConsoleLogger<br/>Library/UIPrefabBuilder/Logs · Sessions"]
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    BuilderWindow (UI)                      │
-├──────────┬───────────────────────────────┬────────────────┤
-│ Project  │         Chat Panel            │   Settings     │
-│ Config + │  - Streaming messages         │   - LLM        │
-│ Console  │  - Thinking display           │   - Vision     │
-│  Panel   │  - Tool call results          │   - Thinking   │
-└──────────┴──────────┬────────────────────┴────────────────┘
-                      │
-              ┌───────▼───────┐
-              │  AgentEngine  │  ← 4-Phase Agentic Loop
-              └───────┬───────┘
-        ┌─────────────┼──────────────────┐
-        ▼             ▼                  ▼
-┌──────────────┐ ┌───────────┐ ┌──────────────────┐
-│ ToolRegistry │ │ LLMClient │ │ MessageHistory   │
-│- 50+ tools   │ │- SSE      │ │- Multimodal      │
-│- Definitions │ │- Tool Call│ │- Context          │
-│- Executor    │ │- Vision   │ │  Compression     │
-└──────┬───────┘ └───────────┘ └──────────────────┘
-       │                    ▲
-       ▼                    │ BuildPromptSection()
-┌─────────────────┐   ┌─────────────────┐
-│  ToolExecutor   │   │  ProjectConfig  │
-│  - Batch ops    │   │  - Sprite map   │
-│  - Reflection   │   │  - Prefab map   │
-│  - Screenshot   │   │  - Components   │
-└───────┬─────────┘   └─────────────────┘
-        ▼
-┌──────────────────┐
-│  Helper APIs     │
-│  (Undo-safe)     │
-├──────────────────┤
-│ • UICreator      │  ← 读取 ProjectConfig 分辨率/组件类型
-│ • ComponentHelper│
-│ • LayoutHelper   │
-│ • AssetFinder    │
-│ • PrefabHelper   │
-│ • SceneHelper    │
-│ • HierarchyInsp. │
-└──────────────────┘
-```
+
+| 层级 | 模块 | 职责 |
+|------|------|------|
+| UI | `BuilderWindow` | 三栏 SplitView：左 Settings+Console，中 Chat，右 Project Config |
+| Core | `AgentEngine` | 4 阶段循环、System Prompt 构建、工具调度 |
+| Core | `LLMClient` / `MessageHistory` | SSE 流式通信、上下文压缩、多模态 |
+| Skills | `ToolRegistry` + `ToolExecutor` | 55 工具定义与执行，调用 Helper 完成 UI 操作 |
+| Infra | `Compiler` / `Transaction` / `Async` | 动态编译、Undo 事务、后台任务 |
+| Config | `BuilderSettings` / `ProjectConfig` | Editor 设置（Preferences）与项目规范（JSON） |
+
+> Editor 设置保存在 `UIPrefabBuilder/Settings.asset`（Editor Preferences）；项目配置保存在 `ProjectSettings/UIPrefabBuilderConfig.json`。
 
 ### Agent 循环
 
 | 阶段 | 说明 |
 |------|------|
-| **Thinking** | 消息历史 + 50+ 工具定义 + 项目配置发给 LLM，等待推理 |
+| **Thinking** | 消息历史 + 55 工具定义 + 项目配置发给 LLM，等待推理 |
 | **CallingTool** | 执行 `tool_calls`，收集结果，连续失败自动注入修复提示 |
 | **Thinking** (再次) | 工具结果 + 可选截图回传 LLM，动态调整策略 |
 | **Completed** | 不再调用工具，输出最终总结 |
@@ -198,7 +193,7 @@ flowchart LR
 
 ## 🔧 Tool System
 
-共 **50+ 内置工具**，按 OpenAI Function Calling 标准定义：
+共 **55 内置工具**，按 OpenAI Function Calling 标准定义：
 
 ### 资源探索
 
@@ -304,22 +299,34 @@ flowchart LR
 
 ## ⚙️ Configuration
 
-### Editor 设置（Settings 面板）
+### Editor 设置（Settings 面板 · 左侧）
+
+保存在 `UIPrefabBuilder/Settings.asset`（Editor Preferences），分为 **LLM Configuration** 和 **Agent Configuration** 两组：
+
+#### LLM Configuration
 
 | 设置项 | 说明 | 默认值 |
 |--------|------|--------|
 | Base URL | OpenAI 兼容 API 端点 | `https://api.openai.com/v1` |
 | Model | 模型标识符 | `gpt-4o-mini` |
-| API Key | API 密钥（加密存储） | — |
-| Request Timeout | 请求超时秒数 | 60 |
-| Max Steps | Agent 最大步数（0 = 无限制，硬上限 500） | 0 |
-| Auto Execute | 是否自动执行 | `true` |
+| API Key | API 密钥（`SecureKeyStore` 加密存储） | — |
 | Temperature | 采样温度（-1 = 使用模型默认） | -1 |
 | Supports Vision | 是否启用截图视觉分析 | `false` |
+
+#### Agent Configuration
+
+| 设置项 | 说明 | 默认值 |
+|--------|------|--------|
+| Timeout (s) | LLM 请求超时秒数 | 60 |
+| Max Steps | Agent 最大步数（0 = 无限制，硬上限 500） | 0 |
+| Max Retries | LLM 请求失败重试次数 | 2 |
+| Exec Timeout (s) | 工具执行超时秒数 | 5 |
+| Auto Execute | 是否自动执行 | `true` |
 | Extended Thinking | 是否启用扩展思考（Claude 系列） | `false` |
 | Thinking Budget | Extended Thinking token 预算 | 4096 |
+| Visual Verification | 是否启用 Phase 3 视觉验证流程 | `true` |
 
-### 项目配置（Project Config 面板）
+### 项目配置（Project Config 面板 · 右侧）
 
 保存在 `ProjectSettings/UIPrefabBuilderConfig.json`，支持 Save / Export / Import / Reset。
 
@@ -331,7 +338,8 @@ flowchart LR
 | Project Notes | 项目备注 | 注入 Prompt，Agent 遵循项目约定 |
 | Sprite Mapping | 角色 → Sprite 路径 + Image Type | Agent 优先直接使用映射路径，跳过搜索 |
 | Prefab Mapping | 角色 → Prefab 路径 | Agent 优先 `instantiate_prefab` 而非从零创建 |
-| Component Overrides | Text/Button/Image/InputField 组件类型 | UICreator 创建时使用指定组件（如 TMP） |
+| Component Overrides | Text/Button/Image/InputField + 自定义组件 | UICreator 创建时使用指定组件（如 TMP） |
+| Rules | 项目级约定规则列表 | 注入 Prompt，Agent 必须遵循 |
 
 配置示例：
 
@@ -358,8 +366,15 @@ flowchart LR
     }
   ],
   "componentOverrides": {
-    "textComponent": "TMPro.TextMeshProUGUI"
-  }
+    "textComponent": "TMPro.TextMeshProUGUI",
+    "customComponents": [
+      { "role": "badge", "typeName": "MyProject.BadgeView", "description": "角标组件" }
+    ]
+  },
+  "rules": [
+    "所有弹窗背景使用 Sliced 模式",
+    "按钮间距统一为 16px"
+  ]
 }
 ```
 
@@ -369,7 +384,7 @@ flowchart LR
 
 ### 添加自定义工具
 
-1. 在 `ToolDefinitions.cs` 中添加工具定义（OpenAI function schema）：
+1. 在 `Editor/Skills/ToolDefinitions.cs` 中添加工具定义（OpenAI function schema）：
 
 ```csharp
 Def("my_tool",
@@ -380,13 +395,13 @@ Def("my_tool",
     )),
 ```
 
-2. 在 `ToolExecutor.cs` 的 `ExecuteInternal` 中添加 case 分支：
+2. 在 `Editor/Skills/ToolExecutor.cs` 的 `ExecuteInternal` 中添加 case 分支：
 
 ```csharp
 case "my_tool": return DoMyTool(args);
 ```
 
-3. 实现执行方法：
+3. 实现执行方法（可复用 `Skills/` 下的 Helper 类）：
 
 ```csharp
 private string DoMyTool(JObject args)
@@ -396,6 +411,8 @@ private string DoMyTool(JObject args)
     return Ok("Tool executed successfully.");
 }
 ```
+
+4. 调用 `ToolRegistry.Rebuild()` 或通过重启窗口刷新工具列表。
 
 ### 通用组件反射
 
@@ -408,7 +425,7 @@ set_component_property(target="MyObj", componentType="ScrollRect", propertyName=
 
 ### execute_code 兜底
 
-当内置工具无法满足需求时，`execute_code` 动态编译执行 C#。支持自动包装（只写语句体）和完整 `IAgentAction` 类两种模式。
+当内置工具无法满足需求时，`execute_code` 通过 `Compiler/DynamicCompiler` 动态编译执行 C#。支持自动包装（只写语句体）和完整 `IAgentAction` 类两种模式，编译在 `Async/BackgroundWorker` 中异步执行。
 
 ### 目标解析
 
@@ -428,9 +445,9 @@ set_component_property(target="MyObj", componentType="ScrollRect", propertyName=
 ### 📐 项目级配置注入
 
 ProjectConfig 贯穿 Agent 全流程：
-- System Prompt 自动注入 Sprite/Prefab 映射和组件约定
+- `AgentEngine.RebuildSystemPrompt()` 自动注入 Sprite/Prefab 映射、组件约定和 Rules
 - `get_project_config` 工具供 Agent 运行时查询
-- UICreator 创建 Canvas/UI 时直接应用配置
+- `UICreator` 创建 Canvas/UI 时直接应用配置
 - 配置文件可 Export/Import，团队共享设计规范
 
 </td>
@@ -489,7 +506,7 @@ Agent 遵循"批量优先"策略最小化工具调用轮次：
 - [x] 批量创建 / 批量布局工具
 - [x] 通用组件反射引擎
 - [x] 上下文压缩（长任务 token 管理）
-- [x] 项目级约束配置（设计规范、Sprite/Prefab 映射、组件覆盖）
+- [x] 项目级约束配置（设计规范、Sprite/Prefab 映射、组件覆盖、Rules）
 - [ ] Prefab 模板库 & 常用 UI 一键生成
 - [ ] 自定义工具插件化注册
 - [ ] 动画 / 事件绑定工具

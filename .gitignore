@@ -36,3 +36,11 @@ Thumbs.db
 
 # 动态编译临时文件
 **/Temp/AgentGenerated/
+
+# CLIP 模型大文件（通过 Unity 菜单下载，不上传到 git）
+Packages/com.indey.uiprefabbuilder/Editor/Models/*.onnx
+Packages/com.indey.uiprefabbuilder/Editor/Models/*.onnx.meta
+Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vocab.txt
+Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vocab.txt.meta
+Packages/com.indey.uiprefabbuilder/Editor/Models/clip_merges.txt
+Packages/com.indey.uiprefabbuilder/Editor/Models/clip_merges.txt.meta

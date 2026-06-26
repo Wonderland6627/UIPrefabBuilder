@@ -482,6 +482,31 @@ namespace Indey.UIPrefabBuilder.Skills
             Def("execute_code",
                 "Execute arbitrary C# code implementing IAgentAction. Use for complex batch operations or when other tools cannot achieve the desired result.",
                 Props(P("code", "string", "Complete C# source code implementing IAgentAction interface", true))),
+
+            // ── Asset Indexing & Visual Match ──
+            Def("match_sprite_by_image",
+                "Match a cropped design mockup region against indexed project sprites using visual similarity (CLIP embedding + cosine similarity). Returns Top-K matching sprite asset paths ranked by confidence. Requires asset indexing to be enabled and index built. Use this when you need to find the best-matching sprite for a UI element from a design mockup.",
+                Props(
+                    P("imageBase64", "string", "Base64-encoded PNG/JPG image bytes of the cropped region from the design mockup", true),
+                    P("topK", "integer", "Number of top matches to return", false, 5),
+                    P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out.", false, 0.5)
+                )),
+
+            Def("search_sprites_by_text",
+                "Search indexed sprites by text description using CLIP text-image matching. Finds sprites that visually match a natural language query (e.g. 'treasure chest', 'red button', 'cat icon', 'gold coin'). Requires asset indexing enabled, index built, and CLIP text model downloaded. More powerful than filename search — understands visual semantics.",
+                Props(
+                    P("query", "string", "Natural language description of the sprite to find, e.g. 'treasure chest', 'blue button', 'sword icon'", true),
+                    P("topK", "integer", "Number of top matches to return", false, 10),
+                    P("minConfidence", "number", "Minimum confidence threshold (0-100). Results below this score are filtered out.", false, 15)
+                )),
+
+            Def("rebuild_asset_index",
+                "Trigger a full rebuild of the asset visual index. Scans configured sprite directories, computes CLIP embeddings for each sprite, and stores them for fast visual matching. Use when sprites have been bulk-imported or index appears stale. Runs asynchronously in the background.",
+                Props()),
+
+            Def("get_index_status",
+                "Get the current status of the asset visual index: whether it is ready, the number of indexed entries, whether indexing is in progress, and the last build timestamp.",
+                Props()),
         };
 
         private static JObject Def(string name, string description, JObject parameters)

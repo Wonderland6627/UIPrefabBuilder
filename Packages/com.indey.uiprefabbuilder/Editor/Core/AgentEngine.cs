@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using Indey.UIPrefabBuilder.Config;
+using Indey.UIPrefabBuilder.Indexing;
 using Indey.UIPrefabBuilder.Logging;
 using Indey.UIPrefabBuilder.Skills;
 using Indey.UIPrefabBuilder.Transaction;
@@ -168,6 +169,27 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("- `search_assets`: Unity type filter (e.g. `t:Sprite`, `t:Prefab`)");
             sb.AppendLine("- `search_assets_glob`: filename pattern matching (e.g. `*popup*`, `btn_*_lg*`, `*dialog*.png`)");
             sb.AppendLine("- Sprite naming conventions: `btn_*` for buttons, `dialog_*`/`panel_*` for backgrounds, `icon_*` for icons");
+
+            // ── Asset Indexing Status ──
+            if (_settings.EnableAssetIndexing)
+            {
+                var indexer = AssetIndexer.Instance;
+                sb.AppendLine();
+                sb.AppendLine("## VISUAL ASSET INDEX");
+                if (indexer.IsReady && indexer.IndexedCount > 0)
+                {
+                    sb.AppendLine($"- Visual asset index is ACTIVE with {indexer.IndexedCount} indexed sprites.");
+                    sb.AppendLine("- Use `match_sprite_by_image` to find sprites by visual similarity from a design mockup crop (base64 image).");
+                    sb.AppendLine("- Use `search_sprites_by_text` to find sprites by text description (e.g. 'treasure chest', 'red button', 'gold coin'). This understands visual semantics, not just filenames.");
+                    sb.AppendLine("- Text search is more powerful than filename search when asset names don't match the visual content.");
+                    sb.AppendLine("- Use `get_index_status` to check index health.");
+                }
+                else
+                {
+                    sb.AppendLine("- Visual asset indexing is enabled but the index is not yet built.");
+                    sb.AppendLine("- Use `rebuild_asset_index` to build the visual index before using `match_sprite_by_image` or `search_sprites_by_text`.");
+                }
+            }
             sb.AppendLine();
 
             // ── Error Recovery ──

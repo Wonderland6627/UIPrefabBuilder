@@ -18,6 +18,11 @@ namespace Indey.UIPrefabBuilder.Config
         [SerializeField] private float temperature = -1f;
         [SerializeField] private bool enableVisualVerification = true;
         [SerializeField] private bool supportsVision = false;
+        [SerializeField] private bool enableAssetIndexing = false;
+        [SerializeField] private string embeddingModelPath = "Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vit_visual.onnx";
+        [SerializeField] private string textModelPath = "Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vit_textual.onnx";
+        [SerializeField] private string tokenizerVocabPath = "Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vocab.txt";
+        [SerializeField] private string tokenizerMergesPath = "Packages/com.indey.uiprefabbuilder/Editor/Models/clip_merges.txt";
 
         public string BaseUrl { get => baseUrl; set => baseUrl = value; }
         public string ModelName { get => modelName; set => modelName = value; }
@@ -33,6 +38,11 @@ namespace Indey.UIPrefabBuilder.Config
         public float Temperature { get => temperature; set => temperature = value; }
         public bool EnableVisualVerification { get => enableVisualVerification; set => enableVisualVerification = value; }
         public bool SupportsVision { get => supportsVision; set => supportsVision = value; }
+        public bool EnableAssetIndexing { get => enableAssetIndexing; set => enableAssetIndexing = value; }
+        public string EmbeddingModelPath { get => embeddingModelPath; set => embeddingModelPath = value; }
+        public string TextModelPath { get => textModelPath; set => textModelPath = value; }
+        public string TokenizerVocabPath { get => tokenizerVocabPath; set => tokenizerVocabPath = value; }
+        public string TokenizerMergesPath { get => tokenizerMergesPath; set => tokenizerMergesPath = value; }
 
         public static BuilderSettings Get() => instance;
 

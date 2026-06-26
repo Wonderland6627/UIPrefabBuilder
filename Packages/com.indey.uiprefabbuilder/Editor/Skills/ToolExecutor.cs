@@ -6,6 +6,7 @@ using System.Reflection;
 using Indey.UIPrefabBuilder.Compiler;
 using Indey.UIPrefabBuilder.Config;
 using Indey.UIPrefabBuilder.Core;
+using Indey.UIPrefabBuilder.Indexing;
 using Indey.UIPrefabBuilder.Logging;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -111,6 +112,11 @@ namespace Indey.UIPrefabBuilder.Skills
                 case "update_progress": return DoUpdateProgress(args);
                 // Code
                 case "execute_code": return DoExecuteCode(args);
+                // Asset Indexing
+                case "match_sprite_by_image": return DoMatchSpriteByImage(args);
+                case "search_sprites_by_text": return DoSearchSpritesByText(args);
+                case "rebuild_asset_index": return DoRebuildAssetIndex(args);
+                case "get_index_status": return DoGetIndexStatus(args);
                 default: return Error($"Unknown tool: {toolName}");
             }
         }
@@ -1052,6 +1058,160 @@ namespace Indey.UIPrefabBuilder.Skills
 
             if (actionResult == null) return Error("execute_code returned null.");
             return actionResult.Success ? Ok(actionResult.Message ?? "Done.") : Error(actionResult.Message ?? "Unknown error.");
+        }
+
+        #endregion
+
+        #region Asset Indexing
+
+        private string DoMatchSpriteByImage(JObject args)
+        {
+            var settings = BuilderSettings.Get();
+            if (!settings.EnableAssetIndexing)
+                return Error("Asset indexing is not enabled. Enable it in Agent Settings and build the index first.");
+
+            var indexer = AssetIndexer.Instance;
+            if (!indexer.IsReady)
+            {
+                indexer.EnsureInitialized();
+                if (!indexer.IsReady)
+                    return Error("Asset index not ready. The embedding model may not be loaded. Check the model path in settings.");
+            }
+
+            if (indexer.IndexedCount == 0)
+                return Error("Asset index is empty. Run rebuild_asset_index first to build the visual index.");
+
+            var imageBase64 = Str(args, "imageBase64");
+            if (string.IsNullOrEmpty(imageBase64))
+                return Error("Missing 'imageBase64' parameter.");
+
+            byte[] imageBytes;
+            try { imageBytes = Convert.FromBase64String(imageBase64); }
+            catch { return Error("Invalid base64 image data."); }
+
+            var topK = Int(args, "topK", 5);
+            var minConfidence = Float(args, "minConfidence", 0.5f);
+
+            var results = indexer.QueryByImage(imageBytes, topK);
+            if (results == null || results.Count == 0)
+                return new JObject { ["success"] = true, ["count"] = 0, ["matches"] = new JArray(),
+                    ["message"] = "No matching sprites found." }.ToString();
+
+            var filtered = results.Where(r => r.score >= minConfidence).ToList();
+            var matchArr = new JArray();
+            foreach (var m in filtered)
+            {
+                var info = AssetFinder.GetInfo(m.assetPath);
+                matchArr.Add(new JObject
+                {
+                    ["assetPath"] = m.assetPath,
+                    ["guid"] = m.guid,
+                    ["confidence"] = Math.Round(m.confidence, 1),
+                    ["score"] = Math.Round(m.score, 4),
+                    ["assetInfo"] = info
+                });
+            }
+
+            return new JObject
+            {
+                ["success"] = true,
+                ["count"] = filtered.Count,
+                ["matches"] = matchArr
+            }.ToString();
+        }
+
+        private string DoSearchSpritesByText(JObject args)
+        {
+            var settings = BuilderSettings.Get();
+            if (!settings.EnableAssetIndexing)
+                return Error("Asset indexing is not enabled. Enable it in Agent Settings first.");
+
+            var indexer = AssetIndexer.Instance;
+            if (!indexer.IsReady)
+            {
+                indexer.EnsureInitialized();
+                if (!indexer.IsReady)
+                    return Error("Asset index not ready. The embedding model may not be loaded.");
+            }
+
+            if (indexer.IndexedCount == 0)
+                return Error("Asset index is empty. Run rebuild_asset_index first.");
+
+            var query = Str(args, "query");
+            if (string.IsNullOrEmpty(query))
+                return Error("Missing 'query' parameter.");
+
+            var topK = Int(args, "topK", 10);
+            var minConfidence = Float(args, "minConfidence", 15f);
+
+            var results = indexer.QueryByText(query, topK);
+            if (results == null || results.Count == 0)
+            {
+                if (!indexer.IsTextSearchReady)
+                    return Error("Text search not available. CLIP text model or tokenizer files not found. Download them via 'Window > UI Prefab Builder > Download CLIP Text Model'.");
+                return new JObject { ["success"] = true, ["count"] = 0, ["matches"] = new JArray(),
+                    ["message"] = "No matching sprites found for query: " + query }.ToString();
+            }
+
+            var filtered = results.Where(r => r.confidence >= minConfidence).ToList();
+            var matchArr = new JArray();
+            foreach (var m in filtered)
+            {
+                var info = AssetFinder.GetInfo(m.assetPath);
+                matchArr.Add(new JObject
+                {
+                    ["assetPath"] = m.assetPath,
+                    ["guid"] = m.guid,
+                    ["confidence"] = Math.Round(m.confidence, 1),
+                    ["score"] = Math.Round(m.score, 4),
+                    ["assetInfo"] = info
+                });
+            }
+
+            return new JObject
+            {
+                ["success"] = true,
+                ["query"] = query,
+                ["count"] = filtered.Count,
+                ["matches"] = matchArr
+            }.ToString();
+        }
+
+        private string DoRebuildAssetIndex(JObject args)
+        {
+            var settings = BuilderSettings.Get();
+            if (!settings.EnableAssetIndexing)
+                return Error("Asset indexing is not enabled. Enable it in Agent Settings first.");
+
+            var indexer = AssetIndexer.Instance;
+            indexer.EnsureInitialized();
+
+            if (!indexer.IsReady)
+                return Error("Failed to initialize indexer. Check that the embedding model exists at: " + settings.EmbeddingModelPath);
+
+            if (indexer.IsIndexing)
+                return Ok("Asset indexing is already in progress.");
+
+            indexer.RebuildFullIndex();
+            return Ok("Asset index rebuild started in background. Use get_index_status to check progress.");
+        }
+
+        private string DoGetIndexStatus(JObject args)
+        {
+            var settings = BuilderSettings.Get();
+            var indexer = AssetIndexer.Instance;
+            return new JObject
+            {
+                ["success"] = true,
+                ["enabled"] = settings.EnableAssetIndexing,
+                ["ready"] = indexer.IsReady,
+                ["indexing"] = indexer.IsIndexing,
+                ["entryCount"] = indexer.IndexedCount,
+                ["lastBuildTimestamp"] = indexer.LastBuildTimestamp,
+                ["modelPath"] = settings.EmbeddingModelPath,
+                ["textSearchReady"] = indexer.IsTextSearchReady,
+                ["textModelPath"] = settings.TextModelPath
+            }.ToString();
         }
 
         #endregion

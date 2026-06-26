@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
 using Indey.UIPrefabBuilder.Config;
+using Indey.UIPrefabBuilder.Indexing;
 using Indey.UIPrefabBuilder.Logging;
 using UnityEditor;
 using UnityEngine;
@@ -17,6 +18,7 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _foldPrefabs = true;
         private bool _foldComponents;
         private bool _foldRules;
+        private bool _foldIndexing;
         private Vector2 _notesScroll;
         private readonly List<Vector2> _ruleScrolls = new List<Vector2>();
 
@@ -37,6 +39,8 @@ namespace Indey.UIPrefabBuilder.UI
             DrawComponentOverrides(config);
             GUILayout.Space(2);
             DrawRules(config);
+            GUILayout.Space(2);
+            DrawIndexingConfig(config);
 
             EditorGUILayout.EndScrollView();
             GUILayout.EndArea();
@@ -382,6 +386,82 @@ namespace Indey.UIPrefabBuilder.UI
                 if (removeIndex < _ruleScrolls.Count) _ruleScrolls.RemoveAt(removeIndex);
                 _dirty = true;
             }
+        }
+
+        #endregion
+
+        #region Indexing Config
+
+        private void DrawIndexingConfig(ProjectConfig config)
+        {
+            _foldIndexing = EditorGUILayout.Foldout(_foldIndexing, "Asset Indexing", true, EditorStyles.foldoutHeader);
+            if (!_foldIndexing) return;
+
+            var ic = config.indexingConfig;
+            if (ic == null)
+            {
+                config.indexingConfig = new IndexingConfig();
+                ic = config.indexingConfig;
+                _dirty = true;
+            }
+
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUI.BeginChangeCheck();
+
+            // Index Directories
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Label("Index Directories", EditorStyles.miniBoldLabel);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(20)))
+            {
+                ic.indexDirectories.Add("Assets/");
+                _dirty = true;
+            }
+            EditorGUILayout.EndHorizontal();
+
+            int removeDirIdx = -1;
+            for (int i = 0; i < ic.indexDirectories.Count; i++)
+            {
+                EditorGUILayout.BeginHorizontal();
+                ic.indexDirectories[i] = EditorGUILayout.TextField(ic.indexDirectories[i]);
+                if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(20)))
+                    removeDirIdx = i;
+                EditorGUILayout.EndHorizontal();
+            }
+            if (removeDirIdx >= 0) { ic.indexDirectories.RemoveAt(removeDirIdx); _dirty = true; }
+
+            GUILayout.Space(4);
+
+            // Ignore Patterns
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Label("Ignore Patterns", EditorStyles.miniBoldLabel);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(20)))
+            {
+                ic.ignorePatterns.Add("");
+                _dirty = true;
+            }
+            EditorGUILayout.EndHorizontal();
+
+            int removePatIdx = -1;
+            for (int i = 0; i < ic.ignorePatterns.Count; i++)
+            {
+                EditorGUILayout.BeginHorizontal();
+                ic.ignorePatterns[i] = EditorGUILayout.TextField(ic.ignorePatterns[i]);
+                if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(20)))
+                    removePatIdx = i;
+                EditorGUILayout.EndHorizontal();
+            }
+            if (removePatIdx >= 0) { ic.ignorePatterns.RemoveAt(removePatIdx); _dirty = true; }
+
+            GUILayout.Space(4);
+
+            // Defaults
+            ic.topKDefault = EditorGUILayout.IntField("Default Top-K", ic.topKDefault);
+            ic.minConfidenceThreshold = EditorGUILayout.Slider("Min Confidence", ic.minConfidenceThreshold, 0f, 1f);
+
+            if (EditorGUI.EndChangeCheck()) _dirty = true;
+            EditorGUILayout.EndVertical();
         }
 
         #endregion

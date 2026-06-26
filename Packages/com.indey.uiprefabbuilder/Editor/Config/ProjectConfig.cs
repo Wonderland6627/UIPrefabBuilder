@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using Indey.UIPrefabBuilder.Indexing;
 using Indey.UIPrefabBuilder.Logging;
 using Newtonsoft.Json;
 using UnityEditor;
@@ -20,6 +21,7 @@ namespace Indey.UIPrefabBuilder.Config
         public List<PrefabEntry> prefabMapping = new List<PrefabEntry>();
         public ComponentOverrides componentOverrides = new ComponentOverrides();
         public List<string> rules = new List<string>();
+        public IndexingConfig indexingConfig = new IndexingConfig();
 
         public static string ConfigPath
         {
@@ -131,7 +133,8 @@ namespace Indey.UIPrefabBuilder.Config
                 || prefabMapping.Count > 0
                 || componentOverrides.HasOverrides()
                 || rules.Count > 0
-                || !string.IsNullOrEmpty(basicInfo.projectNotes);
+                || !string.IsNullOrEmpty(basicInfo.projectNotes)
+                || (indexingConfig?.indexDirectories?.Count > 0);
         }
 
         public string BuildPromptSection()

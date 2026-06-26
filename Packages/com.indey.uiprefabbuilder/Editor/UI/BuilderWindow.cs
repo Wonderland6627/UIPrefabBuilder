@@ -12,7 +12,7 @@ namespace Indey.UIPrefabBuilder.UI
 {
     public class BuilderWindow : EditorWindow
     {
-        [MenuItem("Window/UI Prefab Builder")]
+        [MenuItem("Window/UI Prefab Builder/Open Builder", priority = 1000)]
         public static void Open() => GetWindow<BuilderWindow>("UI Prefab Builder").Show();
 
         private AgentEngine _agent;

@@ -15,12 +15,29 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _foldIndexDirs = true;
         private bool _foldIgnorePatterns;
         private Vector2 _scroll;
+        private bool _repaintSubscribed;
 
         private void EnsureKeyLoaded()
         {
             if (_keyLoaded) return;
             _keyLoaded = true;
             _apiKeyDisplay = SecureKeyStore.LoadApiKey();
+        }
+
+        private void EnsureRepaintOnDownload()
+        {
+            if (_repaintSubscribed) return;
+            _repaintSubscribed = true;
+            ModelDownloadManager.Instance.OnStateChanged += RequestRepaint;
+        }
+
+        private static void RequestRepaint()
+        {
+            foreach (var w in Resources.FindObjectsOfTypeAll<EditorWindow>())
+            {
+                if (w.GetType().Name.Contains("BuilderWindow"))
+                    w.Repaint();
+            }
         }
 
         #region LLM Configuration
@@ -106,6 +123,8 @@ namespace Indey.UIPrefabBuilder.UI
 
         public void DrawAssetIndexing()
         {
+            EnsureRepaintOnDownload();
+
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
             GUILayout.Label("Asset Indexing", EditorStyles.miniBoldLabel);
             GUILayout.Space(4);
@@ -145,68 +164,160 @@ namespace Indey.UIPrefabBuilder.UI
         {
             GUILayout.Label("Dependencies", EditorStyles.miniBoldLabel);
 
-            var (sentisOk, modelOk, _) = IndexingSetupWizard.CheckStatus();
+            var dm = ModelDownloadManager.Instance;
+            var sentisOk = IndexingSetupWizard.IsSentisInstalled();
+            var visionOk = ModelDownloadManager.IsVisionModelPresent();
+            var textOk = ModelDownloadManager.IsTextModelPresent();
             var prevColor = GUI.color;
 
-            // Sentis status
+            // ── Sentis ──
             EditorGUILayout.BeginHorizontal();
             GUI.color = sentisOk ? new Color(0.4f, 0.9f, 0.4f) : new Color(1f, 0.5f, 0.4f);
             GUILayout.Label(sentisOk ? "\u2713" : "\u2717", GUILayout.Width(16));
             GUI.color = prevColor;
-            GUILayout.Label("Unity Sentis", EditorStyles.miniLabel, GUILayout.Width(80));
+            GUILayout.Label("Unity Sentis", EditorStyles.miniLabel, GUILayout.Width(90));
             GUILayout.Label(sentisOk ? "Installed" : "Not installed", EditorStyles.miniLabel);
-            if (!sentisOk)
+            GUILayout.FlexibleSpace();
+            if (sentisOk)
+            {
+                if (GUILayout.Button("Remove", EditorStyles.miniButton, GUILayout.Width(55)))
+                    IndexingSetupWizard.RemoveSentis();
+            }
+            else
             {
                 if (GUILayout.Button("Install", EditorStyles.miniButton, GUILayout.Width(55)))
                     IndexingSetupWizard.InstallSentis();
             }
             EditorGUILayout.EndHorizontal();
 
-            // Model status
-            EditorGUILayout.BeginHorizontal();
-            GUI.color = modelOk ? new Color(0.4f, 0.9f, 0.4f) : new Color(1f, 0.5f, 0.4f);
-            GUILayout.Label(modelOk ? "\u2713" : "\u2717", GUILayout.Width(16));
-            GUI.color = prevColor;
-            GUILayout.Label("CLIP Model", EditorStyles.miniLabel, GUILayout.Width(80));
-            GUILayout.Label(modelOk ? "Ready" : "Not found", EditorStyles.miniLabel);
-            if (!modelOk)
-            {
-                if (GUILayout.Button("Download", EditorStyles.miniButton, GUILayout.Width(65)))
-                    IndexingSetupWizard.DownloadModel();
-            }
-            else
-            {
-                if (GUILayout.Button("Redownload", EditorStyles.miniButton, GUILayout.Width(75)))
-                    IndexingSetupWizard.DownloadModel();
-            }
-            EditorGUILayout.EndHorizontal();
+            // ── Vision Model ──
+            DrawModelRow(
+                "CLIP Vision",
+                visionOk,
+                dm.IsDownloading && dm.CurrentTask == DownloadTaskType.VisionModel,
+                ModelDownloadManager.GetVisionModelSize(),
+                () => dm.EnqueueVisionModel(),
+                () => dm.CancelCurrent(),
+                () => IndexingSetupWizard.RemoveVisionModel());
 
-            // Model path
+            // ── Text Model ──
+            DrawModelRow(
+                "CLIP Text",
+                textOk,
+                dm.IsDownloading && dm.CurrentTask == DownloadTaskType.TextModel,
+                ModelDownloadManager.GetTextModelSize(),
+                () => dm.EnqueueTextModel(),
+                () => dm.CancelCurrent(),
+                () => IndexingSetupWizard.RemoveTextModel());
+
+            // ── Download Progress Bar (shared) ──
+            if (dm.IsDownloading)
+            {
+                GUILayout.Space(2);
+                EditorGUILayout.BeginHorizontal();
+                GUILayout.Space(16);
+                var rect = EditorGUILayout.GetControlRect(false, 18);
+                EditorGUI.ProgressBar(rect, dm.Progress, BuildProgressLabel(dm));
+                EditorGUILayout.EndHorizontal();
+
+                if (dm.QueueCount > 0)
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    GUILayout.Space(16);
+                    GUILayout.Label($"{dm.QueueCount} task(s) queued", EditorStyles.miniLabel);
+                    if (GUILayout.Button("Cancel All", EditorStyles.miniButton, GUILayout.Width(65)))
+                        dm.CancelAll();
+                    EditorGUILayout.EndHorizontal();
+                }
+            }
+
+            // ── Status Messages ──
+            if (dm.State == DownloadState.Failed && !string.IsNullOrEmpty(dm.LastError))
+            {
+                EditorGUILayout.BeginHorizontal();
+                GUILayout.Space(16);
+                var style = new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = new Color(1f, 0.4f, 0.3f) } };
+                GUILayout.Label($"Last error: {dm.LastError}", style);
+                EditorGUILayout.EndHorizontal();
+            }
+
+            // ── Model path (editable) ──
             EditorGUILayout.BeginHorizontal();
             GUILayout.Space(16);
             GUILayout.Label("Path:", EditorStyles.miniLabel, GUILayout.Width(30));
             settings.EmbeddingModelPath = EditorGUILayout.TextField(settings.EmbeddingModelPath);
             EditorGUILayout.EndHorizontal();
+        }
 
-            // Text model status
-            bool textModelOk = IndexingSetupWizard.IsTextModelReady;
+        private void DrawModelRow(string label, bool isReady, bool isDownloading, long fileSize,
+            Action onDownload, Action onCancel, Action onRemove)
+        {
+            var prevColor = GUI.color;
+            var dm = ModelDownloadManager.Instance;
+
             EditorGUILayout.BeginHorizontal();
-            GUI.color = textModelOk ? new Color(0.4f, 0.9f, 0.4f) : new Color(1f, 0.8f, 0.3f);
-            GUILayout.Label(textModelOk ? "\u2713" : "\u2717", GUILayout.Width(16));
-            GUI.color = prevColor;
-            GUILayout.Label("CLIP Text Model", EditorStyles.miniLabel, GUILayout.Width(100));
-            GUILayout.Label(textModelOk ? "Ready (text search enabled)" : "Not found (text search disabled)", EditorStyles.miniLabel);
-            if (!textModelOk)
+
+            // Status icon
+            if (isDownloading)
             {
-                if (GUILayout.Button("Download", EditorStyles.miniButton, GUILayout.Width(65)))
-                    IndexingSetupWizard.DownloadTextModel();
+                GUI.color = new Color(0.5f, 0.8f, 1f);
+                GUILayout.Label("\u21bb", GUILayout.Width(16));
+            }
+            else if (isReady)
+            {
+                GUI.color = new Color(0.4f, 0.9f, 0.4f);
+                GUILayout.Label("\u2713", GUILayout.Width(16));
             }
             else
             {
-                if (GUILayout.Button("Redownload", EditorStyles.miniButton, GUILayout.Width(75)))
-                    IndexingSetupWizard.DownloadTextModel();
+                GUI.color = new Color(1f, 0.5f, 0.4f);
+                GUILayout.Label("\u2717", GUILayout.Width(16));
             }
+            GUI.color = prevColor;
+
+            // Label
+            GUILayout.Label(label, EditorStyles.miniLabel, GUILayout.Width(90));
+
+            // Status text
+            if (isDownloading)
+                GUILayout.Label("Downloading...", EditorStyles.miniLabel);
+            else if (isReady)
+                GUILayout.Label($"Ready ({FormatFileSize(fileSize)})", EditorStyles.miniLabel);
+            else
+                GUILayout.Label("Not found", EditorStyles.miniLabel);
+
+            GUILayout.FlexibleSpace();
+
+            // Action buttons
+            if (isDownloading)
+            {
+                if (GUILayout.Button("Cancel", EditorStyles.miniButton, GUILayout.Width(55)))
+                    onCancel?.Invoke();
+            }
+            else if (isReady)
+            {
+                GUI.enabled = !dm.IsDownloading;
+                if (GUILayout.Button("Remove", EditorStyles.miniButton, GUILayout.Width(55)))
+                    onRemove?.Invoke();
+                GUI.enabled = true;
+            }
+            else
+            {
+                GUI.enabled = !dm.IsDownloading;
+                if (GUILayout.Button("Download", EditorStyles.miniButton, GUILayout.Width(65)))
+                    onDownload?.Invoke();
+                GUI.enabled = true;
+            }
+
             EditorGUILayout.EndHorizontal();
+        }
+
+        private static string BuildProgressLabel(ModelDownloadManager dm)
+        {
+            var pct = (dm.Progress * 100f).ToString("F1") + "%";
+            if (dm.SpeedMBps > 0.01f)
+                return $"{dm.ProgressText}  ({pct} - {dm.SpeedMBps:F1} MB/s)";
+            return $"{dm.ProgressText}  ({pct})";
         }
 
         private void DrawIndexDirectories()
@@ -329,7 +440,6 @@ namespace Indey.UIPrefabBuilder.UI
             var metaFile = System.IO.Path.Combine(indexDir, "AssetIndexMeta.json");
             var vecFile = System.IO.Path.Combine(indexDir, "AssetVectors.bytes");
 
-            // Status row
             EditorGUILayout.BeginHorizontal();
             var prevColor = GUI.color;
             if (indexer.IsReady)
@@ -348,7 +458,6 @@ namespace Indey.UIPrefabBuilder.UI
             }
             EditorGUILayout.EndHorizontal();
 
-            // Storage info
             long metaSize = System.IO.File.Exists(metaFile) ? new System.IO.FileInfo(metaFile).Length : 0;
             long vecSize = System.IO.File.Exists(vecFile) ? new System.IO.FileInfo(vecFile).Length : 0;
             long totalSize = metaSize + vecSize;
@@ -360,7 +469,6 @@ namespace Indey.UIPrefabBuilder.UI
                 EditorStyles.miniLabel);
             EditorGUILayout.EndHorizontal();
 
-            // Last build time
             if (indexer.LastBuildTimestamp > 0)
             {
                 var buildTime = DateTimeOffset.FromUnixTimeSeconds(indexer.LastBuildTimestamp).LocalDateTime;
@@ -372,7 +480,6 @@ namespace Indey.UIPrefabBuilder.UI
 
             GUILayout.Space(4);
 
-            // Action buttons
             EditorGUILayout.BeginHorizontal();
 
             if (indexer.IsIndexing)

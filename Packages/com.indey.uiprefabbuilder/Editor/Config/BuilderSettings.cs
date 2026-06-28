@@ -21,7 +21,7 @@ namespace Indey.UIPrefabBuilder.Config
         [SerializeField] private bool enableAssetIndexing = false;
         [SerializeField] private string embeddingModelPath = "Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vit_visual.onnx";
         [SerializeField] private string textModelPath = "Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vit_textual.onnx";
-        [SerializeField] private string tokenizerVocabPath = "Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vocab.txt";
+        [SerializeField] private string tokenizerVocabPath = "Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vocab.json";
         [SerializeField] private string tokenizerMergesPath = "Packages/com.indey.uiprefabbuilder/Editor/Models/clip_merges.txt";
 
         public string BaseUrl { get => baseUrl; set => baseUrl = value; }

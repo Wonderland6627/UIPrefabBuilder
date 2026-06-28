@@ -30,6 +30,12 @@ namespace Indey.UIPrefabBuilder.Core
         public long Timestamp;
         public string ToolCallId;
         public List<ToolCallInfo> ToolCalls;
+        /// <summary>
+        /// When true, images in this message are degraded to low-resolution
+        /// instead of being replaced with text placeholders.
+        /// Used for design mockup images that need to remain visible throughout the session.
+        /// </summary>
+        public bool PinImage;
 
         public bool HasMultimodalContent => ContentParts != null && ContentParts.Count > 0;
 
@@ -50,11 +56,17 @@ namespace Indey.UIPrefabBuilder.Core
         private const int SoftLimit = 50;
         private const int MaxToolResultChars = 2000;
         private const int ProtectRecentMessages = 18;
+        private const int ImageDegradeAfterMessages = 16;
+        private bool _imagesDegraded;
 
         public IReadOnlyList<ChatMessage> Messages => _messages;
         public int Count => _messages.Count;
 
-        public void Clear() => _messages.Clear();
+        public void Clear()
+        {
+            _messages.Clear();
+            _imagesDegraded = false;
+        }
 
         public void SetSystemPrompt(string prompt)
         {
@@ -71,7 +83,7 @@ namespace Indey.UIPrefabBuilder.Core
             Trim();
         }
 
-        public void AddUserMultimodal(List<ContentPart> parts)
+        public void AddUserMultimodal(List<ContentPart> parts, bool pinImage = false)
         {
             if (parts == null || parts.Count == 0) return;
             var textContent = parts.FirstOrDefault(p => p.Type == "text")?.Text ?? "";
@@ -80,6 +92,7 @@ namespace Indey.UIPrefabBuilder.Core
                 Role = ChatRole.User,
                 Content = textContent,
                 ContentParts = parts,
+                PinImage = pinImage,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
             });
             Trim();
@@ -139,6 +152,65 @@ namespace Indey.UIPrefabBuilder.Core
             Trim();
         }
 
+        /// <summary>
+        /// Replace base64 image data with a text placeholder in old messages
+        /// to prevent unbounded payload growth. Called automatically when
+        /// message count exceeds ImageDegradeAfterMessages.
+        /// </summary>
+        private void DegradeOldImages()
+        {
+            if (_imagesDegraded) return;
+            if (_messages.Count < ImageDegradeAfterMessages) return;
+
+            _imagesDegraded = true;
+            int degraded = 0;
+            int downscaled = 0;
+
+            int protectFrom = Math.Max(0, _messages.Count - ProtectRecentMessages);
+            for (int i = 0; i < protectFrom; i++)
+            {
+                var msg = _messages[i];
+                if (!msg.HasMultimodalContent) continue;
+
+                if (msg.PinImage)
+                {
+                    foreach (var part in msg.ContentParts)
+                    {
+                        if (part.Type != "image_url" || part.ImageUrl?.Url == null
+                            || !part.ImageUrl.Url.StartsWith("data:"))
+                            continue;
+                        if (part.ImageUrl.Detail == "low") continue;
+                        part.ImageUrl.Detail = "low";
+                        downscaled++;
+                    }
+                    continue;
+                }
+
+                var newParts = new List<ContentPart>();
+                foreach (var part in msg.ContentParts)
+                {
+                    if (part.Type == "image_url" && part.ImageUrl?.Url != null
+                        && part.ImageUrl.Url.StartsWith("data:"))
+                    {
+                        newParts.Add(new ContentPart
+                        {
+                            Type = "text",
+                            Text = "[Image was provided earlier and has been analyzed. Refer to your earlier analysis for design details.]"
+                        });
+                        degraded++;
+                    }
+                    else
+                    {
+                        newParts.Add(part);
+                    }
+                }
+                msg.ContentParts = newParts;
+            }
+
+            if (degraded > 0 || downscaled > 0)
+                Logging.ConsoleLogger.Log($"[MessageHistory] Degraded {degraded} image(s) to text, downscaled {downscaled} pinned image(s) to low detail.");
+        }
+
         #region Context Compression
 
         private static string TruncateToolResult(string result, int maxChars)
@@ -186,6 +258,8 @@ namespace Indey.UIPrefabBuilder.Core
 
         private void CompressIfNeeded()
         {
+            DegradeOldImages();
+
             if (_messages.Count <= SoftLimit) return;
 
             int protectFrom = _messages.Count - ProtectRecentMessages;

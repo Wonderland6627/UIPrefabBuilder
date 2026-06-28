@@ -123,7 +123,14 @@ namespace Indey.UIPrefabBuilder.Core
                     MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(result));
                 }
                 catch (OperationCanceledException) { }
-                catch (Exception e) { MainThreadDispatcher.Enqueue(() => onError?.Invoke(e)); }
+                catch (Exception e)
+                {
+                    var detail = e.InnerException != null
+                        ? $"{e.Message} -> {e.InnerException.GetType().Name}: {e.InnerException.Message}"
+                        : e.Message;
+                    var wrapped = new InvalidOperationException(detail, e);
+                    MainThreadDispatcher.Enqueue(() => onError?.Invoke(wrapped));
+                }
             }, ct);
         }
 
@@ -250,6 +257,8 @@ namespace Indey.UIPrefabBuilder.Core
             return contentArr;
         }
 
+        private const int SSEReadTimeoutSeconds = 90;
+
         private static async Task<LLMResponse> ReadSSEWithTools(
             HttpResponseMessage resp,
             Action<string> onToken,
@@ -264,7 +273,15 @@ namespace Indey.UIPrefabBuilder.Core
             using var reader = new StreamReader(stream);
             while (!reader.EndOfStream && !ct.IsCancellationRequested)
             {
-                var line = await reader.ReadLineAsync();
+                var lineTask = reader.ReadLineAsync();
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(SSEReadTimeoutSeconds), ct);
+                var completed = await Task.WhenAny(lineTask, timeoutTask);
+                if (completed == timeoutTask)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    throw new TimeoutException($"SSE stream read timed out: no data received for {SSEReadTimeoutSeconds} seconds.");
+                }
+                var line = await lineTask;
                 if (string.IsNullOrEmpty(line) || !line.StartsWith("data:")) continue;
                 var data = line.Substring(line.IndexOf(':') + 1).Trim();
                 if (data == "[DONE]") break;

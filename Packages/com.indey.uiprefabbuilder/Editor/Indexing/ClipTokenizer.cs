@@ -50,13 +50,72 @@ namespace Indey.UIPrefabBuilder.Indexing
             _encoder = new Dictionary<string, int>();
             _decoder = new Dictionary<int, string>();
 
-            var lines = File.ReadAllLines(fullPath);
-            for (int i = 0; i < lines.Length; i++)
+            var content = File.ReadAllText(fullPath).TrimStart();
+
+            if (content.StartsWith("{"))
             {
-                var token = lines[i].TrimEnd();
-                if (string.IsNullOrEmpty(token)) continue;
-                _encoder[token] = i;
-                _decoder[i] = token;
+                // JSON format: {"token": id, ...}
+                ParseJsonVocab(content);
+            }
+            else
+            {
+                // Plain text format: one token per line, line number = id
+                var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.None);
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    var token = lines[i].TrimEnd();
+                    if (string.IsNullOrEmpty(token)) continue;
+                    _encoder[token] = i;
+                    _decoder[i] = token;
+                }
+            }
+        }
+
+        private void ParseJsonVocab(string json)
+        {
+            // Lightweight JSON parser for {"key": int, ...} without external dependencies
+            int i = json.IndexOf('{') + 1;
+            int end = json.LastIndexOf('}');
+
+            while (i < end)
+            {
+                // Skip whitespace/commas
+                while (i < end && (json[i] == ' ' || json[i] == '\t' || json[i] == '\n' || json[i] == '\r' || json[i] == ','))
+                    i++;
+
+                if (i >= end) break;
+                if (json[i] != '"') { i++; continue; }
+
+                // Parse key
+                i++; // skip opening quote
+                var keyStart = i;
+                while (i < end && json[i] != '"')
+                {
+                    if (json[i] == '\\') i++; // skip escaped char
+                    i++;
+                }
+                var key = json.Substring(keyStart, i - keyStart)
+                    .Replace("\\\"", "\"")
+                    .Replace("\\\\", "\\")
+                    .Replace("\\/", "/")
+                    .Replace("\\n", "\n")
+                    .Replace("\\t", "\t");
+                i++; // skip closing quote
+
+                // Skip colon and whitespace
+                while (i < end && (json[i] == ' ' || json[i] == ':' || json[i] == '\t'))
+                    i++;
+
+                // Parse integer value
+                var numStart = i;
+                while (i < end && json[i] >= '0' && json[i] <= '9')
+                    i++;
+
+                if (int.TryParse(json.Substring(numStart, i - numStart), out int id))
+                {
+                    _encoder[key] = id;
+                    _decoder[id] = key;
+                }
             }
         }
 

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Indey.UIPrefabBuilder.Logging;
 using UnityEditor;
 using UnityEngine;
@@ -16,6 +17,10 @@ namespace Indey.UIPrefabBuilder.UI
         private GUIStyle _infoStyle, _warnStyle, _errorStyle, _timestampStyle;
         private bool _stylesInit;
 
+        private readonly List<LogEntry> _snapshotEntries = new List<LogEntry>();
+        private int _lastSnapshotCount = -1;
+        private bool _lastShowInfo, _lastShowWarning, _lastShowError;
+
         public ConsolePanel()
         {
             ConsoleLogger.OnLogAdded += _ => _needsScroll = true;
@@ -29,13 +34,30 @@ namespace Indey.UIPrefabBuilder.UI
 
             DrawToolbar();
 
-            var entries = ConsoleLogger.Entries;
+            if (Event.current.type == EventType.Layout)
+            {
+                var entries = ConsoleLogger.Entries;
+                bool filtersChanged = _showInfo != _lastShowInfo || _showWarning != _lastShowWarning || _showError != _lastShowError;
+                if (entries.Count != _lastSnapshotCount || filtersChanged)
+                {
+                    _snapshotEntries.Clear();
+                    for (int i = 0; i < entries.Count; i++)
+                    {
+                        if (ShouldShow(entries[i].Level))
+                            _snapshotEntries.Add(entries[i]);
+                    }
+                    _lastSnapshotCount = entries.Count;
+                    _lastShowInfo = _showInfo;
+                    _lastShowWarning = _showWarning;
+                    _lastShowError = _showError;
+                }
+            }
+
             _scroll = EditorGUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
 
-            for (int i = 0; i < entries.Count; i++)
+            for (int i = 0; i < _snapshotEntries.Count; i++)
             {
-                var entry = entries[i];
-                if (!ShouldShow(entry.Level)) continue;
+                var entry = _snapshotEntries[i];
 
                 EditorGUILayout.BeginHorizontal();
                 GUILayout.Label(entry.Timestamp.ToString("HH:mm:ss"), _timestampStyle, GUILayout.Width(58));

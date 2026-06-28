@@ -42,5 +42,7 @@ Packages/com.indey.uiprefabbuilder/Editor/Models/*.onnx
 Packages/com.indey.uiprefabbuilder/Editor/Models/*.onnx.meta
 Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vocab.txt
 Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vocab.txt.meta
+Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vocab.json
+Packages/com.indey.uiprefabbuilder/Editor/Models/clip_vocab.json.meta
 Packages/com.indey.uiprefabbuilder/Editor/Models/clip_merges.txt
 Packages/com.indey.uiprefabbuilder/Editor/Models/clip_merges.txt.meta

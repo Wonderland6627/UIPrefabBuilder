@@ -53,13 +53,12 @@ namespace Indey.UIPrefabBuilder.Indexing
 
                 DetectModelInputs();
 
-                try
+                if (TryCreateGPUWorker())
                 {
-                    _worker = WorkerFactory.CreateWorker(BackendType.GPUCompute, _model);
                     _isLoaded = true;
                     ConsoleLogger.Log($"[EmbeddingService] Model loaded from {modelPath} (GPU backend)");
                 }
-                catch (Exception)
+                else
                 {
                     _worker?.Dispose();
                     _worker = WorkerFactory.CreateWorker(BackendType.CPU, _model);
@@ -107,14 +106,11 @@ namespace Indey.UIPrefabBuilder.Indexing
                 if (_textInputName == null)
                     _textInputName = _textModel.inputs[0].name;
 
-                try
-                {
-                    _textWorker = WorkerFactory.CreateWorker(BackendType.GPUCompute, _textModel);
-                }
-                catch (Exception)
+                if (!TryCreateGPUTextWorker())
                 {
                     _textWorker?.Dispose();
                     _textWorker = WorkerFactory.CreateWorker(BackendType.CPU, _textModel);
+                    ConsoleLogger.Log("[EmbeddingService] Text model using CPU fallback");
                 }
 
                 _tokenizer = new ClipTokenizer();
@@ -251,6 +247,66 @@ namespace Indey.UIPrefabBuilder.Indexing
                 return normalized.Substring(assetsIdx + 1);
 
             return null;
+        }
+
+        private bool TryCreateGPUTextWorker()
+        {
+            try
+            {
+                _textWorker = WorkerFactory.CreateWorker(BackendType.GPUCompute, _textModel);
+                var dummyInput = new TensorInt(new TensorShape(1, 1), new int[] { 0 });
+                try
+                {
+                    _textWorker.SetInput(_textInputName ?? _textModel.inputs[0].name, dummyInput);
+                    _textWorker.Execute();
+                    return true;
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+                finally
+                {
+                    dummyInput.Dispose();
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Try creating a GPU worker and run a minimal test inference.
+        /// Returns false if GPU compute is unsupported (e.g. Unity 2021 + Sentis).
+        /// </summary>
+        private bool TryCreateGPUWorker()
+        {
+            try
+            {
+                _worker = WorkerFactory.CreateWorker(BackendType.GPUCompute, _model);
+
+                // Run a dummy inference to verify ComputeShaderSingleton initializes properly
+                var dummyInput = new TensorFloat(new TensorShape(1, 3, 224, 224), new float[1 * 3 * 224 * 224]);
+                try
+                {
+                    _worker.SetInput(_pixelInputName, dummyInput);
+                    _worker.Execute();
+                    return true;
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+                finally
+                {
+                    dummyInput.Dispose();
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         private void DetectModelInputs()

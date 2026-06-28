@@ -187,6 +187,11 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("y", "number", "Y position", true)
                 )),
 
+            // ── Image Properties (Batch) ──
+            Def("set_image_batch",
+                "Set Image component properties for multiple elements in one call. ALWAYS use this when styling 2+ Image elements. Each item: {target (required), spritePath, type, fillMethod, fillAmount, preserveAspect, r/g/b/a}.",
+                Props(P("items", "string", "JSON array string of image property configs", true))),
+
             // ── Image Properties ──
             Def("set_image",
                 "Set Image component properties: sprite, type (Simple/Sliced/Tiled/Filled), fill, and preserveAspect. All fields optional except target.",
@@ -219,6 +224,11 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("b", "number", "Blue (0-1)", true),
                     P("a", "number", "Alpha (0-1)", false, 1)
                 )),
+
+            // ── Text Properties (Batch) ──
+            Def("set_text_properties_batch",
+                "Set text properties for multiple elements in one call. ALWAYS use this when styling 2+ Text/TMP elements. Each item: {target (required), text, fontSize, alignment, fontStyle, r/g/b/a, overflow}.",
+                Props(P("items", "string", "JSON array string of text property configs", true))),
 
             // ── Text Properties ──
             Def("set_text_properties",
@@ -295,6 +305,10 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("spacingY", "number", "Vertical spacing", false, 0)
                 )),
 
+            Def("add_layout_element_batch",
+                "Add LayoutElement to multiple GameObjects in one call. ALWAYS use this when configuring 2+ layout children. Each item: {target (required), minWidth, minHeight, preferredWidth, preferredHeight, flexibleWidth, flexibleHeight}.",
+                Props(P("items", "string", "JSON array string of layout element configs", true))),
+
             Def("add_layout_element",
                 "Add a LayoutElement to control how a child behaves in a layout group.",
                 Props(
@@ -315,6 +329,10 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("maskType", "string", "Mask type: Mask or RectMask2D", false, "RectMask2D"),
                     P("showMaskGraphic", "boolean", "Show the mask graphic (only for Mask type)", false, false)
                 )),
+
+            Def("add_outline_batch",
+                "Add Outline or Shadow effects to multiple UI elements in one call. ALWAYS use this when adding effects to 2+ elements. Each item: {target (required), effectType, r/g/b/a, distanceX, distanceY}.",
+                Props(P("items", "string", "JSON array string of outline/shadow configs", true))),
 
             Def("add_outline",
                 "Add an Outline or Shadow effect to a UI element.",
@@ -345,6 +363,10 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("target", "string", "Name of the target GameObject", true),
                     P("componentType", "string", "Component type name, e.g. 'Button', 'Outline', 'Shadow', 'ContentSizeFitter', 'CanvasGroup'", true)
                 )),
+
+            Def("set_component_property_batch",
+                "Set component properties on multiple GameObjects in one call. ALWAYS use this when setting properties on 2+ elements. Each item: {target (required), componentType, propertyName, value, assetPath?}.",
+                Props(P("items", "string", "JSON array string of component property configs", true))),
 
             Def("set_component_property",
                 "Set a property or field on any component via reflection. Supports primitives, enums, Color, Vector2/3, and asset references.",
@@ -498,6 +520,13 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("query", "string", "Natural language description of the sprite to find, e.g. 'treasure chest', 'blue button', 'sword icon'", true),
                     P("topK", "integer", "Number of top matches to return", false, 10),
                     P("minConfidence", "number", "Minimum confidence threshold (0-100). Results below this score are filtered out.", false, 15)
+                )),
+
+            Def("search_sprites_by_text_batch",
+                "Search indexed sprites by multiple text descriptions in one call. Each query uses CLIP text-image matching independently. Much more efficient than calling search_sprites_by_text multiple times — use this when you need to find 2+ different sprites.",
+                Props(
+                    P("queries", "array", "Array of search objects. Each object must have 'query' (string). Optional: 'topK' (integer, default 5). Example: [{\"query\":\"gold coin\"},{\"query\":\"red button\",\"topK\":3}]", true),
+                    P("minConfidence", "number", "Minimum confidence threshold (0-100) applied to all queries. Results below this score are filtered out.", false, 15)
                 )),
 
             Def("rebuild_asset_index",

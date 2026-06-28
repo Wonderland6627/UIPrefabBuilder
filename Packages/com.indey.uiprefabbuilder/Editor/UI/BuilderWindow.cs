@@ -22,6 +22,7 @@ namespace Indey.UIPrefabBuilder.UI
         private float _lastRepaint;
 
         private readonly List<ChatBubble> _bubbles = new List<ChatBubble>();
+        private readonly List<string> _attachedFiles = new List<string>();
         private string _streamBuffer = "";
         private string _thinkingStreamBuffer = "";
         private bool _isStreaming;
@@ -310,6 +311,13 @@ namespace Indey.UIPrefabBuilder.UI
                 GUILayout.Label(b.Content, EditorStyles.wordWrappedLabel);
             }
 
+            if (b.AttachedFilePaths != null && b.AttachedFilePaths.Count > 0)
+            {
+                GUILayout.Space(2);
+                foreach (var fp in b.AttachedFilePaths)
+                    GUILayout.Label("\ud83d\uddbc " + Path.GetFileName(fp), EditorStyles.miniLabel);
+            }
+
             EditorGUILayout.EndVertical();
 
             if (isUser)
@@ -330,17 +338,7 @@ namespace Indey.UIPrefabBuilder.UI
         {
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
 
-            // Context buttons row
-            EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("@Scene", EditorStyles.miniButton, GUILayout.Width(55)))
-                _input += $"\n[Context: {UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}]";
-            if (GUILayout.Button("@Selection", EditorStyles.miniButton, GUILayout.Width(65)))
-            {
-                var sel = Selection.activeGameObject;
-                if (sel != null) _input += $"\n[Selection: {ContextBuilder.GetPath(sel)}]";
-            }
-            GUILayout.FlexibleSpace();
-            EditorGUILayout.EndHorizontal();
+            DrawAttachmentArea();
 
             // Input text area
             _inputScroll = EditorGUILayout.BeginScrollView(_inputScroll, GUILayout.Height(55));
@@ -361,7 +359,8 @@ namespace Indey.UIPrefabBuilder.UI
             }
             else
             {
-                GUI.enabled = !string.IsNullOrWhiteSpace(_input);
+                bool hasContent = !string.IsNullOrWhiteSpace(_input) || _attachedFiles.Count > 0;
+                GUI.enabled = hasContent;
                 if (GUILayout.Button("Send", GUILayout.Width(55))) Send();
                 GUI.enabled = true;
             }
@@ -373,6 +372,71 @@ namespace Indey.UIPrefabBuilder.UI
             }
             EditorGUILayout.EndHorizontal();
             EditorGUILayout.EndVertical();
+        }
+
+        private static readonly HashSet<string> AllowedImageExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".png", ".jpg", ".jpeg", ".webp", ".bmp"
+        };
+        private const long MaxFileBytes = 10 * 1024 * 1024; // 10 MB
+
+        private void DrawAttachmentArea()
+        {
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(22)))
+            {
+                var path = EditorUtility.OpenFilePanelWithFilters(
+                    "Select Design Mockup", "",
+                    new[] { "Image files", "png,jpg,jpeg,webp,bmp", "All files", "*" });
+                if (!string.IsNullOrEmpty(path))
+                    TryAddAttachment(path);
+            }
+            if (_attachedFiles.Count == 0)
+                GUILayout.Label("Attach design mockup...", EditorStyles.miniLabel);
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+
+            if (_attachedFiles.Count == 0) return;
+
+            int removeIdx = -1;
+            for (int i = 0; i < _attachedFiles.Count; i++)
+            {
+                EditorGUILayout.BeginHorizontal();
+                GUILayout.Space(8);
+                GUILayout.Label("\u2022 " + Path.GetFileName(_attachedFiles[i]),
+                    EditorStyles.miniLabel, GUILayout.ExpandWidth(true));
+                if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(18)))
+                    removeIdx = i;
+                EditorGUILayout.EndHorizontal();
+            }
+            if (removeIdx >= 0) _attachedFiles.RemoveAt(removeIdx);
+        }
+
+        private void TryAddAttachment(string path)
+        {
+            var ext = Path.GetExtension(path);
+            if (!AllowedImageExtensions.Contains(ext))
+            {
+                EditorUtility.DisplayDialog("Unsupported Format",
+                    $"Only image files are supported ({string.Join(", ", AllowedImageExtensions)}).\nSelected: {ext}", "OK");
+                return;
+            }
+
+            var info = new FileInfo(path);
+            if (!info.Exists)
+            {
+                EditorUtility.DisplayDialog("File Not Found", $"File does not exist:\n{path}", "OK");
+                return;
+            }
+            if (info.Length > MaxFileBytes)
+            {
+                EditorUtility.DisplayDialog("File Too Large",
+                    $"File size ({info.Length / (1024 * 1024):F1} MB) exceeds the 10 MB limit.", "OK");
+                return;
+            }
+
+            if (!_attachedFiles.Contains(path))
+                _attachedFiles.Add(path);
         }
 
         private void DrawStatusBar()
@@ -423,10 +487,37 @@ namespace Indey.UIPrefabBuilder.UI
         #region Actions
         private void Send()
         {
-            if (string.IsNullOrWhiteSpace(_input)) return;
-            AddBubble(BubbleType.User, _input.Trim());
-            _agent?.StartTask(_input.Trim());
+            var text = _input?.Trim() ?? "";
+            bool hasText = !string.IsNullOrWhiteSpace(text);
+            bool hasFiles = _attachedFiles.Count > 0;
+
+            if (!hasText && !hasFiles) return;
+
+            if (hasFiles && !BuilderSettings.Get().SupportsVision)
+            {
+                EditorUtility.DisplayDialog("Vision Not Enabled",
+                    "The current model does not have 'Supports Vision' enabled.\n\n" +
+                    "Please enable it in Settings before sending images.", "OK");
+                return;
+            }
+
+            var displayText = hasText ? text : "";
+            if (hasFiles)
+            {
+                var fileNames = new StringBuilder();
+                foreach (var f in _attachedFiles)
+                    fileNames.AppendLine($"  [{Path.GetFileName(f)}]");
+                displayText = (hasText ? text + "\n" : "") + fileNames.ToString().TrimEnd();
+            }
+            AddBubble(BubbleType.User, displayText, hasFiles ? new List<string>(_attachedFiles) : null);
+
+            if (hasFiles)
+                _agent?.StartTask(text, new List<string>(_attachedFiles));
+            else
+                _agent?.StartTask(text);
+
             _input = "";
+            _attachedFiles.Clear();
             _streamBuffer = "";
             _thinkingStreamBuffer = "";
             _isStreaming = false;
@@ -502,10 +593,10 @@ namespace Indey.UIPrefabBuilder.UI
         #endregion
 
         #region Helpers
-        private void AddBubble(BubbleType type, string content)
+        private void AddBubble(BubbleType type, string content, List<string> attachedFiles = null)
         {
-            if (string.IsNullOrWhiteSpace(content)) return;
-            _bubbles.Add(new ChatBubble { Type = type, Content = content });
+            if (string.IsNullOrWhiteSpace(content) && (attachedFiles == null || attachedFiles.Count == 0)) return;
+            _bubbles.Add(new ChatBubble { Type = type, Content = content ?? "", AttachedFilePaths = attachedFiles });
             _chatScroll.y = float.MaxValue;
             _needsRepaint = true;
         }
@@ -583,5 +674,6 @@ namespace Indey.UIPrefabBuilder.UI
         public BubbleType Type;
         public string Content;
         public bool Expanded;
+        public List<string> AttachedFilePaths;
     }
 }

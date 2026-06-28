@@ -65,10 +65,12 @@ namespace Indey.UIPrefabBuilder.Skills
                 case "set_position": return DoSetPosition(args);
                 // Image
                 case "set_image": return DoSetImage(args);
+                case "set_image_batch": return DoSetImageBatch(args);
                 case "set_image_sprite": return DoSetImageSprite(args);
                 case "set_image_color": return DoSetImageColor(args);
                 // Text
                 case "set_text_properties": return DoSetTextProperties(args);
+                case "set_text_properties_batch": return DoSetTextPropertiesBatch(args);
                 case "set_text": return DoSetText(args);
                 // Layout
                 case "add_canvas_group": return DoAddCanvasGroup(args);
@@ -76,13 +78,16 @@ namespace Indey.UIPrefabBuilder.Skills
                 case "add_horizontal_layout": return DoAddHorizontalLayout(args);
                 case "add_grid_layout": return DoAddGridLayout(args);
                 case "add_layout_element": return DoAddLayoutElement(args);
+                case "add_layout_element_batch": return DoAddLayoutElementBatch(args);
                 // Effects
                 case "add_mask": return DoAddMask(args);
                 case "add_outline": return DoAddOutline(args);
+                case "add_outline_batch": return DoAddOutlineBatch(args);
                 case "configure_selectable": return DoConfigureSelectable(args);
                 // Generic component
                 case "add_component": return DoAddComponent(args);
                 case "set_component_property": return DoSetComponentProperty(args);
+                case "set_component_property_batch": return DoSetComponentPropertyBatch(args);
                 // Sibling order
                 case "set_sibling_index": return DoSetSiblingIndex(args);
                 // GameObject management
@@ -115,6 +120,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 // Asset Indexing
                 case "match_sprite_by_image": return DoMatchSpriteByImage(args);
                 case "search_sprites_by_text": return DoSearchSpritesByText(args);
+                case "search_sprites_by_text_batch": return DoSearchSpritesByTextBatch(args);
                 case "rebuild_asset_index": return DoRebuildAssetIndex(args);
                 case "get_index_status": return DoGetIndexStatus(args);
                 default: return Error($"Unknown tool: {toolName}");
@@ -454,6 +460,51 @@ namespace Indey.UIPrefabBuilder.Skills
             return Ok($"Image properties updated on '{go.name}'.");
         }
 
+        private string DoSetImageBatch(JObject args)
+        {
+            var itemsJson = Str(args, "items");
+            if (string.IsNullOrWhiteSpace(itemsJson)) return Error("Missing 'items' parameter.");
+
+            JArray items;
+            try { items = JArray.Parse(itemsJson); }
+            catch { return Error("Invalid JSON in 'items' parameter."); }
+
+            int total = items.Count, success = 0, fail = 0;
+            var results = new JArray();
+
+            foreach (JObject item in items)
+            {
+                var target = item["target"]?.ToString();
+                var go = FindGO(target);
+                if (go == null) { results.Add(ItemFail(target ?? "?", "Not found")); fail++; continue; }
+                try
+                {
+                    Color? color = null;
+                    if (item["r"] != null || item["g"] != null || item["b"] != null)
+                        color = new Color(
+                            item["r"] != null ? (float)item["r"] : 1f,
+                            item["g"] != null ? (float)item["g"] : 1f,
+                            item["b"] != null ? (float)item["b"] : 1f,
+                            item["a"] != null ? (float)item["a"] : 1f);
+                    var spritePath = item["spritePath"]?.ToString();
+                    var type = item["type"]?.ToString();
+                    var fillMethod = item["fillMethod"]?.ToString();
+                    float? fillAmount = item["fillAmount"] != null ? (float?)item["fillAmount"] : null;
+                    bool? preserveAspect = item["preserveAspect"] != null ? (bool?)item["preserveAspect"] : null;
+                    ComponentHelper.SetImageProperties(go, spritePath, type, fillMethod, fillAmount, preserveAspect, color);
+                    results.Add(new JObject { ["success"] = true, ["name"] = go.name });
+                    success++;
+                }
+                catch (Exception e)
+                {
+                    results.Add(ItemFail(target, e.Message));
+                    fail++;
+                }
+            }
+
+            return new JObject { ["success"] = fail == 0, ["totalItems"] = total, ["successCount"] = success, ["failCount"] = fail, ["results"] = results }.ToString();
+        }
+
         private string DoSetImageSprite(JObject args)
         {
             var go = FindGO(Str(args, "target"));
@@ -481,6 +532,48 @@ namespace Indey.UIPrefabBuilder.Skills
             ComponentHelper.SetTextProperties(go, args["text"]?.ToString(), fontSize,
                 args["alignment"]?.ToString(), args["fontStyle"]?.ToString(), color, args["overflow"]?.ToString());
             return Ok($"Text properties updated on '{go.name}'.");
+        }
+
+        private string DoSetTextPropertiesBatch(JObject args)
+        {
+            var itemsJson = Str(args, "items");
+            if (string.IsNullOrWhiteSpace(itemsJson)) return Error("Missing 'items' parameter.");
+
+            JArray items;
+            try { items = JArray.Parse(itemsJson); }
+            catch { return Error("Invalid JSON in 'items' parameter."); }
+
+            int total = items.Count, success = 0, fail = 0;
+            var results = new JArray();
+
+            foreach (JObject item in items)
+            {
+                var target = item["target"]?.ToString();
+                var go = FindGO(target);
+                if (go == null) { results.Add(ItemFail(target ?? "?", "Not found")); fail++; continue; }
+                try
+                {
+                    Color? color = null;
+                    if (item["r"] != null || item["g"] != null || item["b"] != null)
+                        color = new Color(
+                            item["r"] != null ? (float)item["r"] : 1f,
+                            item["g"] != null ? (float)item["g"] : 1f,
+                            item["b"] != null ? (float)item["b"] : 1f,
+                            item["a"] != null ? (float)item["a"] : 1f);
+                    int? fontSize = item["fontSize"] != null ? (int?)(int)item["fontSize"] : null;
+                    ComponentHelper.SetTextProperties(go, item["text"]?.ToString(), fontSize,
+                        item["alignment"]?.ToString(), item["fontStyle"]?.ToString(), color, item["overflow"]?.ToString());
+                    results.Add(new JObject { ["success"] = true, ["name"] = go.name });
+                    success++;
+                }
+                catch (Exception e)
+                {
+                    results.Add(ItemFail(target, e.Message));
+                    fail++;
+                }
+            }
+
+            return new JObject { ["success"] = fail == 0, ["totalItems"] = total, ["successCount"] = success, ["failCount"] = fail, ["results"] = results }.ToString();
         }
 
         private string DoSetText(JObject args)
@@ -542,6 +635,45 @@ namespace Indey.UIPrefabBuilder.Skills
             return Ok($"LayoutElement added to '{go.name}'.");
         }
 
+        private string DoAddLayoutElementBatch(JObject args)
+        {
+            var itemsJson = Str(args, "items");
+            if (string.IsNullOrWhiteSpace(itemsJson)) return Error("Missing 'items' parameter.");
+
+            JArray items;
+            try { items = JArray.Parse(itemsJson); }
+            catch { return Error("Invalid JSON in 'items' parameter."); }
+
+            int total = items.Count, success = 0, fail = 0;
+            var results = new JArray();
+
+            foreach (JObject item in items)
+            {
+                var target = item["target"]?.ToString();
+                var go = FindGO(target);
+                if (go == null) { results.Add(ItemFail(target ?? "?", "Not found")); fail++; continue; }
+                try
+                {
+                    LayoutHelper.AddLayoutElement(go,
+                        item["minWidth"] != null ? (float?)item["minWidth"] : null,
+                        item["minHeight"] != null ? (float?)item["minHeight"] : null,
+                        item["preferredWidth"] != null ? (float?)item["preferredWidth"] : null,
+                        item["preferredHeight"] != null ? (float?)item["preferredHeight"] : null,
+                        item["flexibleWidth"] != null ? (float?)item["flexibleWidth"] : null,
+                        item["flexibleHeight"] != null ? (float?)item["flexibleHeight"] : null);
+                    results.Add(new JObject { ["success"] = true, ["name"] = go.name });
+                    success++;
+                }
+                catch (Exception e)
+                {
+                    results.Add(ItemFail(target, e.Message));
+                    fail++;
+                }
+            }
+
+            return new JObject { ["success"] = fail == 0, ["totalItems"] = total, ["successCount"] = success, ["failCount"] = fail, ["results"] = results }.ToString();
+        }
+
         #endregion
 
         #region Effects
@@ -562,6 +694,48 @@ namespace Indey.UIPrefabBuilder.Skills
             ComponentHelper.AddOutline(go, Str(args, "effectType", "Outline"), color,
                 new Vector2(Float(args, "distanceX", 1), Float(args, "distanceY", -1)));
             return Ok($"Effect added to '{go.name}'.");
+        }
+
+        private string DoAddOutlineBatch(JObject args)
+        {
+            var itemsJson = Str(args, "items");
+            if (string.IsNullOrWhiteSpace(itemsJson)) return Error("Missing 'items' parameter.");
+
+            JArray items;
+            try { items = JArray.Parse(itemsJson); }
+            catch { return Error("Invalid JSON in 'items' parameter."); }
+
+            int total = items.Count, success = 0, fail = 0;
+            var results = new JArray();
+
+            foreach (JObject item in items)
+            {
+                var target = item["target"]?.ToString();
+                var go = FindGO(target);
+                if (go == null) { results.Add(ItemFail(target ?? "?", "Not found")); fail++; continue; }
+                try
+                {
+                    var color = new Color(
+                        item["r"] != null ? (float)item["r"] : 0f,
+                        item["g"] != null ? (float)item["g"] : 0f,
+                        item["b"] != null ? (float)item["b"] : 0f,
+                        item["a"] != null ? (float)item["a"] : 0.5f);
+                    var effectType = item["effectType"]?.ToString() ?? "Outline";
+                    var dist = new Vector2(
+                        item["distanceX"] != null ? (float)item["distanceX"] : 1f,
+                        item["distanceY"] != null ? (float)item["distanceY"] : -1f);
+                    ComponentHelper.AddOutline(go, effectType, color, dist);
+                    results.Add(new JObject { ["success"] = true, ["name"] = go.name });
+                    success++;
+                }
+                catch (Exception e)
+                {
+                    results.Add(ItemFail(target, e.Message));
+                    fail++;
+                }
+            }
+
+            return new JObject { ["success"] = fail == 0, ["totalItems"] = total, ["successCount"] = success, ["failCount"] = fail, ["results"] = results }.ToString();
         }
 
         private string DoConfigureSelectable(JObject args)
@@ -594,6 +768,51 @@ namespace Indey.UIPrefabBuilder.Skills
             var ok = ComponentHelper.SetComponentProperty(go, Str(args, "componentType"), Str(args, "propertyName"),
                 Str(args, "value"), Str(args, "assetPath", null));
             return ok ? Ok($"Property set on '{go.name}'.") : Error("Property not found or type mismatch.");
+        }
+
+        private string DoSetComponentPropertyBatch(JObject args)
+        {
+            var itemsJson = Str(args, "items");
+            if (string.IsNullOrWhiteSpace(itemsJson)) return Error("Missing 'items' parameter.");
+
+            JArray items;
+            try { items = JArray.Parse(itemsJson); }
+            catch { return Error("Invalid JSON in 'items' parameter."); }
+
+            int total = items.Count, success = 0, fail = 0;
+            var results = new JArray();
+
+            foreach (JObject item in items)
+            {
+                var target = item["target"]?.ToString();
+                var go = FindGO(target);
+                if (go == null) { results.Add(ItemFail(target ?? "?", "Not found")); fail++; continue; }
+                try
+                {
+                    var ok = ComponentHelper.SetComponentProperty(go,
+                        item["componentType"]?.ToString(),
+                        item["propertyName"]?.ToString(),
+                        item["value"]?.ToString(),
+                        item["assetPath"]?.ToString());
+                    if (ok)
+                    {
+                        results.Add(new JObject { ["success"] = true, ["name"] = go.name });
+                        success++;
+                    }
+                    else
+                    {
+                        results.Add(ItemFail(target, "Property not found or type mismatch."));
+                        fail++;
+                    }
+                }
+                catch (Exception e)
+                {
+                    results.Add(ItemFail(target, e.Message));
+                    fail++;
+                }
+            }
+
+            return new JObject { ["success"] = fail == 0, ["totalItems"] = total, ["successCount"] = success, ["failCount"] = fail, ["results"] = results }.ToString();
         }
 
         #endregion
@@ -1174,6 +1393,81 @@ namespace Indey.UIPrefabBuilder.Skills
                 ["query"] = query,
                 ["count"] = filtered.Count,
                 ["matches"] = matchArr
+            }.ToString();
+        }
+
+        private string DoSearchSpritesByTextBatch(JObject args)
+        {
+            var settings = BuilderSettings.Get();
+            if (!settings.EnableAssetIndexing)
+                return Error("Asset indexing is not enabled. Enable it in Agent Settings first.");
+
+            var indexer = AssetIndexer.Instance;
+            if (!indexer.IsReady)
+            {
+                indexer.EnsureInitialized();
+                if (!indexer.IsReady)
+                    return Error("Asset index not ready. The embedding model may not be loaded.");
+            }
+
+            if (indexer.IndexedCount == 0)
+                return Error("Asset index is empty. Run rebuild_asset_index first.");
+
+            var queriesToken = args["queries"] as JArray;
+            if (queriesToken == null || queriesToken.Count == 0)
+                return Error("Missing or empty 'queries' array.");
+
+            var globalMinConfidence = Float(args, "minConfidence", 15f);
+            var resultsArr = new JArray();
+
+            foreach (var item in queriesToken)
+            {
+                var queryObj = item as JObject;
+                var query = queryObj?["query"]?.ToString();
+                if (string.IsNullOrEmpty(query))
+                {
+                    resultsArr.Add(new JObject { ["query"] = "", ["error"] = "Missing 'query' field" });
+                    continue;
+                }
+
+                var topK = queryObj["topK"] != null ? (int)queryObj["topK"] : 5;
+                var results = indexer.QueryByText(query, topK);
+
+                if (results == null || results.Count == 0)
+                {
+                    resultsArr.Add(new JObject
+                    {
+                        ["query"] = query, ["count"] = 0, ["matches"] = new JArray()
+                    });
+                    continue;
+                }
+
+                var filtered = results.Where(r => r.confidence >= globalMinConfidence).ToList();
+                var matchArr = new JArray();
+                foreach (var m in filtered)
+                {
+                    var info = AssetFinder.GetInfo(m.assetPath);
+                    matchArr.Add(new JObject
+                    {
+                        ["assetPath"] = m.assetPath,
+                        ["guid"] = m.guid,
+                        ["confidence"] = Math.Round(m.confidence, 1),
+                        ["score"] = Math.Round(m.score, 4),
+                        ["assetInfo"] = info
+                    });
+                }
+
+                resultsArr.Add(new JObject
+                {
+                    ["query"] = query, ["count"] = filtered.Count, ["matches"] = matchArr
+                });
+            }
+
+            return new JObject
+            {
+                ["success"] = true,
+                ["totalQueries"] = queriesToken.Count,
+                ["results"] = resultsArr
             }.ToString();
         }
 

@@ -9,8 +9,8 @@ namespace Indey.UIPrefabBuilder.Indexing
     [Serializable]
     public class IndexingConfig
     {
-        public List<string> indexDirectories = new List<string> { "Assets" };
-        public List<string> ignorePatterns = new List<string> { "*_bg.png", "*_seq_*" };
+        public List<string> indexDirectories = new List<string> { };
+        public List<string> ignorePatterns = new List<string> { };
         public int topKDefault = 5;
         public float minConfidenceThreshold = 0.5f;
 

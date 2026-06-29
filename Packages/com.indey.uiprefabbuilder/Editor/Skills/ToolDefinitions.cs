@@ -32,6 +32,16 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("limit", "integer", "Maximum results", false, 50)
                 )),
 
+            Def("search_assets_glob_batch",
+                "Search multiple glob patterns at once. Returns results grouped by pattern. More efficient than multiple search_assets_glob calls.",
+                Props(
+                    PArray("patterns", "Array of glob patterns, e.g. ['*popup*', '*chest*', '*arrow*']", true,
+                        new JObject { ["type"] = "string" }),
+                    P("directory", "string", "Directory to search in, e.g. 'Assets/Sprites'. Default: Assets", false, "Assets"),
+                    P("extensions", "string", "Comma-separated file extensions, e.g. '.png,.jpg'. Default: all", false),
+                    P("limit", "integer", "Maximum results per pattern", false, 20)
+                )),
+
             Def("get_asset_info",
                 "Get information about a specific asset at the given path.",
                 Props(P("path", "string", "Asset path, e.g. 'Assets/Sprites/UI/btn_green.png'", true))),

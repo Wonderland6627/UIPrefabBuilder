@@ -42,6 +42,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 // Asset
                 case "search_assets": return DoSearchAssets(args);
                 case "search_assets_glob": return DoSearchAssetsGlob(args);
+                case "search_assets_glob_batch": return DoSearchAssetsGlobBatch(args);
                 case "get_asset_info": return DoGetAssetInfo(args);
                 // Create single
                 case "create_canvas": return DoCreateCanvas(args);
@@ -147,6 +148,31 @@ namespace Indey.UIPrefabBuilder.Skills
             var results = AssetFinder.FindByGlob(pattern, directory, extensions, limit);
             var arr = new JArray(results.Select(p => (JToken)p));
             return new JObject { ["success"] = true, ["count"] = results.Count, ["assets"] = arr }.ToString();
+        }
+
+        private string DoSearchAssetsGlobBatch(JObject args)
+        {
+            var patternsToken = args["patterns"] as JArray;
+            if (patternsToken == null || patternsToken.Count == 0)
+                return Error("Missing or empty 'patterns' array.");
+
+            var directory = Str(args, "directory", "Assets");
+            var extensions = Str(args, "extensions", null);
+            var limit = Int(args, "limit", 20);
+
+            var resultsObj = new JObject();
+            int totalCount = 0;
+
+            foreach (var token in patternsToken)
+            {
+                var pattern = token.ToString();
+                if (string.IsNullOrWhiteSpace(pattern)) continue;
+                var results = AssetFinder.FindByGlob(pattern, directory, extensions, limit);
+                resultsObj[pattern] = new JArray(results.Select(p => (JToken)p));
+                totalCount += results.Count;
+            }
+
+            return new JObject { ["success"] = true, ["count"] = totalCount, ["results"] = resultsObj }.ToString();
         }
 
         private string DoGetAssetInfo(JObject args)

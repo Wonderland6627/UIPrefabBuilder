@@ -14,14 +14,6 @@ using UnityEngine;
 
 namespace Indey.UIPrefabBuilder.Core
 {
-    public enum TaskIntent
-    {
-        Build,
-        Analyze,
-        Modify,
-        Query
-    }
-
     public class AgentEngine : IDisposable
     {
         private readonly BuilderSettings _settings;
@@ -51,25 +43,6 @@ namespace Indey.UIPrefabBuilder.Core
         private const int MaxTextOnlyResponses = 2;
         private const int PostBuildSearchBudget = 8;
         private string _designImagePath;
-        private TaskIntent _currentIntent = TaskIntent.Build;
-
-        private static readonly string[] AnalysisKeywords = {
-            "分析", "查看", "检查", "解释", "说明", "描述", "看看", "理解", "了解",
-            "拆解", "结构", "组成", "层次", "解析", "review",
-            "analyze", "analysis", "explain", "describe", "inspect", "check",
-            "structure", "breakdown", "understand",
-            "what is", "how does", "show me", "tell me", "list"
-        };
-
-        private static readonly string[] BuildKeywords = {
-            "实现", "创建", "构建", "搭建", "制作", "生成", "做", "摆", "还原", "复刻",
-            "build", "create", "make", "implement", "generate", "place", "layout"
-        };
-
-        private static readonly string[] ModifyKeywords = {
-            "修改", "调整", "移动", "改", "换", "删除", "添加", "增加", "移除",
-            "modify", "change", "move", "adjust", "update", "replace", "remove", "add"
-        };
 
         public AgentState State => _state;
         public MessageHistory History => _history;
@@ -109,14 +82,12 @@ namespace Indey.UIPrefabBuilder.Core
 
             _pendingMessage = msg;
             ResetStepCounters();
-            _currentIntent = ClassifyIntent(msg, false);
-
-            RebuildSystemPrompt(_currentIntent);
+            RebuildSystemPrompt();
 
             var effectiveMax = EffectiveMaxSteps;
             ConsoleLogger.Log($"=== NEW TASK ===");
             ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
-            ConsoleLogger.Log($"[Config] intent={_currentIntent}, tools={_toolRegistry.GetDefinitionsForIntent(_currentIntent).Count}");
+            ConsoleLogger.Log($"[Config] tools={_toolRegistry.Definitions.Count}");
             ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
             ConsoleLogger.LogBlock("USER_REQUEST", msg);
 
@@ -146,14 +117,12 @@ namespace Indey.UIPrefabBuilder.Core
 
             _pendingMessage = textContent;
             ResetStepCounters();
-            _currentIntent = ClassifyIntent(textContent, true);
-
-            RebuildSystemPrompt(_currentIntent);
+            RebuildSystemPrompt();
 
             var effectiveMax = EffectiveMaxSteps;
             ConsoleLogger.Log($"=== NEW TASK (with {imagePaths.Count} image(s)) ===");
             ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
-            ConsoleLogger.Log($"[Config] intent={_currentIntent}, tools={_toolRegistry.GetDefinitionsForIntent(_currentIntent).Count}");
+            ConsoleLogger.Log($"[Config] tools={_toolRegistry.Definitions.Count}");
             ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
             ConsoleLogger.LogBlock("USER_REQUEST", textContent + $"\n[Attached: {imagePaths.Count} image(s)]");
 
@@ -220,9 +189,7 @@ namespace Indey.UIPrefabBuilder.Core
             TransitionTo(AgentState.Idle);
         }
 
-        private void RebuildSystemPrompt() => RebuildSystemPrompt(_currentIntent);
-
-        private void RebuildSystemPrompt(TaskIntent intent)
+        private void RebuildSystemPrompt()
         {
             var sb = new StringBuilder();
 
@@ -231,37 +198,15 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("You think step-by-step, verify your work visually, and self-correct when issues are found.");
             sb.AppendLine();
 
-            // ── Intent Directive ──
-            sb.AppendLine("## CURRENT TASK INTENT");
-            switch (intent)
-            {
-                case TaskIntent.Analyze:
-                    sb.AppendLine("The user wants you to **ANALYZE ONLY** — describe, explain, or inspect.");
-                    sb.AppendLine("- Do NOT create any UI elements or modify the scene.");
-                    sb.AppendLine("- Do NOT search for assets/sprites unless the user explicitly asks for asset matching.");
-                    sb.AppendLine("- Simply analyze the provided information (image/scene) and respond with a clear textual description.");
-                    sb.AppendLine("- If the user provides a design mockup, describe its structure: hierarchy, layout, elements, colors, sizes, relationships.");
-                    break;
-                case TaskIntent.Query:
-                    sb.AppendLine("The user has a **QUESTION** — answer it directly.");
-                    sb.AppendLine("- Do NOT create or modify UI elements unless explicitly asked.");
-                    sb.AppendLine("- You may use inspection tools (`get_scene_overview`, `inspect_hierarchy`) to gather information for your answer.");
-                    break;
-                case TaskIntent.Modify:
-                    sb.AppendLine("The user wants to **MODIFY** existing UI elements.");
-                    sb.AppendLine("- First inspect the current scene to understand the existing state.");
-                    sb.AppendLine("- Then make the requested changes precisely.");
-                    sb.AppendLine("- Do NOT recreate the entire UI — only change what the user asked for.");
-                    break;
-                case TaskIntent.Build:
-                default:
-                    sb.AppendLine("The user wants you to **BUILD** UI elements in the scene.");
-                    sb.AppendLine("- Follow the full build workflow below.");
-                    break;
-            }
+            // ── Behavior Guideline ──
+            sb.AppendLine("## BEHAVIOR GUIDELINE");
+            sb.AppendLine("Determine what the user wants based on their message and conversation context:");
+            sb.AppendLine("- If asking questions or requesting analysis → respond with text, use inspection tools only");
+            sb.AppendLine("- If asking to build/create/implement UI → follow the full build workflow below");
+            sb.AppendLine("- If asking to modify existing UI → inspect first, then modify precisely");
+            sb.AppendLine("Use your judgment. The user may express intent in many ways (e.g. \"开始实施\", \"干吧\", \"来吧\", \"上手\" all mean \"start building\").");
             sb.AppendLine();
 
-            if (intent == TaskIntent.Build || intent == TaskIntent.Modify)
             {
                 // ── Thinking Protocol ──
                 sb.AppendLine("## THINKING PROTOCOL");
@@ -274,7 +219,7 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine("## PHASE-BASED WORKFLOW");
                 sb.AppendLine();
                 sb.AppendLine("### Phase 1: Understand (MANDATORY)");
-                sb.AppendLine("- `search_assets` to discover available sprites/assets (use `search_assets_glob` for filename patterns like `*popup*`)");
+                sb.AppendLine("- `search_assets` to discover available sprites/assets (use `search_assets_glob` / `search_assets_glob_batch` for filename patterns like `*popup*`)");
                 if (_settings.EnableAssetIndexing)
                 {
                     var indexerForPhase = AssetIndexer.Instance;
@@ -324,7 +269,8 @@ namespace Indey.UIPrefabBuilder.Core
 
                 // ── Batch-First Rules ──
                 sb.AppendLine("## BATCH-FIRST PRINCIPLE (CRITICAL)");
-                sb.AppendLine("0. Searching 2+ sprites by text → `search_sprites_by_text_batch` (NOT multiple search_sprites_by_text calls)");
+                sb.AppendLine("0a. Searching 2+ sprites by text → `search_sprites_by_text_batch` (NOT multiple search_sprites_by_text calls)");
+                sb.AppendLine("0b. Searching 2+ filename patterns → `search_assets_glob_batch` (NOT multiple search_assets_glob calls)");
                 sb.AppendLine("1. Creating 2+ elements → `create_batch`");
                 sb.AppendLine("2. Positioning 2+ elements → `set_rect_transform_batch`");
                 sb.AppendLine("3. Single element positioning → `set_rect_transform` (NOT separate set_anchor/set_size/set_position)");
@@ -342,6 +288,7 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine("## ASSET SEARCH");
                 sb.AppendLine("- `search_assets`: Unity type filter (e.g. `t:Sprite`, `t:Prefab`)");
                 sb.AppendLine("- `search_assets_glob`: filename pattern matching (e.g. `*popup*`, `btn_*_lg*`, `*dialog*.png`)");
+                sb.AppendLine("- `search_assets_glob_batch`: search multiple filename patterns at once (e.g. `['*popup*', '*chest*', '*arrow*']`)");
                 sb.AppendLine("- Sprite naming conventions: `btn_*` for buttons, `dialog_*`/`panel_*` for backgrounds, `icon_*` for icons");
                 sb.AppendLine("- **CRITICAL SEARCH RULES**:");
                 sb.AppendLine("  1. If a search returns 0 results, the asset does NOT exist. Do NOT try alternative keywords. Use a plain Image with color tint as fallback and move on IMMEDIATELY.");
@@ -454,6 +401,7 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("}");
             sb.AppendLine("```");
             sb.AppendLine("**IMPORTANT**: If you use Mode 2, you MUST include `ActionName` and `Description` properties, or it will fail to compile.");
+            sb.AppendLine("**ActionResult API**: `ActionResult.Ok(\"message\")` for success, `ActionResult.Fail(\"message\")` for failure. Do NOT use `ActionResult.Error()` — it does not exist.");
             sb.AppendLine("APIs: UnityEngine, UnityEngine.UI, UnityEditor, System.Linq, TMPro.");
             sb.AppendLine("Use for 10+ repetitive items (grid cells, slot arrays).");
             sb.AppendLine();
@@ -492,38 +440,9 @@ namespace Indey.UIPrefabBuilder.Core
             LatestThinking = "";
         }
 
-        private static TaskIntent ClassifyIntent(string userMessage, bool hasImage)
-        {
-            if (string.IsNullOrEmpty(userMessage))
-                return hasImage ? TaskIntent.Build : TaskIntent.Query;
-
-            var lower = userMessage.ToLowerInvariant();
-
-            bool hasBuild = false;
-            foreach (var kw in BuildKeywords)
-                if (lower.Contains(kw)) { hasBuild = true; break; }
-
-            bool hasAnalysis = false;
-            foreach (var kw in AnalysisKeywords)
-                if (lower.Contains(kw)) { hasAnalysis = true; break; }
-
-            bool hasModify = false;
-            foreach (var kw in ModifyKeywords)
-                if (lower.Contains(kw)) { hasModify = true; break; }
-
-            if (hasBuild && !hasAnalysis) return TaskIntent.Build;
-            if (hasBuild && hasAnalysis) return TaskIntent.Build;
-            if (hasAnalysis && !hasBuild) return TaskIntent.Analyze;
-            if (hasModify) return TaskIntent.Modify;
-
-            return hasImage ? TaskIntent.Build : TaskIntent.Query;
-        }
-
-        public TaskIntent CurrentIntent => _currentIntent;
-
         private static bool IsSearchOnlyTool(string name)
         {
-            return name == "search_assets" || name == "search_assets_glob"
+            return name == "search_assets" || name == "search_assets_glob" || name == "search_assets_glob_batch"
                 || name == "search_sprites_by_text" || name == "search_sprites_by_text_batch"
                 || name == "match_sprite_by_image"
                 || name == "get_project_config" || name == "get_scene_overview"
@@ -567,7 +486,7 @@ namespace Indey.UIPrefabBuilder.Core
             _llm.RefreshApiKey();
             ConsoleLogger.Log($"[Agent] Step {_currentStep}/{(_settings.MaxAgentSteps <= 0 ? "∞" : max.ToString())}, messages={_history.Count}");
 
-            var toolDefs = _toolRegistry.GetDefinitionsForIntent(_currentIntent);
+            var toolDefs = _toolRegistry.Definitions;
             _llm.ChatWithToolsAsync(
                 _history.Messages,
                 toolDefs,
@@ -608,11 +527,11 @@ namespace Indey.UIPrefabBuilder.Core
             {
                 _history.AddAssistant(response.Content);
 
-                if (_currentIntent == TaskIntent.Build && _totalBuildSteps == 0
+                if (_totalBuildSteps == 0
                     && _totalSearchSteps > 0 && _textOnlyResponses < MaxTextOnlyResponses)
                 {
                     _textOnlyResponses++;
-                    ConsoleLogger.Log($"[Agent] Build intent detected but LLM only produced text (attempt {_textOnlyResponses}/{MaxTextOnlyResponses}). Nudging to start building.");
+                    ConsoleLogger.Log($"[Agent] LLM produced text after searching but no build (attempt {_textOnlyResponses}/{MaxTextOnlyResponses}). Nudging to start building.");
 
                     _history.AddUser(
                         "You have analyzed the design but have not started building yet. " +
@@ -624,7 +543,7 @@ namespace Indey.UIPrefabBuilder.Core
                 }
 
                 OnComplete?.Invoke(response.Content);
-                ConsoleLogger.Log($"[Agent] Task completed in {_currentStep} steps. (intent={_currentIntent}, search={_totalSearchSteps}, build={_totalBuildSteps})");
+                ConsoleLogger.Log($"[Agent] Task completed in {_currentStep} steps. (search={_totalSearchSteps}, build={_totalBuildSteps})");
                 TransitionTo(AgentState.Completed);
             }
         }
@@ -655,7 +574,7 @@ namespace Indey.UIPrefabBuilder.Core
                 OnToolCall?.Invoke(call.Name, call.Arguments, null);
 
                 string result;
-                bool isSearchTool = call.Name == "search_assets" || call.Name == "search_assets_glob"
+                bool isSearchTool = call.Name == "search_assets" || call.Name == "search_assets_glob" || call.Name == "search_assets_glob_batch"
                     || call.Name == "search_sprites_by_text" || call.Name == "search_sprites_by_text_batch";
 
                 if (isSearchTool)
@@ -785,7 +704,7 @@ namespace Indey.UIPrefabBuilder.Core
                         consecutiveFailures = 0;
                     }
 
-                    bool isSearchToolForHint = call.Name == "search_assets" || call.Name == "search_assets_glob"
+                    bool isSearchToolForHint = call.Name == "search_assets" || call.Name == "search_assets_glob" || call.Name == "search_assets_glob_batch"
                         || call.Name == "search_sprites_by_text" || call.Name == "search_sprites_by_text_batch";
                     if (isSearchToolForHint)
                     {
@@ -881,9 +800,6 @@ namespace Indey.UIPrefabBuilder.Core
 
         private void InjectSearchBudgetNudgeIfNeeded()
         {
-            if (_currentIntent != TaskIntent.Build && _currentIntent != TaskIntent.Modify)
-                return;
-
             if (_totalBuildSteps > 0 && _postBuildSearchSteps >= PostBuildSearchBudget && !_postBuildNudgeInjected)
             {
                 _postBuildNudgeInjected = true;

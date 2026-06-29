@@ -1,8 +1,8 @@
 {
   "name": "com.indey.uiprefabbuilder",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "UI Prefab Builder",
-  "description": "AI-powered UI Prefab construction agent running natively inside Unity Editor. Describe your UI in natural language, the agent builds it with 50+ structured tools.",
+  "description": "AI-powered UI Prefab construction agent running natively inside Unity Editor. Describe your UI in natural language or attach a design mockup — the agent builds it with 65 structured tools and CLIP-based visual asset matching.",
   "unity": "2021.3",
   "documentationUrl": "https://github.com/Wonderland6627/UIPrefabBuilder#readme",
   "changelogUrl": "https://github.com/Wonderland6627/UIPrefabBuilder/blob/main/Packages/com.indey.uiprefabbuilder/CHANGELOG.md",

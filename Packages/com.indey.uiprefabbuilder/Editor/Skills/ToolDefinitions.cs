@@ -479,11 +479,11 @@ namespace Indey.UIPrefabBuilder.Skills
                 )),
 
             Def("analyze_screenshot",
-                "Send a screenshot to the LLM for visual analysis. The image is injected as multimodal content so the model can see layout issues, alignment problems, and styling improvements. Use after take_screenshot to verify UI quality. Optionally compare with a reference image.",
+                "Send a screenshot to the LLM for visual analysis. The image is injected as multimodal content so the model can see layout issues, alignment problems, and styling improvements. Use after take_screenshot to verify UI quality. IMPORTANT: When reproducing a design mockup, ALWAYS pass referenceImagePath to enable side-by-side comparison — this dramatically improves accuracy.",
                 Props(
                     P("screenshotPath", "string", "Asset path to screenshot file, e.g. 'Assets/Screenshots/screenshot.png'", true),
-                    P("prompt", "string", "What to analyze, e.g. 'Check layout alignment and text readability'", false, "Analyze this UI screenshot for layout issues, alignment problems, text overlap, missing sprites, and styling improvements. List specific elements that need fixing."),
-                    P("referenceImagePath", "string", "Optional asset path to a reference/mockup image for comparison", false)
+                    P("prompt", "string", "Optional custom prompt. If omitted, a structured checklist prompt is auto-generated (with reference comparison if referenceImagePath is set)", false),
+                    P("referenceImagePath", "string", "Asset path to the original design mockup image for comparison. STRONGLY RECOMMENDED when reproducing a design — enables structured diff analysis.", false)
                 )),
 
             // ── Project Config ──
@@ -525,7 +525,17 @@ namespace Indey.UIPrefabBuilder.Skills
             Def("search_sprites_by_text_batch",
                 "Search indexed sprites by multiple text descriptions in one call. Each query uses CLIP text-image matching independently. Much more efficient than calling search_sprites_by_text multiple times — use this when you need to find 2+ different sprites.",
                 Props(
-                    P("queries", "array", "Array of search objects. Each object must have 'query' (string). Optional: 'topK' (integer, default 5). Example: [{\"query\":\"gold coin\"},{\"query\":\"red button\",\"topK\":3}]", true),
+                    PArray("queries", "Array of search queries. Example: [{\"query\":\"gold coin\"},{\"query\":\"red button\",\"topK\":3}]", true,
+                        new JObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JObject
+                            {
+                                ["query"] = new JObject { ["type"] = "string", ["description"] = "Natural language description of the sprite to find" },
+                                ["topK"] = new JObject { ["type"] = "integer", ["description"] = "Number of top matches to return (default 5)" }
+                            },
+                            ["required"] = new JArray("query")
+                        }),
                     P("minConfidence", "number", "Minimum confidence threshold (0-100) applied to all queries. Results below this score are filtered out.", false, 15)
                 )),
 
@@ -592,6 +602,18 @@ namespace Indey.UIPrefabBuilder.Skills
             {
                 ["type"] = type,
                 ["description"] = description,
+                ["_required"] = required
+            };
+            return new JProperty(name, obj);
+        }
+
+        private static JProperty PArray(string name, string description, bool required, JObject items)
+        {
+            var obj = new JObject
+            {
+                ["type"] = "array",
+                ["description"] = description,
+                ["items"] = items,
                 ["_required"] = required
             };
             return new JProperty(name, obj);

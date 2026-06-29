@@ -75,6 +75,17 @@ namespace Indey.UIPrefabBuilder.UI
             _currentId = Guid.NewGuid().ToString("N");
             EditorPrefs.SetString("UIPrefabBuilder_LastSession", _currentId);
             ConsoleLogger.SetSession(_currentId);
+
+            var session = new ChatSession
+            {
+                SessionId = _currentId,
+                Title = "New Chat",
+                CreatedAt = DateTime.Now,
+                UpdatedAt = DateTime.Now
+            };
+            Directory.CreateDirectory(SessionDir);
+            var path = Path.Combine(SessionDir, _currentId + ".json");
+            File.WriteAllText(path, JsonConvert.SerializeObject(session, Formatting.Indented));
         }
 
         public void SaveCurrentSession(MessageHistory history, List<ChatBubble> bubbles)

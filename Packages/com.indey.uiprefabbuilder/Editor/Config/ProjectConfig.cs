@@ -147,17 +147,21 @@ namespace Indey.UIPrefabBuilder.Config
             sb.AppendLine("### Design Basics");
             sb.AppendLine($"- Orientation: {basicInfo.orientation}");
             sb.AppendLine($"- Design Resolution: {basicInfo.designWidth}x{basicInfo.designHeight}");
-            sb.AppendLine($"- CanvasScaler matchWidthOrHeight: {basicInfo.canvasMatchMode}");
+            sb.AppendLine($"- CanvasScaler Screen Match Mode: {basicInfo.screenMatchMode}");
+            if (basicInfo.screenMatchMode == BasicInfo.CanvasMatchMode.MatchWidthOrHeight)
+                sb.AppendLine($"- CanvasScaler matchWidthOrHeight: {basicInfo.canvasMatchMode}");
             if (!string.IsNullOrEmpty(basicInfo.projectNotes))
                 sb.AppendLine($"- Project Notes: {basicInfo.projectNotes}");
             sb.AppendLine();
 
             // Sprite Mapping
-            if (spriteMapping.Count > 0)
+            var validSprites = spriteMapping.FindAll(e => !string.IsNullOrEmpty(e.role) && !string.IsNullOrEmpty(e.assetPath));
+            if (validSprites.Count > 0)
             {
                 sb.AppendLine("### Sprite Mapping (USE THESE instead of searching)");
                 sb.AppendLine("When building UI, ALWAYS check this mapping first. Use the specified asset path directly instead of calling search_assets.");
-                foreach (var entry in spriteMapping)
+                sb.AppendLine("These mappings cover common UI roles — if the design has an element matching a role below, use the mapped asset directly.");
+                foreach (var entry in validSprites)
                 {
                     sb.Append($"- {entry.role} → {entry.assetPath}");
                     if (!string.IsNullOrEmpty(entry.description))
@@ -229,6 +233,7 @@ namespace Indey.UIPrefabBuilder.Config
                 {
                     ["orientation"] = basicInfo.orientation.ToString(),
                     ["designResolution"] = $"{basicInfo.designWidth}x{basicInfo.designHeight}",
+                    ["screenMatchMode"] = basicInfo.screenMatchMode.ToString(),
                     ["canvasMatchMode"] = basicInfo.canvasMatchMode,
                     ["projectNotes"] = basicInfo.projectNotes ?? ""
                 }
@@ -285,10 +290,12 @@ namespace Indey.UIPrefabBuilder.Config
         public ScreenOrientation orientation = ScreenOrientation.Landscape;
         public int designWidth = 1920;
         public int designHeight = 1080;
+        public CanvasMatchMode screenMatchMode = CanvasMatchMode.MatchWidthOrHeight;
         public float canvasMatchMode = 0.5f;
         public string projectNotes = "";
 
         public enum ScreenOrientation { Landscape, Portrait }
+        public enum CanvasMatchMode { MatchWidthOrHeight, Expand, Shrink }
     }
 
     [Serializable]

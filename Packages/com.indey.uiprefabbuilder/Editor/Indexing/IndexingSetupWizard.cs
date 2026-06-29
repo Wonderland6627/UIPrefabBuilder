@@ -27,7 +27,6 @@ namespace Indey.UIPrefabBuilder.Indexing
         private static string MergesPath =>
             Path.Combine(ModelDirectory, "clip_merges.txt");
 
-        [MenuItem("Window/UI Prefab Builder/Setup Asset Indexing...", priority = 2000)]
         public static void ShowSetupDialog()
         {
             bool hasSentis = IsSentisInstalled();
@@ -109,18 +108,6 @@ namespace Indey.UIPrefabBuilder.Indexing
         #endregion
 
         #region Model Download (delegates to ModelDownloadManager)
-
-        [MenuItem("Window/UI Prefab Builder/Download CLIP Model", priority = 2001)]
-        public static void DownloadModelMenuItem()
-        {
-            DownloadModel();
-        }
-
-        [MenuItem("Window/UI Prefab Builder/Download CLIP Text Model", priority = 2002)]
-        public static void DownloadTextModelMenuItem()
-        {
-            DownloadTextModel();
-        }
 
         public static void DownloadModel()
         {

@@ -1148,8 +1148,7 @@ namespace Indey.UIPrefabBuilder.Skills
         private string DoAnalyzeScreenshot(JObject args)
         {
             var path = Str(args, "screenshotPath");
-            var prompt = Str(args, "prompt",
-                "Analyze this UI screenshot for layout issues, alignment problems, text overlap, missing sprites, and styling improvements. List specific elements that need fixing.");
+            var prompt = Str(args, "prompt", null);
             var refPath = Str(args, "referenceImagePath", null);
 
             var projectRoot = Path.GetDirectoryName(Application.dataPath);
@@ -1176,7 +1175,7 @@ namespace Indey.UIPrefabBuilder.Skills
             var imageUrl = $"data:image/png;base64,{base64}";
 
             var images = new JArray { imageUrl };
-            var message = prompt;
+            bool hasRef = false;
 
             if (!string.IsNullOrEmpty(refPath))
             {
@@ -1185,8 +1184,41 @@ namespace Indey.UIPrefabBuilder.Skills
                 {
                     var refBytes = File.ReadAllBytes(refFullPath);
                     images.Add($"data:image/png;base64,{Convert.ToBase64String(refBytes)}");
-                    message += "\n\nA reference image is also provided for comparison. Identify differences between the current UI and the reference.";
+                    hasRef = true;
                 }
+            }
+
+            string message;
+            if (!string.IsNullOrEmpty(prompt))
+            {
+                message = prompt;
+                if (hasRef)
+                    message += "\n\nA reference/design mockup image is also provided. Compare the current build against it.";
+            }
+            else if (hasRef)
+            {
+                message = "Compare the current UI build (Image 1) against the design mockup (Image 2). "
+                    + "For EACH of the following categories, state whether it matches or list the specific difference:\n"
+                    + "1. **Background/Frame**: Is the popup background sprite correct? Are decorative borders visible?\n"
+                    + "2. **Header/Title bar**: Is there a colored banner behind the title? Does the text have outline/shadow?\n"
+                    + "3. **Tab/Button styling**: Do selected/unselected tabs match the design's colors and shape?\n"
+                    + "4. **List items**: Are icons, labels, and values correctly positioned and sized?\n"
+                    + "5. **Text colors & fonts**: Do text colors, sizes, and weights match the design?\n"
+                    + "6. **Spacing & alignment**: Are margins, paddings, and element gaps proportionally correct?\n"
+                    + "7. **Close button**: Is it positioned and styled as shown in the design?\n"
+                    + "8. **Overlay/Dimming**: Is the background overlay present if shown in the design?\n\n"
+                    + "For each mismatch, describe the fix needed (e.g. 'Header needs a blue banner Image behind the title text').";
+            }
+            else
+            {
+                message = "Analyze this UI screenshot for visual quality. Check:\n"
+                    + "1. Layout alignment and spacing consistency\n"
+                    + "2. Text readability (overlap, truncation, color contrast)\n"
+                    + "3. Missing or broken sprites\n"
+                    + "4. Background/frame integrity (nine-slice stretching issues)\n"
+                    + "5. Button/tab visual states\n"
+                    + "6. Overall proportions and visual balance\n\n"
+                    + "List specific elements that need fixing with actionable descriptions.";
             }
 
             return new JObject

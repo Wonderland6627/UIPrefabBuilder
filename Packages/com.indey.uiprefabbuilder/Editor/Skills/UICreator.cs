@@ -23,7 +23,19 @@ namespace Indey.UIPrefabBuilder.Skills
 
             var config = ProjectConfig.Current;
             scaler.referenceResolution = new Vector2(config.basicInfo.designWidth, config.basicInfo.designHeight);
-            scaler.matchWidthOrHeight = config.basicInfo.canvasMatchMode;
+            switch (config.basicInfo.screenMatchMode)
+            {
+                case BasicInfo.CanvasMatchMode.MatchWidthOrHeight:
+                    scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
+                    scaler.matchWidthOrHeight = config.basicInfo.canvasMatchMode;
+                    break;
+                case BasicInfo.CanvasMatchMode.Expand:
+                    scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.Expand;
+                    break;
+                case BasicInfo.CanvasMatchMode.Shrink:
+                    scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.Shrink;
+                    break;
+            }
 
             go.AddComponent<GraphicRaycaster>();
             return go;

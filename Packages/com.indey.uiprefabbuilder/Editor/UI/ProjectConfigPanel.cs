@@ -114,7 +114,9 @@ namespace Indey.UIPrefabBuilder.UI
             config.basicInfo.designHeight = EditorGUILayout.IntField(config.basicInfo.designHeight, GUILayout.Width(55));
             EditorGUILayout.EndHorizontal();
 
-            config.basicInfo.canvasMatchMode = EditorGUILayout.Slider("Match W/H", config.basicInfo.canvasMatchMode, 0f, 1f);
+            config.basicInfo.screenMatchMode = (BasicInfo.CanvasMatchMode)EditorGUILayout.EnumPopup("Screen Match Mode", config.basicInfo.screenMatchMode);
+            if (config.basicInfo.screenMatchMode == BasicInfo.CanvasMatchMode.MatchWidthOrHeight)
+                config.basicInfo.canvasMatchMode = EditorGUILayout.Slider("Match W/H", config.basicInfo.canvasMatchMode, 0f, 1f);
 
             GUILayout.Label("Notes", EditorStyles.miniLabel);
             var noteStyle = new GUIStyle(EditorStyles.textArea) { wordWrap = true };

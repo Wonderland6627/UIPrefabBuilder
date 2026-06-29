@@ -12,8 +12,7 @@ namespace Indey.UIPrefabBuilder.UI
 {
     public class BuilderWindow : EditorWindow
     {
-        [MenuItem("Window/UI Prefab Builder/Open Builder", priority = 1000)]
-        public static void Open() => GetWindow<BuilderWindow>("UI Prefab Builder").Show();
+        public static void ShowWindow() => GetWindow<BuilderWindow>("UI Prefab Builder").Show();
 
         private AgentEngine _agent;
         private string _input = "";
@@ -162,15 +161,26 @@ namespace Indey.UIPrefabBuilder.UI
         #endregion
 
         #region Header
+        private bool IsAgentRunning()
+        {
+            var state = _agent?.State ?? AgentState.Idle;
+            return state == AgentState.Thinking || state == AgentState.CallingTool
+                || state == AgentState.WaitingForLLM || state == AgentState.BuildingContext
+                || state == AgentState.Compiling || state == AgentState.Executing;
+        }
+
         private void DrawHeader()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
             GUILayout.Label("UIPrefabBuilder", _headerStyle, GUILayout.Width(120));
             GUILayout.FlexibleSpace();
 
+            bool running = IsAgentRunning();
+            GUI.enabled = !running;
             if (GUILayout.Button("New Chat", EditorStyles.toolbarButton, GUILayout.Width(65))) NewChat();
             if (GUILayout.Button(_showHistory ? "Close History" : "History", EditorStyles.toolbarButton, GUILayout.Width(85)))
                 _showHistory = !_showHistory;
+            GUI.enabled = true;
             if (GUILayout.Button("Export", EditorStyles.toolbarButton, GUILayout.Width(50))) ExportChat();
 
             EditorGUILayout.EndHorizontal();
@@ -350,9 +360,7 @@ namespace Indey.UIPrefabBuilder.UI
             GUILayout.FlexibleSpace();
 
             var state = _agent?.State ?? AgentState.Idle;
-            bool isRunning = state == AgentState.Thinking || state == AgentState.CallingTool
-                || state == AgentState.WaitingForLLM || state == AgentState.BuildingContext
-                || state == AgentState.Compiling || state == AgentState.Executing;
+            bool isRunning = IsAgentRunning();
             if (isRunning)
             {
                 if (GUILayout.Button("Stop", GUILayout.Width(55))) _agent?.Cancel();

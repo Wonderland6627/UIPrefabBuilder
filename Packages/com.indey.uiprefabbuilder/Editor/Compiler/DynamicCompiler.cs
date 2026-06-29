@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using Indey.UIPrefabBuilder.Async;
 using Indey.UIPrefabBuilder.Core;
 using UnityEditor;
@@ -236,7 +237,14 @@ namespace Indey.UIPrefabBuilder.Compiler
             sb.AppendLine("  public ActionResult Execute(ActionContext context) {");
             sb.AppendLine("    try {");
             foreach (var line in bodyLines)
-                sb.AppendLine(line);
+            {
+                var trimmedLine = line.TrimStart();
+                if (trimmedLine == "return;" || trimmedLine == "return ;" || trimmedLine.StartsWith("return;"))
+                    sb.AppendLine(line.Replace("return;", "return ActionResult.Ok(\"Done.\");")
+                                     .Replace("return ;", "return ActionResult.Ok(\"Done.\");"));
+                else
+                    sb.AppendLine(line);
+            }
             sb.AppendLine("      return ActionResult.Ok(\"Done.\");");
             sb.AppendLine("    } catch (Exception e) { return ActionResult.Fail(e.Message); }");
             sb.AppendLine("  }");
@@ -247,13 +255,38 @@ namespace Indey.UIPrefabBuilder.Compiler
         private string PrependUsings(string code)
         {
             var sb = new StringBuilder();
-            // Always ensure critical usings are present
             foreach (var u in RequiredUsings)
             {
                 if (!code.Contains(u))
                     sb.AppendLine(u);
             }
-            sb.Append(code);
+
+            // Auto-inject ActionName/Description if the class implements IAgentAction but forgot them
+            var patched = code;
+            if (code.Contains("IAgentAction") && code.Contains("class"))
+            {
+                bool hasActionName = code.Contains("ActionName");
+                bool hasDescription = Regex.IsMatch(code, @"\bDescription\b\s*[{=>]");
+
+                if (!hasActionName || !hasDescription)
+                {
+                    // Insert default property implementations right after the opening brace of the class body
+                    var classMatch = Regex.Match(patched, @":\s*IAgentAction\s*\{");
+                    if (classMatch.Success)
+                    {
+                        int insertPos = classMatch.Index + classMatch.Length;
+                        var inject = new StringBuilder();
+                        inject.AppendLine();
+                        if (!hasActionName)
+                            inject.AppendLine("  public string ActionName => \"Generated\";");
+                        if (!hasDescription)
+                            inject.AppendLine("  public string Description => \"Auto-generated\";");
+                        patched = patched.Insert(insertPos, inject.ToString());
+                    }
+                }
+            }
+
+            sb.Append(patched);
             return sb.ToString();
         }
 

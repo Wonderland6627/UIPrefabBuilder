@@ -14,6 +14,14 @@ using UnityEngine;
 
 namespace Indey.UIPrefabBuilder.Core
 {
+    public enum TaskIntent
+    {
+        Build,
+        Analyze,
+        Modify,
+        Query
+    }
+
     public class AgentEngine : IDisposable
     {
         private readonly BuilderSettings _settings;
@@ -43,16 +51,24 @@ namespace Indey.UIPrefabBuilder.Core
         private const int MaxTextOnlyResponses = 2;
         private const int PostBuildSearchBudget = 8;
         private string _designImagePath;
+        private TaskIntent _currentIntent = TaskIntent.Build;
 
         private static readonly string[] AnalysisKeywords = {
-            "分析", "查看", "检查", "解释", "说明", "描述", "看看", "review",
+            "分析", "查看", "检查", "解释", "说明", "描述", "看看", "理解", "了解",
+            "拆解", "结构", "组成", "层次", "解析", "review",
             "analyze", "analysis", "explain", "describe", "inspect", "check",
+            "structure", "breakdown", "understand",
             "what is", "how does", "show me", "tell me", "list"
         };
 
         private static readonly string[] BuildKeywords = {
-            "实现", "创建", "构建", "搭建", "制作", "生成", "做", "摆",
+            "实现", "创建", "构建", "搭建", "制作", "生成", "做", "摆", "还原", "复刻",
             "build", "create", "make", "implement", "generate", "place", "layout"
+        };
+
+        private static readonly string[] ModifyKeywords = {
+            "修改", "调整", "移动", "改", "换", "删除", "添加", "增加", "移除",
+            "modify", "change", "move", "adjust", "update", "replace", "remove", "add"
         };
 
         public AgentState State => _state;
@@ -91,17 +107,19 @@ namespace Indey.UIPrefabBuilder.Core
                 && _state != AgentState.WaitingConfirmation && _state != AgentState.Completed)
                 return;
 
-            RebuildSystemPrompt();
+            _pendingMessage = msg;
+            ResetStepCounters();
+            _currentIntent = ClassifyIntent(msg, false);
+
+            RebuildSystemPrompt(_currentIntent);
 
             var effectiveMax = EffectiveMaxSteps;
             ConsoleLogger.Log($"=== NEW TASK ===");
             ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
-            ConsoleLogger.Log($"[Config] tools={_toolRegistry.ToolNames.Count}");
+            ConsoleLogger.Log($"[Config] intent={_currentIntent}, tools={_toolRegistry.GetDefinitionsForIntent(_currentIntent).Count}");
             ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
             ConsoleLogger.LogBlock("USER_REQUEST", msg);
 
-            _pendingMessage = msg;
-            ResetStepCounters();
             _cts?.Cancel();
             _cts = new CancellationTokenSource();
 
@@ -122,21 +140,23 @@ namespace Indey.UIPrefabBuilder.Core
                 && _state != AgentState.WaitingConfirmation && _state != AgentState.Completed)
                 return;
 
-            RebuildSystemPrompt();
+            var textContent = string.IsNullOrWhiteSpace(msg)
+                ? "Please analyze the attached design mockup(s) and build the UI."
+                : msg;
+
+            _pendingMessage = textContent;
+            ResetStepCounters();
+            _currentIntent = ClassifyIntent(textContent, true);
+
+            RebuildSystemPrompt(_currentIntent);
 
             var effectiveMax = EffectiveMaxSteps;
             ConsoleLogger.Log($"=== NEW TASK (with {imagePaths.Count} image(s)) ===");
             ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
-            ConsoleLogger.Log($"[Config] tools={_toolRegistry.ToolNames.Count}");
+            ConsoleLogger.Log($"[Config] intent={_currentIntent}, tools={_toolRegistry.GetDefinitionsForIntent(_currentIntent).Count}");
             ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
-
-            var textContent = string.IsNullOrWhiteSpace(msg)
-                ? "Please analyze the attached design mockup(s) and build the UI."
-                : msg;
             ConsoleLogger.LogBlock("USER_REQUEST", textContent + $"\n[Attached: {imagePaths.Count} image(s)]");
 
-            _pendingMessage = textContent;
-            ResetStepCounters();
             _cts?.Cancel();
             _cts = new CancellationTokenSource();
 
@@ -200,7 +220,9 @@ namespace Indey.UIPrefabBuilder.Core
             TransitionTo(AgentState.Idle);
         }
 
-        private void RebuildSystemPrompt()
+        private void RebuildSystemPrompt() => RebuildSystemPrompt(_currentIntent);
+
+        private void RebuildSystemPrompt(TaskIntent intent)
         {
             var sb = new StringBuilder();
 
@@ -209,145 +231,191 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("You think step-by-step, verify your work visually, and self-correct when issues are found.");
             sb.AppendLine();
 
-            // ── Thinking Protocol ──
-            sb.AppendLine("## THINKING PROTOCOL");
-            sb.AppendLine("Before each action, briefly plan what you will do and why.");
-            sb.AppendLine("After each tool result, evaluate: did it succeed? do I need to adjust?");
-            sb.AppendLine("Use `update_progress` to track completed steps and remaining work in complex tasks.");
-            sb.AppendLine();
-
-            // ── Phase-Based Workflow ──
-            sb.AppendLine("## PHASE-BASED WORKFLOW");
-            sb.AppendLine();
-            sb.AppendLine("### Phase 1: Understand (MANDATORY)");
-            sb.AppendLine("- `search_assets` to discover available sprites/assets (use `search_assets_glob` for filename patterns like `*popup*`)");
-            if (_settings.EnableAssetIndexing)
+            // ── Intent Directive ──
+            sb.AppendLine("## CURRENT TASK INTENT");
+            switch (intent)
             {
-                var indexerForPhase = AssetIndexer.Instance;
-                if (indexerForPhase.IsReady && indexerForPhase.IndexedCount > 0)
-                {
-                    sb.AppendLine("- `search_sprites_by_text_batch` to find ALL needed sprites in one call (e.g. coin icon, button bg, lock icon — batch them together)");
-                    sb.AppendLine("- `search_sprites_by_text` for a single sprite lookup only");
-                }
-            }
-            sb.AppendLine("- `get_scene_overview` to understand current state");
-            sb.AppendLine("- Plan the UI structure mentally before creating anything");
-            sb.AppendLine();
-            sb.AppendLine("### Phase 2: Build (BATCH-FIRST)");
-            sb.AppendLine("- `create_batch` for ALL elements in one call (canvas, panels, images, texts, buttons)");
-            sb.AppendLine("- `set_rect_transform_batch` to position/size/anchor ALL elements in one call");
-            sb.AppendLine("- `set_image` for sprite assignment (use type=Sliced for 9-slice backgrounds)");
-            sb.AppendLine("- `set_text_properties` for text styling (alignment, fontStyle, color, overflow). IMPORTANT: always include the `text` parameter to ensure text content is written.");
-            sb.AppendLine("- `add_horizontal_layout` / `add_vertical_layout` for automatic child arrangement");
-            sb.AppendLine("- Call multiple independent tools in the same step (parallel)");
-            sb.AppendLine();
-            sb.AppendLine("### Phase 3: Verify (MANDATORY)");
-            if (_settings.SupportsVision)
-            {
-                sb.AppendLine("- Do NOT screenshot after every step. Only take screenshots when:");
-                sb.AppendLine("  1) You suspect a layout problem, or 2) You are nearly done and want a check before delivery");
-                sb.AppendLine("- `take_screenshot` → `analyze_screenshot` to visually inspect the Game View");
-                sb.AppendLine("- Fix issues found, then take one more screenshot to confirm");
-            }
-            else
-            {
-                sb.AppendLine("- Visual screenshot analysis is NOT available with the current model.");
-                sb.AppendLine("- `take_screenshot` only saves an image for the user to review — you cannot see it.");
-                sb.AppendLine("- Rely on **structural self-inspection** instead:");
-                sb.AppendLine("  - `inspect_hierarchy` with maxDepth to review the full tree");
-                sb.AppendLine("  - `inspect_components` on key elements to verify RectTransform, Mask, ScrollRect, LayoutGroup, Image, Text. IMPORTANT: check that Text `text` property is NOT empty — if it is, call `set_text` to fix it.");
-                sb.AppendLine("- Think carefully: are element sizes reasonable relative to their parents? Are anchors/pivots correct? Could a Mask be clipping content unexpectedly? Is LayoutGroup child sizing configured properly?");
-                sb.AppendLine("- Fix structural issues, then re-inspect to confirm");
-                sb.AppendLine("- Take ONE screenshot at the very end (saved for user review)");
+                case TaskIntent.Analyze:
+                    sb.AppendLine("The user wants you to **ANALYZE ONLY** — describe, explain, or inspect.");
+                    sb.AppendLine("- Do NOT create any UI elements or modify the scene.");
+                    sb.AppendLine("- Do NOT search for assets/sprites unless the user explicitly asks for asset matching.");
+                    sb.AppendLine("- Simply analyze the provided information (image/scene) and respond with a clear textual description.");
+                    sb.AppendLine("- If the user provides a design mockup, describe its structure: hierarchy, layout, elements, colors, sizes, relationships.");
+                    break;
+                case TaskIntent.Query:
+                    sb.AppendLine("The user has a **QUESTION** — answer it directly.");
+                    sb.AppendLine("- Do NOT create or modify UI elements unless explicitly asked.");
+                    sb.AppendLine("- You may use inspection tools (`get_scene_overview`, `inspect_hierarchy`) to gather information for your answer.");
+                    break;
+                case TaskIntent.Modify:
+                    sb.AppendLine("The user wants to **MODIFY** existing UI elements.");
+                    sb.AppendLine("- First inspect the current scene to understand the existing state.");
+                    sb.AppendLine("- Then make the requested changes precisely.");
+                    sb.AppendLine("- Do NOT recreate the entire UI — only change what the user asked for.");
+                    break;
+                case TaskIntent.Build:
+                default:
+                    sb.AppendLine("The user wants you to **BUILD** UI elements in the scene.");
+                    sb.AppendLine("- Follow the full build workflow below.");
+                    break;
             }
             sb.AppendLine();
-            sb.AppendLine("### Phase 4: Finalize");
-            sb.AppendLine("- `inspect_hierarchy` for structure verification");
-            sb.AppendLine("- `save_as_prefab` if requested");
-            sb.AppendLine("- Summarize what was created");
-            sb.AppendLine();
 
-            // ── Batch-First Rules ──
-            sb.AppendLine("## BATCH-FIRST PRINCIPLE (CRITICAL)");
-            sb.AppendLine("0. Searching 2+ sprites by text → `search_sprites_by_text_batch` (NOT multiple search_sprites_by_text calls)");
-            sb.AppendLine("1. Creating 2+ elements → `create_batch`");
-            sb.AppendLine("2. Positioning 2+ elements → `set_rect_transform_batch`");
-            sb.AppendLine("3. Single element positioning → `set_rect_transform` (NOT separate set_anchor/set_size/set_position)");
-            sb.AppendLine("4. Styling 2+ Images → `set_image_batch` (sprite, type, color in one call)");
-            sb.AppendLine("5. Styling 1 Image → `set_image` (NOT set_image_sprite)");
-            sb.AppendLine("6. Styling 2+ Texts → `set_text_properties_batch` (text, fontSize, color in one call. ALWAYS pass `text` content)");
-            sb.AppendLine("7. Styling 1 Text → `set_text_properties` (ALWAYS pass `text` content)");
-            sb.AppendLine("8. Adding 2+ Outline/Shadow → `add_outline_batch`");
-            sb.AppendLine("9. Configuring 2+ LayoutElements → `add_layout_element_batch`");
-            sb.AppendLine("10. Setting 2+ component properties → `set_component_property_batch`");
-            sb.AppendLine("11. Generic single property → `set_component_property` via reflection");
-            sb.AppendLine();
-
-            // ── Asset Search Guide ──
-            sb.AppendLine("## ASSET SEARCH");
-            sb.AppendLine("- `search_assets`: Unity type filter (e.g. `t:Sprite`, `t:Prefab`)");
-            sb.AppendLine("- `search_assets_glob`: filename pattern matching (e.g. `*popup*`, `btn_*_lg*`, `*dialog*.png`)");
-            sb.AppendLine("- Sprite naming conventions: `btn_*` for buttons, `dialog_*`/`panel_*` for backgrounds, `icon_*` for icons");
-            sb.AppendLine("- **CRITICAL SEARCH RULES**:");
-            sb.AppendLine("  1. If a search returns 0 results, the asset does NOT exist. Do NOT try alternative keywords. Use a plain Image with color tint as fallback and move on IMMEDIATELY.");
-            sb.AppendLine("  2. NEVER search the same pattern twice. Results are cached — repeated searches waste steps.");
-            sb.AppendLine("  3. After you start building (create_batch), do NOT go back to searching. Use the assets you already found.");
-            sb.AppendLine("  4. Searches are HARD-LIMITED. Excessive searching will be blocked by the system.");
-
-            // ── Asset Indexing Status ──
-            if (_settings.EnableAssetIndexing)
+            if (intent == TaskIntent.Build || intent == TaskIntent.Modify)
             {
-                var indexer = AssetIndexer.Instance;
+                // ── Thinking Protocol ──
+                sb.AppendLine("## THINKING PROTOCOL");
+                sb.AppendLine("Before each action, briefly plan what you will do and why.");
+                sb.AppendLine("After each tool result, evaluate: did it succeed? do I need to adjust?");
+                sb.AppendLine("Use `update_progress` to track completed steps and remaining work in complex tasks.");
                 sb.AppendLine();
-                sb.AppendLine("## VISUAL ASSET INDEX");
-                if (indexer.IsReady && indexer.IndexedCount > 0)
+
+                // ── Phase-Based Workflow ──
+                sb.AppendLine("## PHASE-BASED WORKFLOW");
+                sb.AppendLine();
+                sb.AppendLine("### Phase 1: Understand (MANDATORY)");
+                sb.AppendLine("- `search_assets` to discover available sprites/assets (use `search_assets_glob` for filename patterns like `*popup*`)");
+                if (_settings.EnableAssetIndexing)
                 {
-                    sb.AppendLine($"- Visual asset index is ACTIVE with {indexer.IndexedCount} indexed sprites.");
-                    sb.AppendLine("- **PREFER** visual index tools over filename-based search when:");
-                    sb.AppendLine("  - User provides a design mockup/screenshot → use `match_sprite_by_image`");
-                    sb.AppendLine("  - You need to find sprites by visual appearance → use `search_sprites_by_text`");
-                    sb.AppendLine("  - You want to understand what sprites look like → use `search_sprites_by_text`");
-                    sb.AppendLine("- `match_sprite_by_image`: find sprites by visual similarity from a design mockup crop (base64 image).");
-                    sb.AppendLine("- `search_sprites_by_text_batch`: find multiple sprites at once by text descriptions. **ALWAYS prefer this over multiple single calls.** Example: `{\"queries\":[{\"query\":\"gold coin\"},{\"query\":\"red button\"},{\"query\":\"lock icon\"}]}`");
-                    sb.AppendLine("- `search_sprites_by_text`: find a single sprite by text description. Use only when searching for exactly one sprite.");
-                    sb.AppendLine("- Fall back to `search_assets`/`search_assets_glob` only for exact filename-based lookups.");
-                    sb.AppendLine("- Use `get_index_status` to check index health.");
+                    var indexerForPhase = AssetIndexer.Instance;
+                    if (indexerForPhase.IsReady && indexerForPhase.IndexedCount > 0)
+                    {
+                        sb.AppendLine("- `search_sprites_by_text_batch` to find ALL needed sprites in one call (e.g. coin icon, button bg, lock icon — batch them together)");
+                        sb.AppendLine("- `search_sprites_by_text` for a single sprite lookup only");
+                    }
+                }
+                sb.AppendLine("- `get_scene_overview` to understand current state");
+                sb.AppendLine("- Plan the UI structure mentally before creating anything");
+                sb.AppendLine();
+                sb.AppendLine("### Phase 2: Build (BATCH-FIRST)");
+                sb.AppendLine("- `create_batch` for ALL elements in one call (canvas, panels, images, texts, buttons)");
+                sb.AppendLine("- `set_rect_transform_batch` to position/size/anchor ALL elements in one call");
+                sb.AppendLine("- `set_image` for sprite assignment (use type=Sliced for 9-slice backgrounds)");
+                sb.AppendLine("- `set_text_properties` for text styling (alignment, fontStyle, color, overflow). IMPORTANT: always include the `text` parameter to ensure text content is written.");
+                sb.AppendLine("- `add_horizontal_layout` / `add_vertical_layout` for automatic child arrangement");
+                sb.AppendLine("- Call multiple independent tools in the same step (parallel)");
+                sb.AppendLine();
+                sb.AppendLine("### Phase 3: Verify (MANDATORY)");
+                if (_settings.SupportsVision)
+                {
+                    sb.AppendLine("- Do NOT screenshot after every step. Only take screenshots when:");
+                    sb.AppendLine("  1) You suspect a layout problem, or 2) You are nearly done and want a check before delivery");
+                    sb.AppendLine("- `take_screenshot` → `analyze_screenshot` to visually inspect the Game View");
+                    sb.AppendLine("- When the user provides a design mockup, use `analyze_screenshot` with `referenceImagePath` to compare side-by-side");
+                    sb.AppendLine("- Fix issues found, then take one more screenshot to confirm");
                 }
                 else
                 {
-                    sb.AppendLine("- Visual asset indexing is enabled but the index is not yet built.");
-                    sb.AppendLine("- Use `rebuild_asset_index` to build the visual index before using `match_sprite_by_image` or `search_sprites_by_text`.");
+                    sb.AppendLine("- Visual screenshot analysis is NOT available with the current model.");
+                    sb.AppendLine("- `take_screenshot` only saves an image for the user to review — you cannot see it.");
+                    sb.AppendLine("- Rely on **structural self-inspection** instead:");
+                    sb.AppendLine("  - `inspect_hierarchy` with maxDepth to review the full tree");
+                    sb.AppendLine("  - `inspect_components` on key elements to verify RectTransform, Mask, ScrollRect, LayoutGroup, Image, Text. IMPORTANT: check that Text `text` property is NOT empty — if it is, call `set_text` to fix it.");
+                    sb.AppendLine("- Think carefully: are element sizes reasonable relative to their parents? Are anchors/pivots correct? Could a Mask be clipping content unexpectedly? Is LayoutGroup child sizing configured properly?");
+                    sb.AppendLine("- Fix structural issues, then re-inspect to confirm");
+                    sb.AppendLine("- Take ONE screenshot at the very end (saved for user review)");
                 }
-            }
-            // ── Design Mockup Analysis ──
-            if (_settings.SupportsVision)
-            {
                 sb.AppendLine();
-                sb.AppendLine("## DESIGN MOCKUP ANALYSIS");
-                sb.AppendLine("When the user provides a design mockup image:");
-                sb.AppendLine("1. **Analyze Structure**: Identify the UI hierarchy — panels, buttons, text labels, icons, backgrounds, decorations.");
-                sb.AppendLine("2. **Describe Elements**: For each UI element, describe its visual appearance (color, shape, size), approximate position relative to the canvas, and functional role.");
-                sb.AppendLine("3. **Match Assets**: Use the visual asset index to find matching local sprites:");
+                sb.AppendLine("### Phase 4: Finalize");
+                sb.AppendLine("- `inspect_hierarchy` for structure verification");
+                sb.AppendLine("- `save_as_prefab` if requested");
+                sb.AppendLine("- Summarize what was created");
+                sb.AppendLine();
+
+                // ── Batch-First Rules ──
+                sb.AppendLine("## BATCH-FIRST PRINCIPLE (CRITICAL)");
+                sb.AppendLine("0. Searching 2+ sprites by text → `search_sprites_by_text_batch` (NOT multiple search_sprites_by_text calls)");
+                sb.AppendLine("1. Creating 2+ elements → `create_batch`");
+                sb.AppendLine("2. Positioning 2+ elements → `set_rect_transform_batch`");
+                sb.AppendLine("3. Single element positioning → `set_rect_transform` (NOT separate set_anchor/set_size/set_position)");
+                sb.AppendLine("4. Styling 2+ Images → `set_image_batch` (sprite, type, color in one call)");
+                sb.AppendLine("5. Styling 1 Image → `set_image` (NOT set_image_sprite)");
+                sb.AppendLine("6. Styling 2+ Texts → `set_text_properties_batch` (text, fontSize, color in one call. ALWAYS pass `text` content)");
+                sb.AppendLine("7. Styling 1 Text → `set_text_properties` (ALWAYS pass `text` content)");
+                sb.AppendLine("8. Adding 2+ Outline/Shadow → `add_outline_batch`");
+                sb.AppendLine("9. Configuring 2+ LayoutElements → `add_layout_element_batch`");
+                sb.AppendLine("10. Setting 2+ component properties → `set_component_property_batch`");
+                sb.AppendLine("11. Generic single property → `set_component_property` via reflection");
+                sb.AppendLine();
+
+                // ── Asset Search Guide ──
+                sb.AppendLine("## ASSET SEARCH");
+                sb.AppendLine("- `search_assets`: Unity type filter (e.g. `t:Sprite`, `t:Prefab`)");
+                sb.AppendLine("- `search_assets_glob`: filename pattern matching (e.g. `*popup*`, `btn_*_lg*`, `*dialog*.png`)");
+                sb.AppendLine("- Sprite naming conventions: `btn_*` for buttons, `dialog_*`/`panel_*` for backgrounds, `icon_*` for icons");
+                sb.AppendLine("- **CRITICAL SEARCH RULES**:");
+                sb.AppendLine("  1. If a search returns 0 results, the asset does NOT exist. Do NOT try alternative keywords. Use a plain Image with color tint as fallback and move on IMMEDIATELY.");
+                sb.AppendLine("  2. NEVER search the same pattern twice. Results are cached — repeated searches waste steps.");
+                sb.AppendLine("  3. After you start building (create_batch), do NOT go back to searching. Use the assets you already found.");
+                sb.AppendLine("  4. Searches are HARD-LIMITED. Excessive searching will be blocked by the system.");
+
+                // ── Asset Indexing Status ──
                 if (_settings.EnableAssetIndexing)
                 {
-                    var idxForMockup = AssetIndexer.Instance;
-                    if (idxForMockup.IsReady && idxForMockup.IndexedCount > 0)
+                    var indexer = AssetIndexer.Instance;
+                    sb.AppendLine();
+                    sb.AppendLine("## VISUAL ASSET INDEX");
+                    if (indexer.IsReady && indexer.IndexedCount > 0)
                     {
-                        sb.AppendLine("   - **PREFERRED**: `search_sprites_by_text_batch` with ALL visual descriptions at once (e.g. 'green ribbon header', 'gray stone button', 'gold coin icon' — batch them in one call)");
-                        sb.AppendLine("   - For precise matching: crop/describe regions and compare via `match_sprite_by_image`");
+                        sb.AppendLine($"- Visual asset index is ACTIVE with {indexer.IndexedCount} indexed sprites.");
+                        sb.AppendLine("- **PREFER** visual index tools over filename-based search when:");
+                        sb.AppendLine("  - User provides a design mockup/screenshot → use `match_sprite_by_image`");
+                        sb.AppendLine("  - You need to find sprites by visual appearance → use `search_sprites_by_text`");
+                        sb.AppendLine("  - You want to understand what sprites look like → use `search_sprites_by_text`");
+                        sb.AppendLine("- `match_sprite_by_image`: find sprites by visual similarity from a design mockup crop (base64 image).");
+                        sb.AppendLine("- `search_sprites_by_text_batch`: find multiple sprites at once by text descriptions. **ALWAYS prefer this over multiple single calls.** Example: `{\"queries\":[{\"query\":\"gold coin\"},{\"query\":\"red button\"},{\"query\":\"lock icon\"}]}`");
+                        sb.AppendLine("- `search_sprites_by_text`: find a single sprite by text description. Use only when searching for exactly one sprite.");
+                        sb.AppendLine("- Fall back to `search_assets`/`search_assets_glob` only for exact filename-based lookups.");
+                        sb.AppendLine("- Use `get_index_status` to check index health.");
                     }
                     else
                     {
-                        sb.AppendLine("   - Visual index is not ready. Use `search_assets_glob` with filename patterns instead.");
+                        sb.AppendLine("- Visual asset indexing is enabled but the index is not yet built.");
+                        sb.AppendLine("- Use `rebuild_asset_index` to build the visual index before using `match_sprite_by_image` or `search_sprites_by_text`.");
                     }
                 }
-                else
+                // ── Design Mockup Analysis ──
+                if (_settings.SupportsVision)
                 {
-                    sb.AppendLine("   - Use `search_assets` / `search_assets_glob` to find sprites by filename patterns.");
+                    sb.AppendLine();
+                    sb.AppendLine("## DESIGN MOCKUP ANALYSIS");
+                    sb.AppendLine("When the user provides a design mockup image:");
+                    sb.AppendLine("1. **Analyze Structure**: Identify the UI hierarchy — panels, buttons, text labels, icons, backgrounds, decorations.");
+                    sb.AppendLine("2. **Describe Elements**: For each UI element, describe its visual appearance (color, shape, size), approximate position relative to the canvas, and functional role.");
+                    sb.AppendLine("3. **Match Assets**: Use the visual asset index to find matching local sprites:");
+                    if (_settings.EnableAssetIndexing)
+                    {
+                        var idxForMockup = AssetIndexer.Instance;
+                        if (idxForMockup.IsReady && idxForMockup.IndexedCount > 0)
+                        {
+                            sb.AppendLine("   - **PREFERRED**: `search_sprites_by_text_batch` with ALL visual descriptions at once (e.g. 'green ribbon header', 'gray stone button', 'gold coin icon' — batch them in one call)");
+                            sb.AppendLine("   - For precise matching: crop/describe regions and compare via `match_sprite_by_image`");
+                        }
+                        else
+                        {
+                            sb.AppendLine("   - Visual index is not ready. Use `search_assets_glob` with filename patterns instead.");
+                        }
+                    }
+                    else
+                    {
+                        sb.AppendLine("   - Use `search_assets` / `search_assets_glob` to find sprites by filename patterns.");
+                    }
+                    sb.AppendLine("   - Fall back to `search_assets_glob` if no good match is found in the visual index.");
+                    sb.AppendLine("4. **Build UI**: Use `create_batch` and positioning tools to reconstruct the design as a Unity UGUI hierarchy.");
+                    sb.AppendLine("5. **Verify**: `take_screenshot` → `analyze_screenshot` (with `referenceImagePath` pointing to the user's mockup) to compare side-by-side. Fix discrepancies.");
+                    sb.AppendLine();
+
+                    sb.AppendLine("## VISUAL FIDELITY CHECKLIST");
+                    sb.AppendLine("When reproducing a design mockup, carefully observe the design and verify the following before delivery:");
+                    sb.AppendLine("1. **Background layers**: Observe whether the design has distinct background layers (popup frame, header banner, tab bar, list area). If so, each must be a separate Image with the correct sprite — do NOT skip any visible background.");
+                    sb.AppendLine("2. **Title/Header bar**: If the design shows a colored banner or decorative bar behind the title text, create a separate Image element for it — do not render it as plain text only.");
+                    sb.AppendLine("3. **Tab/Button states**: If the design has tabs or toggle buttons, observe the visual difference between selected and unselected states (color, shape, brightness) and reproduce them with DIFFERENT sprites or tint colors.");
+                    sb.AppendLine("4. **Text styling**: Observe the design's text effects (outline, shadow, glow) and reproduce them using TMPro settings. Match font colors from the mockup.");
+                    sb.AppendLine("5. **Spacing & proportions**: Estimate element sizes relative to the popup width. Verify that padding, margins, and gaps between items visually match the design.");
+                    sb.AppendLine("6. **Icon sizes**: If the design shows a list with icons, ensure uniform icon size and vertical centering with labels.");
+                    sb.AppendLine("7. **Close button**: Place the close button in the same relative position as the design (inside/outside/below the popup).");
+                    sb.AppendLine("8. **Overlay/Dimming**: If the design shows a semi-transparent dark overlay behind the popup, add one. If not, skip it.");
                 }
-                sb.AppendLine("   - Fall back to `search_assets_glob` if no good match is found in the visual index.");
-                sb.AppendLine("4. **Build UI**: Use `create_batch` and positioning tools to reconstruct the design as a Unity UGUI hierarchy.");
-                sb.AppendLine("5. **Verify**: `take_screenshot` → `analyze_screenshot` to compare with the original design. Fix discrepancies.");
             }
             sb.AppendLine();
 
@@ -369,11 +437,24 @@ namespace Indey.UIPrefabBuilder.Core
 
             // ── execute_code ──
             sb.AppendLine("## execute_code USAGE");
-            sb.AppendLine("Compiles and runs C# at runtime. Code must implement `IAgentAction`.");
-            sb.AppendLine("If code does NOT contain `class` and `IAgentAction`, it is auto-wrapped.");
-            sb.AppendLine("Auto-wrapped example: `var canvas = GameObject.Find(\"Canvas\"); ...`");
-            sb.AppendLine("Full class: implement `IAgentAction` with `Execute(ActionContext context)` returning `ActionResult.Ok(msg)` or `ActionResult.Fail(msg)`.");
-            sb.AppendLine("APIs: UnityEngine, UnityEngine.UI, UnityEditor, System.Linq.");
+            sb.AppendLine("Compiles and runs C# at runtime. Two modes:");
+            sb.AppendLine("### Mode 1: Auto-wrapped (PREFERRED for simple scripts)");
+            sb.AppendLine("Just write plain C# statements. Do NOT use bare `return;` — it will fail. Simply let the code run to the end.");
+            sb.AppendLine("Example: `var canvas = GameObject.Find(\"Canvas\"); canvas.SetActive(true);`");
+            sb.AppendLine("### Mode 2: Full class (for complex logic)");
+            sb.AppendLine("Implement `IAgentAction` with ALL 3 required members:");
+            sb.AppendLine("```");
+            sb.AppendLine("public class MyAction : IAgentAction {");
+            sb.AppendLine("  public string ActionName => \"MyAction\";");
+            sb.AppendLine("  public string Description => \"What it does\";");
+            sb.AppendLine("  public ActionResult Execute(ActionContext context) {");
+            sb.AppendLine("    // your code here");
+            sb.AppendLine("    return ActionResult.Ok(\"Done.\");");
+            sb.AppendLine("  }");
+            sb.AppendLine("}");
+            sb.AppendLine("```");
+            sb.AppendLine("**IMPORTANT**: If you use Mode 2, you MUST include `ActionName` and `Description` properties, or it will fail to compile.");
+            sb.AppendLine("APIs: UnityEngine, UnityEngine.UI, UnityEditor, System.Linq, TMPro.");
             sb.AppendLine("Use for 10+ repetitive items (grid cells, slot arrays).");
             sb.AppendLine();
 
@@ -411,25 +492,34 @@ namespace Indey.UIPrefabBuilder.Core
             LatestThinking = "";
         }
 
-        private bool LooksLikeBuildIntent(string userMessage)
+        private static TaskIntent ClassifyIntent(string userMessage, bool hasImage)
         {
-            if (string.IsNullOrEmpty(userMessage)) return false;
+            if (string.IsNullOrEmpty(userMessage))
+                return hasImage ? TaskIntent.Build : TaskIntent.Query;
+
             var lower = userMessage.ToLowerInvariant();
 
             bool hasBuild = false;
             foreach (var kw in BuildKeywords)
-            {
                 if (lower.Contains(kw)) { hasBuild = true; break; }
-            }
-            if (hasBuild) return true;
 
             bool hasAnalysis = false;
             foreach (var kw in AnalysisKeywords)
-            {
                 if (lower.Contains(kw)) { hasAnalysis = true; break; }
-            }
-            return !hasAnalysis;
+
+            bool hasModify = false;
+            foreach (var kw in ModifyKeywords)
+                if (lower.Contains(kw)) { hasModify = true; break; }
+
+            if (hasBuild && !hasAnalysis) return TaskIntent.Build;
+            if (hasBuild && hasAnalysis) return TaskIntent.Build;
+            if (hasAnalysis && !hasBuild) return TaskIntent.Analyze;
+            if (hasModify) return TaskIntent.Modify;
+
+            return hasImage ? TaskIntent.Build : TaskIntent.Query;
         }
+
+        public TaskIntent CurrentIntent => _currentIntent;
 
         private static bool IsSearchOnlyTool(string name)
         {
@@ -477,9 +567,10 @@ namespace Indey.UIPrefabBuilder.Core
             _llm.RefreshApiKey();
             ConsoleLogger.Log($"[Agent] Step {_currentStep}/{(_settings.MaxAgentSteps <= 0 ? "∞" : max.ToString())}, messages={_history.Count}");
 
+            var toolDefs = _toolRegistry.GetDefinitionsForIntent(_currentIntent);
             _llm.ChatWithToolsAsync(
                 _history.Messages,
-                _toolRegistry.Definitions,
+                toolDefs,
                 t => OnStreamToken?.Invoke(t),
                 t => { OnThinkingToken?.Invoke(t); },
                 response => HandleLLMResponse(response),
@@ -517,25 +608,23 @@ namespace Indey.UIPrefabBuilder.Core
             {
                 _history.AddAssistant(response.Content);
 
-                bool isBuildIntent = LooksLikeBuildIntent(_pendingMessage);
-                if (isBuildIntent && _totalBuildSteps == 0 && _totalSearchSteps > 0 && _textOnlyResponses < MaxTextOnlyResponses)
+                if (_currentIntent == TaskIntent.Build && _totalBuildSteps == 0
+                    && _totalSearchSteps > 0 && _textOnlyResponses < MaxTextOnlyResponses)
                 {
                     _textOnlyResponses++;
-                    ConsoleLogger.Log($"[Agent] LLM responded with text only but no build actions performed yet (attempt {_textOnlyResponses}/{MaxTextOnlyResponses}). User intent appears to be BUILD. Injecting continuation prompt.");
+                    ConsoleLogger.Log($"[Agent] Build intent detected but LLM only produced text (attempt {_textOnlyResponses}/{MaxTextOnlyResponses}). Nudging to start building.");
 
                     _history.AddUser(
-                        "IMPORTANT: You have provided an analysis/plan but have NOT actually built anything in the scene yet. " +
-                        "The scene is still empty. Please proceed to Phase 2 NOW: use `create_batch` to create the UI elements, " +
-                        "then `set_rect_transform_batch` to position them, then `set_image` / `set_text_properties` to style them. " +
-                        "Do NOT output another plan — start calling build tools immediately.");
+                        "You have analyzed the design but have not started building yet. " +
+                        "Please proceed to create the UI elements now using `create_batch`.");
 
-                    OnStreamToken?.Invoke("\n\n[System: Nudging agent to start building...]\n");
+                    OnStreamToken?.Invoke("\n\n[System: Proceeding to build phase...]\n");
                     TransitionTo(AgentState.Thinking);
                     return;
                 }
 
                 OnComplete?.Invoke(response.Content);
-                ConsoleLogger.Log($"[Agent] Task completed in {_currentStep} steps. (search={_totalSearchSteps}, build={_totalBuildSteps})");
+                ConsoleLogger.Log($"[Agent] Task completed in {_currentStep} steps. (intent={_currentIntent}, search={_totalSearchSteps}, build={_totalBuildSteps})");
                 TransitionTo(AgentState.Completed);
             }
         }
@@ -792,17 +881,16 @@ namespace Indey.UIPrefabBuilder.Core
 
         private void InjectSearchBudgetNudgeIfNeeded()
         {
+            if (_currentIntent != TaskIntent.Build && _currentIntent != TaskIntent.Modify)
+                return;
+
             if (_totalBuildSteps > 0 && _postBuildSearchSteps >= PostBuildSearchBudget && !_postBuildNudgeInjected)
             {
                 _postBuildNudgeInjected = true;
-                var nudge =
-                    "⚠️ You have already created UI elements but then spent " + _postBuildSearchSteps +
-                    " more steps searching without applying any sprites or styles. " +
-                    "STOP searching and continue building: use `set_image` to assign sprites to your Image elements, " +
-                    "`set_text_properties` to style text elements, and complete the UI. " +
-                    "For any missing assets, use a plain Image with color tint as fallback.";
-                _history.AddUser(nudge);
-                ConsoleLogger.Log($"[Agent] Post-build search regression detected ({_postBuildSearchSteps} search steps after build). Injected continue-build nudge.");
+                _history.AddUser(
+                    "You have been searching for a while after already creating elements. " +
+                    "Please continue styling with the assets you have. Use color tints as fallback for missing assets.");
+                ConsoleLogger.Log($"[Agent] Post-build search nudge ({_postBuildSearchSteps} search steps after build).");
                 return;
             }
 
@@ -811,25 +899,18 @@ namespace Indey.UIPrefabBuilder.Core
             if (_totalSearchSteps >= SearchBudgetHard)
             {
                 _searchBudgetWarningInjected = true;
-                var nudge =
-                    "⚠️ CRITICAL: You have spent " + _totalSearchSteps + " steps on asset searching without creating " +
-                    "ANY UI elements. You MUST stop searching and start building NOW. " +
-                    "Use the assets you have already found. For any missing assets, use a plain Image with color tint. " +
-                    "Your VERY NEXT action must be `create_batch` to create UI elements in the scene. " +
-                    "Do NOT call search_assets, search_assets_glob, search_sprites_by_text, or search_sprites_by_text_batch again.";
-                _history.AddUser(nudge);
-                ConsoleLogger.Log($"[Agent] Search budget HARD limit reached ({_totalSearchSteps} search steps). Injected mandatory build nudge.");
+                _history.AddUser(
+                    "You have spent many steps searching. Please start building now with the assets you found. " +
+                    "Use plain Images with color tint for anything missing.");
+                ConsoleLogger.Log($"[Agent] Search budget hard limit reached ({_totalSearchSteps} steps).");
             }
             else if (_totalSearchSteps >= SearchBudgetSoft)
             {
                 _searchBudgetWarningInjected = true;
-                var nudge =
-                    "NOTE: You have spent " + _totalSearchSteps + " steps searching for assets. " +
-                    "You should have enough information to start building. " +
-                    "Please transition to Phase 2 (Build) now — use `create_batch` to create UI elements, " +
-                    "then position and style them. Use fallback colors for any assets you couldn't find.";
-                _history.AddUser(nudge);
-                ConsoleLogger.Log($"[Agent] Search budget soft limit reached ({_totalSearchSteps} search steps). Injected build nudge.");
+                _history.AddUser(
+                    "You have enough information to start building. " +
+                    "Please begin creating UI elements now. Use fallback colors for assets you couldn't find.");
+                ConsoleLogger.Log($"[Agent] Search budget soft limit reached ({_totalSearchSteps} steps).");
             }
         }
 

@@ -46,7 +46,6 @@
 | 🪞 | **通用反射引擎** | `set_component_property` 可通过反射设置任意组件的任意属性 |
 | 📡 | **流式响应** | SSE 实时流式输出，支持 Thinking/Extended Thinking 展示 |
 | 💾 | **会话管理** | 多会话保存/加载/导出，持久化于 `Library/UIPrefabBuilder/Sessions`，每会话独立日志 |
-| 🧠 | **任务意图识别** | 自动区分 Build / Analyze / Modify / Query，分析类请求仅暴露只读工具，避免误创建 |
 | 🧠 | **上下文压缩** | 自动截断/摘要历史工具结果，长任务不会 token 溢出 |
 | ↩️ | **事务级 Undo** | `TransactionManager` 将单次 Agent 任务打包为 Undo 组，可随时 Rollback 整次任务 |
 
@@ -170,7 +169,7 @@ flowchart TB
     CENTER --> ENG["AgentEngine<br/>4-Phase Agentic Loop"]
     RIGHT -.->|BuildPromptSection| ENG
 
-    ENG --> TR["ToolRegistry<br/>Definitions + Intent Filter"]
+    ENG --> TR["ToolRegistry<br/>Definitions"]
     ENG --> LLM["LLMClient<br/>SSE · Tool Call · Vision"]
     ENG --> MH["MessageHistory<br/>Compression · Multimodal"]
 
@@ -188,9 +187,9 @@ flowchart TB
 | 层级 | 模块 | 职责 |
 |------|------|------|
 | UI | `BuilderWindow` | 三栏 SplitView：左 Settings+Console，中 Chat，右 Project Config |
-| Core | `AgentEngine` | 4 阶段循环、任务意图识别、System Prompt 构建、工具调度 |
+| Core | `AgentEngine` | 4 阶段循环、System Prompt 构建、工具调度 |
 | Core | `LLMClient` / `MessageHistory` | SSE 流式通信、上下文压缩、多模态（设计稿/截图） |
-| Skills | `ToolRegistry` + `ToolExecutor` | 65 工具定义与执行，按意图过滤只读/写入工具 |
+| Skills | `ToolRegistry` + `ToolExecutor` | 65 工具定义与执行 |
 | Indexing | `AssetIndexer` / `EmbeddingService` | CLIP 视觉索引、语义搜图、相似度匹配 |
 | Infra | `Compiler` / `Transaction` / `Async` | 动态编译、Undo 事务、后台任务 |
 | Config | `BuilderSettings` / `ProjectConfig` | Editor 设置（Preferences）与项目规范（JSON） |
@@ -201,7 +200,7 @@ flowchart TB
 
 | 阶段 | 说明 |
 |------|------|
-| **Thinking** | 消息历史 + 按意图过滤的工具定义 + 项目配置发给 LLM，等待推理 |
+| **Thinking** | 消息历史 + 完整工具定义 + 项目配置发给 LLM，等待推理 |
 | **CallingTool** | 执行 `tool_calls`，收集结果，连续失败自动注入修复提示 |
 | **Thinking** (再次) | 工具结果 + 可选截图回传 LLM，动态调整策略 |
 | **Completed** | 不再调用工具，输出最终总结 |
@@ -212,7 +211,7 @@ flowchart TB
 
 ## 🔧 Tool System
 
-共 **65 内置工具**，按 OpenAI Function Calling 标准定义。Analyze / Query 意图下仅暴露只读子集。
+共 **65 内置工具**，按 OpenAI Function Calling 标准定义。
 
 ### 资源探索
 
@@ -543,17 +542,6 @@ Agent 遵循"批量优先"策略最小化工具调用轮次：
 <tr>
 <td>
 
-### 🧠 任务意图识别
-
-根据用户输入自动分类：
-- **Build** — 完整 65 工具 + 四阶段工作流
-- **Modify** — 完整工具集，Prompt 聚焦增量修改
-- **Analyze** — 仅只读工具，纯分析不创建 UI
-- **Query** — 仅只读工具，回答场景/结构问题
-
-</td>
-<td>
-
 ### 📸 Vision 自检循环
 
 支持 Vision 的模型可以"看见"自己的作品：
@@ -599,7 +587,6 @@ Agent 遵循"批量优先"策略最小化工具调用轮次：
 - [x] 通用组件反射引擎
 - [x] 上下文压缩（长任务 token 管理）
 - [x] 项目级约束配置（设计规范、Sprite/Prefab 映射、组件覆盖、Rules）
-- [x] 任务意图识别（Build / Analyze / Modify / Query）
 - [ ] Prefab 模板库 & 常用 UI 一键生成
 - [ ] 自定义工具插件化注册
 - [ ] 动画 / 事件绑定工具

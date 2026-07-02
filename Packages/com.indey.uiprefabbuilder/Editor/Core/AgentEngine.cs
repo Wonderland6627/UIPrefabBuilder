@@ -198,15 +198,6 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("You think step-by-step, verify your work visually, and self-correct when issues are found.");
             sb.AppendLine();
 
-            // ── Behavior Guideline ──
-            sb.AppendLine("## BEHAVIOR GUIDELINE");
-            sb.AppendLine("Determine what the user wants based on their message and conversation context:");
-            sb.AppendLine("- If asking questions or requesting analysis → respond with text, use inspection tools only");
-            sb.AppendLine("- If asking to build/create/implement UI → follow the full build workflow below");
-            sb.AppendLine("- If asking to modify existing UI → inspect first, then modify precisely");
-            sb.AppendLine("Use your judgment. The user may express intent in many ways (e.g. \"开始实施\", \"干吧\", \"来吧\", \"上手\" all mean \"start building\").");
-            sb.AppendLine();
-
             {
                 // ── Thinking Protocol ──
                 sb.AppendLine("## THINKING PROTOCOL");

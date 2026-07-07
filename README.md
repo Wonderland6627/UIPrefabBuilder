@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://unity.com/releases/editor/whats-new/2021.3.0"><img src="https://img.shields.io/badge/Unity-2021.3%2B-blue?logo=unity" alt="Unity 2021.3+"/></a>
-  <img src="https://img.shields.io/badge/version-0.2.0-green" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-0.3.0-green" alt="Version"/>
   <img src="https://img.shields.io/badge/platform-Editor%20Only-lightgrey" alt="Platform"/>
   <img src="https://img.shields.io/badge/LLM-OpenAI%20Compatible-orange?logo=openai" alt="LLM"/>
   <img src="https://img.shields.io/badge/license-MIT-purple" alt="License"/>
@@ -38,9 +38,11 @@
 | 🤖 | **自然语言驱动** | 描述需求，AI 自主规划并执行完整 UI 构建流程 |
 | 🖼️ | **设计稿还原** | 上传设计稿图片，Agent 分析结构、匹配本地资源、还原 UGUI 并对比验证 |
 | 🔍 | **CLIP 视觉索引** | 基于 CLIP embedding 的语义搜图与视觉相似度匹配，超越文件名搜索 |
-| 🔧 | **65 结构化工具** | 基于 OpenAI Function Calling，覆盖资源搜索、批量创建、属性设置、布局、特效、Prefab 全流程 |
+| 🔧 | **71 结构化工具** | 基于 OpenAI Function Calling，覆盖资源搜索、批量创建、属性设置、布局、特效、Prefab 全流程 |
 | 📐 | **项目级配置** | Sprite/Prefab 映射、组件类型覆盖、Rules 规则、设计分辨率，自动注入 Agent Prompt |
 | ⚡ | **Batch-First 架构** | `create_batch` 一次创建整棵 UI 树，`set_rect_transform_batch` 一次定位所有元素 |
+| 🛡️ | **Prefab 安全保护** | 禁止覆盖已有 prefab 资产、禁止 apply 写回源 prefab，Agent 只能操作场景实例 |
+| 🚧 | **Agent 护栏** | 拦截 `execute_code` 调试摄像机/重复脚本、连续单次搜索时提醒改用批量工具、截图分析后强制转向布局修复 |
 | 🔄 | **4 阶段工作流** | Understand → Build → Verify → Finalize，Agent 自主遵循最佳实践 |
 | 📸 | **视觉验证** | 截图 Game View → Vision 模型分析布局问题 → 自动修复（需支持 Vision 的模型） |
 | 🪞 | **通用反射引擎** | `set_component_property` 可通过反射设置任意组件的任意属性 |
@@ -64,7 +66,7 @@ https://github.com/Wonderland6627/UIPrefabBuilder.git?path=Packages/com.indey.ui
 如需锁定版本，可追加 `#v版本号`：
 
 ```
-https://github.com/Wonderland6627/UIPrefabBuilder.git?path=Packages/com.indey.uiprefabbuilder#v0.2.0
+https://github.com/Wonderland6627/UIPrefabBuilder.git?path=Packages/com.indey.uiprefabbuilder#v0.3.0
 ```
 
 ### 方式二：手动编辑 manifest.json
@@ -187,9 +189,10 @@ flowchart TB
 | 层级 | 模块 | 职责 |
 |------|------|------|
 | UI | `BuilderWindow` | 三栏 SplitView：左 Settings+Console，中 Chat，右 Project Config |
-| Core | `AgentEngine` | 4 阶段循环、System Prompt 构建、工具调度 |
+| Core | `AgentEngine` | 4 阶段循环、System Prompt 构建、工具调度、Agent 护栏（摄像机/重复代码/批量搜索拦截） |
+| Core | `DesignImageContext` | 当前任务设计稿 Assets 路径，供区域裁剪与视觉匹配工具共享 |
 | Core | `LLMClient` / `MessageHistory` | SSE 流式通信、上下文压缩、多模态（设计稿/截图） |
-| Skills | `ToolRegistry` + `ToolExecutor` | 65 工具定义与执行 |
+| Skills | `ToolRegistry` + `ToolExecutor` | 71 工具定义与执行 |
 | Indexing | `AssetIndexer` / `EmbeddingService` | CLIP 视觉索引、语义搜图、相似度匹配 |
 | Infra | `Compiler` / `Transaction` / `Async` | 动态编译、Undo 事务、后台任务 |
 | Config | `BuilderSettings` / `ProjectConfig` | Editor 设置（Preferences）与项目规范（JSON） |
@@ -211,7 +214,7 @@ flowchart TB
 
 ## 🔧 Tool System
 
-共 **65 内置工具**，按 OpenAI Function Calling 标准定义。
+共 **71 内置工具**，按 OpenAI Function Calling 标准定义。
 
 ### 资源探索
 
@@ -228,9 +231,14 @@ flowchart TB
 |------|------|
 | `search_sprites_by_text` | CLIP 语义搜图，按自然语言描述匹配 Sprite（如 "gold coin"、"red button"） |
 | `search_sprites_by_text_batch` | **批量语义搜图**，一次查找多个 Sprite（推荐） |
-| `match_sprite_by_image` | 设计稿裁剪区域与索引 Sprite 的视觉相似度匹配（Top-K + 置信度） |
+| `match_sprite_by_region` | **（推荐）** 直接在设计稿上给出归一化 bbox（0-1，左上角原点），服务端自动裁剪并做 CLIP 图像相似度匹配 —— 不需要模型自己产出裁剪像素/base64 |
+| `match_sprite_by_region_batch` | **批量**版 `match_sprite_by_region`，一次匹配多个设计稿区域（推荐） |
+| `crop_design_image` | 按 bbox 裁剪设计稿区域并返回预览图，用于匹配前肉眼确认坐标是否准确 |
+| `match_sprite_by_image` | （legacy）需要调用方直接传入裁剪好的 base64 图片字节，文本类 LLM 通常无法产出真实像素，建议优先使用 `match_sprite_by_region` |
 | `rebuild_asset_index` | 全量重建视觉索引（后台异步） |
 | `get_index_status` | 查询索引状态（是否就绪、条目数、构建时间） |
+
+> **低置信度提示**：当最佳匹配分数低于健康阈值（图像匹配 score<0.65 / 文字匹配 confidence<30）时，结果会标记 `lowConfidence: true` 并附带 `_hint`，Agent 会改用纯色占位并在总结中说明未找到可靠素材。
 
 ### UI 创建
 
@@ -289,6 +297,7 @@ flowchart TB
 | 工具 | 功能 |
 |------|------|
 | `destroy_object` | 删除 GameObject（支持 Undo） |
+| `destroy_object_batch` | **批量删除**多个 GameObject（推荐） |
 | `set_parent` | 重新挂载到新父节点 |
 | `rename_object` | 重命名 |
 | `set_sibling_index` | 调整渲染和布局顺序 |
@@ -302,23 +311,26 @@ flowchart TB
 | `find_by_name` / `find_by_tag` | 按名称/标签查找 |
 | `find_ui_elements` | 按 UI 类型查找（Button、Image、Text 等） |
 | `inspect_hierarchy` | 描述层级树 |
+| `inspect_hierarchy_batch` | **批量**描述多个根节点的层级树（推荐） |
 | `inspect_components` | 列出组件详情 |
+| `inspect_components_batch` | **批量**列出多个对象的组件详情（推荐） |
 
 ### Prefab 操作
 
 | 工具 | 功能 |
 |------|------|
-| `save_as_prefab` | 保存为 Prefab |
+| `save_as_prefab` | 保存为**新** Prefab（目标路径已存在同名 prefab 时拒绝执行并报错，防止覆盖已有资产） |
 | `instantiate_prefab` | 实例化 Prefab 到场景（ProjectConfig 映射的 Prefab 优先使用） |
-| `apply_prefab` | 将实例修改应用回 Prefab 资源 |
 | `find_prefab_instances` | 查找场景中的 Prefab 实例 |
 | `save_scene` | 保存当前场景 |
+
+> ⚠️ **Prefab 保护**：Agent 只允许修改 Hierarchy 中的场景实例，不允许覆盖已存在的 prefab 资产。`apply_prefab` 已被禁用（会写穿到 Project 中的源 prefab 资产），`save_as_prefab` 拒绝覆盖已有路径。如需持久化改动，只能另存为新路径的 prefab 文件。`execute_code` 中也禁止调用 `PrefabUtility.ApplyPrefabInstance` 或 `SaveAsPrefabAssetAndConnect` 覆盖已有资产。
 
 ### 视觉验证
 
 | 工具 | 功能 |
 |------|------|
-| `take_screenshot` | 截取 Game View 截图 |
+| `take_screenshot` | 截取 Game View 截图（自动检测并补齐场景中缺失的 Camera/EventSystem，无需手动调试渲染配置） |
 | `analyze_screenshot` | 将截图发送给 Vision 模型分析布局问题（支持 `referenceImagePath` 与设计稿并排对比） |
 
 ### 辅助工具
@@ -507,10 +519,12 @@ ProjectConfig 贯穿 Agent 全流程：
 
 上传设计稿后 Agent 自动执行：
 - 分析 UI 层级结构（面板、按钮、图标、背景）
-- CLIP 语义搜图 / 视觉匹配找到本地 Sprite
+- `match_sprite_by_region_batch` 直接用设计稿归一化 bbox 做真正的图对图 CLIP 视觉匹配（优先于纯文字语义猜测），低置信度匹配自动标记并回退纯色占位
+- `crop_design_image` 预览裁剪区域确认坐标准确
 - `create_batch` + `set_rect_transform_batch` 批量构建
-- `analyze_screenshot` + `referenceImagePath` 并排对比验证
+- `analyze_screenshot` + `referenceImagePath` 并排对比验证（截图自动补齐 Camera/EventSystem）
 - Visual Fidelity Checklist 检查背景层、Tab 状态、文字样式等
+- 纯分析请求（如 "分析这个设计稿结构"）不会被强行拉入建造流程，但仍会调用搜索工具做真实素材匹配
 
 </td>
 </tr>
@@ -520,9 +534,10 @@ ProjectConfig 贯穿 Agent 全流程：
 ### 🔍 CLIP 视觉索引
 
 超越文件名搜索的语义资源匹配：
-- `search_sprites_by_text` — "gold coin" 找到金币图标
-- `search_sprites_by_text_batch` — 一次搜索多个描述
-- `match_sprite_by_image` — 设计稿裁剪区域精确匹配
+- `search_sprites_by_text` / `search_sprites_by_text_batch` — 按自然语言描述匹配 Sprite
+- `match_sprite_by_region` / `match_sprite_by_region_batch` — 直接给设计稿归一化 bbox，服务端自动裁剪并做真正的图对图 CLIP 相似度匹配
+- `crop_design_image` — 预览裁剪区域，确认坐标再匹配
+- 低置信度结果自动标记 `lowConfidence: true`，避免静默使用视觉不符的贴图
 - Settings 面板一键安装 Sentis + 下载模型 + 构建索引
 
 </td>
@@ -534,7 +549,8 @@ Agent 遵循"批量优先"策略最小化工具调用轮次：
 - `create_batch` 一次调用创建整棵 UI 树
 - `set_rect_transform_batch` 一次定位所有元素
 - `set_image_batch` / `set_text_properties_batch` 批量样式设置
-- `search_sprites_by_text_batch` 批量语义搜图
+- `match_sprite_by_region_batch` / `search_sprites_by_text_batch` 批量视觉/语义搜图
+- `destroy_object_batch` / `inspect_hierarchy_batch` / `inspect_components_batch` 批量管理与查询
 - 减少 LLM 往返次数，任务执行更快更稳定
 
 </td>
@@ -545,7 +561,7 @@ Agent 遵循"批量优先"策略最小化工具调用轮次：
 ### 📸 Vision 自检循环
 
 支持 Vision 的模型可以"看见"自己的作品：
-- `take_screenshot` 截取 Game View
+- `take_screenshot` 截取 Game View（自动补齐缺失的 Camera/EventSystem，无需 Agent 手动调试渲染）
 - `analyze_screenshot` 多模态分析布局问题
 - 发现问题 → 定向修复 → 再次截图确认
 - 非 Vision 模型退化为结构化自检

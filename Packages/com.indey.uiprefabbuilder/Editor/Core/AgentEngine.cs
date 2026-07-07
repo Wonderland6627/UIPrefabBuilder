@@ -31,18 +31,41 @@ namespace Indey.UIPrefabBuilder.Core
         private int _totalSearchSteps;
         private int _totalBuildSteps;
         private bool _searchBudgetWarningInjected;
-        private int _textOnlyResponses;
         private int _postBuildSearchSteps;
         private bool _postBuildNudgeInjected;
         private readonly Dictionary<string, string> _searchCache = new Dictionary<string, string>();
         private const int HardCap = 500;
         private const int MaxConsecutiveEmptySearches = 6;
         private const int MaxCumulativeEmptySearches = 10;
-        private const int SearchBudgetSoft = 15;
+        private const int SearchBudgetSoft = 10;
         private const int SearchBudgetHard = 25;
-        private const int MaxTextOnlyResponses = 2;
-        private const int PostBuildSearchBudget = 8;
+        private const int PostBuildSearchBudget = 3;
         private string _designImagePath;
+        private string _designImageAssetPath;
+
+        // Camera manipulation guard: block execute_code calls that try to modify camera settings
+        private int _consecutiveCameraAttempts;
+        private static readonly string[] CameraBlockedKeywords = {
+            "Camera.main", "clearFlags", "cullingMask",
+            "Camera.orthographic", "Camera.depth", "Camera.orthographicSize",
+            "camera.clearFlags", "camera.cullingMask", "camera.orthographic",
+            "camera.depth", "camera.orthographicSize"
+        };
+
+        // Consecutive single-search detection: nudge agent to use batch tools
+        private int _consecutiveSingleSearchCalls;
+        private const int MaxConsecutiveSingleSearchBeforeNudge = 3;
+        private bool _batchSearchNudgeInjected;
+
+        // execute_code dedup: detect repeated similar code submissions
+        private readonly List<string> _recentExecuteCodes = new List<string>();
+        private int _consecutiveSimilarCodeCount;
+        private const int MaxConsecutiveSimilarCode = 3;
+
+        // Post-analyze_screenshot guardrail: detect execute_code spirals after screenshot analysis
+        private bool _lastStepWasAnalyzeScreenshot;
+        private int _postAnalyzeExecuteCodeCount;
+        private const int MaxPostAnalyzeExecuteCode = 5;
 
         public AgentState State => _state;
         public MessageHistory History => _history;
@@ -158,9 +181,53 @@ namespace Indey.UIPrefabBuilder.Core
             }
 
             _designImagePath = imagePaths.Count > 0 ? imagePaths[0] : null;
+            _designImageAssetPath = EnsureDesignImageAssetPath(_designImagePath);
+            DesignImageContext.CurrentAssetPath = _designImageAssetPath;
             _history.AddUserMultimodal(parts, pinImage: true);
             _txManager.Begin("AI Agent Task");
             TransitionTo(AgentState.Thinking);
+        }
+
+        /// <summary>
+        /// Ensures the raw design mockup image (which may live outside Assets/, e.g. a temp
+        /// clipboard/attachment path) is copied into Assets/Screenshots/ so it has a stable
+        /// Assets-relative path that both `analyze_screenshot` (referenceImagePath) and the
+        /// new region-based visual matching tools (crop_design_image, match_sprite_by_region)
+        /// can read from. Returns the Assets-relative path, or null if there is no image.
+        /// </summary>
+        private string EnsureDesignImageAssetPath(string rawImagePath)
+        {
+            if (string.IsNullOrEmpty(rawImagePath)) return null;
+
+            try
+            {
+                var projectRoot = Path.GetDirectoryName(Application.dataPath);
+                var normalized = rawImagePath.Replace("\\", "/");
+                var normalizedRoot = projectRoot?.Replace("\\", "/") ?? "";
+
+                if (normalized.StartsWith(normalizedRoot) && normalized.Contains("/Assets/"))
+                {
+                    var assetsIdx = normalized.IndexOf("/Assets/", StringComparison.Ordinal);
+                    return normalized.Substring(assetsIdx + 1);
+                }
+
+                var screenshotDir = "Assets/Screenshots";
+                var destName = "design_reference_" + Path.GetFileName(rawImagePath);
+                var destPath = Path.Combine(projectRoot, screenshotDir, destName);
+                if (!File.Exists(destPath) && File.Exists(rawImagePath))
+                {
+                    var dir = Path.GetDirectoryName(destPath);
+                    if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                    File.Copy(rawImagePath, destPath, true);
+                    AssetDatabase.Refresh();
+                }
+                return screenshotDir + "/" + destName;
+            }
+            catch (Exception e)
+            {
+                ConsoleLogger.Error($"[Agent] Failed to stage design reference image: {e.Message}");
+                return null;
+            }
         }
 
         private static string GetMimeType(string ext)
@@ -239,6 +306,7 @@ namespace Indey.UIPrefabBuilder.Core
                     sb.AppendLine("- `take_screenshot` → `analyze_screenshot` to visually inspect the Game View");
                     sb.AppendLine("- When the user provides a design mockup, use `analyze_screenshot` with `referenceImagePath` to compare side-by-side");
                     sb.AppendLine("- Fix issues found, then take one more screenshot to confirm");
+                    sb.AppendLine("- `take_screenshot` automatically ensures a Camera and EventSystem exist in the scene — NEVER write `execute_code` to create/fix cameras, Canvas render mode, clearFlags, or cullingMask. If a screenshot still looks wrong, the cause is UI layout (RectTransform/anchors/Canvas Scaler design resolution) or missing sprites, NOT the render pipeline — use `inspect_hierarchy`/`inspect_components` to debug instead of repeated camera experiments.");
                 }
                 else
                 {
@@ -273,6 +341,9 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine("9. Configuring 2+ LayoutElements → `add_layout_element_batch`");
                 sb.AppendLine("10. Setting 2+ component properties → `set_component_property_batch`");
                 sb.AppendLine("11. Generic single property → `set_component_property` via reflection");
+                sb.AppendLine("12. Destroying 2+ objects → `destroy_object_batch` (NOT multiple destroy_object calls)");
+                sb.AppendLine("13. Inspecting hierarchy of 2+ roots → `inspect_hierarchy_batch` (NOT multiple inspect_hierarchy calls)");
+                sb.AppendLine("14. Inspecting components of 2+ objects → `inspect_components_batch` (NOT multiple inspect_components calls)");
                 sb.AppendLine();
 
                 // ── Asset Search Guide ──
@@ -297,14 +368,18 @@ namespace Indey.UIPrefabBuilder.Core
                     {
                         sb.AppendLine($"- Visual asset index is ACTIVE with {indexer.IndexedCount} indexed sprites.");
                         sb.AppendLine("- **PREFER** visual index tools over filename-based search when:");
-                        sb.AppendLine("  - User provides a design mockup/screenshot → use `match_sprite_by_image`");
-                        sb.AppendLine("  - You need to find sprites by visual appearance → use `search_sprites_by_text`");
+                        sb.AppendLine("  - User provides a design mockup/screenshot → use `match_sprite_by_region_batch` (or `match_sprite_by_region` for a single element)");
+                        sb.AppendLine("  - You need to find sprites by visual appearance from a text description → use `search_sprites_by_text`");
                         sb.AppendLine("  - You want to understand what sprites look like → use `search_sprites_by_text`");
-                        sb.AppendLine("- `match_sprite_by_image`: find sprites by visual similarity from a design mockup crop (base64 image).");
+                        sb.AppendLine("- `match_sprite_by_region_batch`: give normalized bounding boxes (x, y, width, height in 0-1, top-left origin) directly on the ATTACHED design mockup image — no need to crop or encode images yourself. The tool crops the region server-side and matches it by visual similarity (CLIP embedding) against the indexed sprites. **ALWAYS prefer this over multiple single calls** when matching 2+ regions.");
+                        sb.AppendLine("- **When a design mockup is attached/available in this session, call `match_sprite_by_region_batch` FIRST for every visually distinct element (backgrounds, buttons, checkboxes, icons) BEFORE falling back to `search_sprites_by_text_batch`.** Text-only search often returns a sprite that merely matches the description in words but looks visually wrong (e.g. a round checkbox instead of a square one) — actual pixel/CLIP matching against the mockup avoids that.");
+                        sb.AppendLine("- `match_sprite_by_region`: same as above for a single bounding box.");
+                        sb.AppendLine("- `crop_design_image`: optional — crop and preview a region of the design mockup (returns the cropped image to you) if you want to double-check a bounding box before matching.");
                         sb.AppendLine("- `search_sprites_by_text_batch`: find multiple sprites at once by text descriptions. **ALWAYS prefer this over multiple single calls.** Example: `{\"queries\":[{\"query\":\"gold coin\"},{\"query\":\"red button\"},{\"query\":\"lock icon\"}]}`");
                         sb.AppendLine("- `search_sprites_by_text`: find a single sprite by text description. Use only when searching for exactly one sprite.");
                         sb.AppendLine("- Fall back to `search_assets`/`search_assets_glob` only for exact filename-based lookups.");
                         sb.AppendLine("- Use `get_index_status` to check index health.");
+                        sb.AppendLine("- **`lowConfidence: true` / `_hint` on a match result means the best candidate probably does NOT visually resemble the target** (it only passed the minimum filter, not a real similarity bar). Do NOT silently apply it as if it were correct — use a plain color-tinted Image instead and explicitly say in your final summary that no confident sprite was found for that element, so the user knows to review/supply one.");
                     }
                     else
                     {
@@ -326,8 +401,8 @@ namespace Indey.UIPrefabBuilder.Core
                         var idxForMockup = AssetIndexer.Instance;
                         if (idxForMockup.IsReady && idxForMockup.IndexedCount > 0)
                         {
-                            sb.AppendLine("   - **PREFERRED**: `search_sprites_by_text_batch` with ALL visual descriptions at once (e.g. 'green ribbon header', 'gray stone button', 'gold coin icon' — batch them in one call)");
-                            sb.AppendLine("   - For precise matching: crop/describe regions and compare via `match_sprite_by_image`");
+                            sb.AppendLine("   - **PREFERRED for precise matching**: `match_sprite_by_region_batch` with the normalized bounding box (0-1, top-left origin) of EACH element on the mockup — this compares actual pixels via CLIP image similarity instead of guessing from a text description.");
+                            sb.AppendLine("   - **Alternative**: `search_sprites_by_text_batch` with ALL visual descriptions at once (e.g. 'green ribbon header', 'gray stone button', 'gold coin icon' — batch them in one call) when a bounding box is impractical.");
                         }
                         else
                         {
@@ -395,11 +470,18 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("**ActionResult API**: `ActionResult.Ok(\"message\")` for success, `ActionResult.Fail(\"message\")` for failure. Do NOT use `ActionResult.Error()` — it does not exist.");
             sb.AppendLine("APIs: UnityEngine, UnityEngine.UI, UnityEditor, System.Linq, TMPro.");
             sb.AppendLine("Use for 10+ repetitive items (grid cells, slot arrays).");
+            sb.AppendLine("**Common compile pitfalls**: a bare `Object` identifier is ambiguous (`CS0104`) once both `System` and `UnityEngine` are in scope — use `GameObject`, `Component`, or the full `UnityEngine.Object` instead. " +
+                "For text/graphic outline or shadow effects, prefer the `add_outline`/`add_outline_batch` tools instead of hand-writing `Outline`/`Shadow` field access.");
             sb.AppendLine();
 
             // ── Safety ──
             sb.AppendLine("## SAFETY");
             sb.AppendLine("- Never delete files or assets. Never quit Unity.");
+            sb.AppendLine("- **Prefab protection (CRITICAL)**: you may only modify GameObject instances that live in the scene Hierarchy. You must NEVER overwrite an existing prefab asset or push instance overrides back into a prefab asset in the Project:");
+            sb.AppendLine("  - `save_as_prefab` only creates a brand-new prefab and will refuse if the path already exists — never try to work around this by deleting the existing asset first.");
+            sb.AppendLine("  - Do NOT use `apply_prefab` or any `execute_code` calling `PrefabUtility.ApplyPrefabInstance` / `PrefabUtility.SaveAsPrefabAssetAndConnect` on an existing path — these write to the Project's prefab asset, not just the scene instance, and are forbidden.");
+            sb.AppendLine("  - If a task is read-only/analysis-only (e.g. \"分析这个设计稿\", \"这个UI是什么结构\"), do NOT create/build/save/modify any GameObject or asset — just answer with your analysis and stop. " +
+                "This does NOT mean skip tool calls entirely: you SHOULD still use non-destructive search-only tools (`match_sprite_by_region_batch`, `search_sprites_by_text_batch`, `get_project_config`, `search_assets_glob`, etc.) as part of a thorough analysis — identifying the ACTUAL matching sprite asset paths for each element (not just describing them in words) makes your analysis far more useful and lets a later \"now build it\" turn reuse those exact matches instead of re-guessing.");
             sb.AppendLine();
             sb.AppendLine("When finished, respond with a brief summary of what you created.");
 
@@ -422,23 +504,67 @@ namespace Indey.UIPrefabBuilder.Core
             _totalSearchSteps = 0;
             _totalBuildSteps = 0;
             _searchBudgetWarningInjected = false;
-            _textOnlyResponses = 0;
             _postBuildSearchSteps = 0;
             _postBuildNudgeInjected = false;
             _searchCache.Clear();
+            _consecutiveCameraAttempts = 0;
+            _consecutiveSingleSearchCalls = 0;
+            _batchSearchNudgeInjected = false;
+            _recentExecuteCodes.Clear();
+            _consecutiveSimilarCodeCount = 0;
+            _lastStepWasAnalyzeScreenshot = false;
+            _postAnalyzeExecuteCodeCount = 0;
+            // Design mockup reference is scoped to a single task/turn: it is set (if images are
+            // attached) in StartTask(msg, imagePaths) right after this reset, so clearing it here
+            // means a follow-up turn that doesn't re-attach an image simply has no reference image.
             _designImagePath = null;
+            _designImageAssetPath = null;
+            DesignImageContext.Clear();
             LatestCode = "";
             LatestThinking = "";
+        }
+
+        private static bool IsCameraManipulation(string code)
+        {
+            if (string.IsNullOrEmpty(code)) return false;
+            foreach (var kw in CameraBlockedKeywords)
+                if (code.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            return false;
+        }
+
+        private static bool IsSingleSearchTool(string name)
+        {
+            return name == "search_assets" || name == "search_assets_glob"
+                || name == "search_sprites_by_text" || name == "get_asset_info";
+        }
+
+        /// <summary>
+        /// Rough similarity check: ratio of shared characters (order-independent) to max length.
+        /// Good enough to detect repeated camera/debug snippets without pulling in a full edit-distance lib.
+        /// </summary>
+        private static float RoughSimilarity(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return 0f;
+            int matched = 0;
+            var pool = new List<char>(b);
+            foreach (var c in a)
+            {
+                int idx = pool.IndexOf(c);
+                if (idx >= 0) { matched++; pool.RemoveAt(idx); }
+            }
+            return (float)matched / Math.Max(a.Length, b.Length);
         }
 
         private static bool IsSearchOnlyTool(string name)
         {
             return name == "search_assets" || name == "search_assets_glob" || name == "search_assets_glob_batch"
                 || name == "search_sprites_by_text" || name == "search_sprites_by_text_batch"
-                || name == "match_sprite_by_image"
+                || name == "match_sprite_by_image" || name == "match_sprite_by_region" || name == "match_sprite_by_region_batch"
+                || name == "crop_design_image"
                 || name == "get_project_config" || name == "get_scene_overview"
-                || name == "get_index_status" || name == "inspect_hierarchy"
-                || name == "inspect_components";
+                || name == "get_index_status" || name == "inspect_hierarchy" || name == "inspect_hierarchy_batch"
+                || name == "inspect_components" || name == "inspect_components_batch";
         }
 
         private static bool IsBuildTool(string name)
@@ -518,21 +644,11 @@ namespace Indey.UIPrefabBuilder.Core
             {
                 _history.AddAssistant(response.Content);
 
-                if (_totalBuildSteps == 0
-                    && _totalSearchSteps > 0 && _textOnlyResponses < MaxTextOnlyResponses)
-                {
-                    _textOnlyResponses++;
-                    ConsoleLogger.Log($"[Agent] LLM produced text after searching but no build (attempt {_textOnlyResponses}/{MaxTextOnlyResponses}). Nudging to start building.");
-
-                    _history.AddUser(
-                        "You have analyzed the design but have not started building yet. " +
-                        "Please proceed to create the UI elements now using `create_batch`.");
-
-                    OnStreamToken?.Invoke("\n\n[System: Proceeding to build phase...]\n");
-                    TransitionTo(AgentState.Thinking);
-                    return;
-                }
-
+                // NOTE: We intentionally do NOT force the model to start building just because it
+                // searched first and then replied with text only. Not every task is a "build" task —
+                // e.g. "分析此UI设计稿的结构" is a read-only analysis request, and forcing a build in
+                // that case caused the agent to fabricate unwanted scene changes and even overwrite an
+                // existing prefab asset. Trust the model's own judgement about whether the task is done.
                 OnComplete?.Invoke(response.Content);
                 ConsoleLogger.Log($"[Agent] Task completed in {_currentStep} steps. (search={_totalSearchSteps}, build={_totalBuildSteps})");
                 TransitionTo(AgentState.Completed);
@@ -623,35 +739,92 @@ namespace Indey.UIPrefabBuilder.Core
                     }
                 }
 
+                // --- Camera manipulation guard for execute_code ---
+                if (call.Name == "execute_code")
+                {
+                    string codeContent = null;
+                    try { codeContent = JObject.Parse(call.Arguments ?? "{}")["code"]?.ToString(); }
+                    catch { }
+
+                    if (IsCameraManipulation(codeContent))
+                    {
+                        _consecutiveCameraAttempts++;
+                        var blockMsg = "BLOCKED: Modifying Camera settings via execute_code is not allowed. " +
+                            "The take_screenshot tool already manages the camera automatically. " +
+                            "If the screenshot looks wrong, debug the UI layout instead — use inspect_hierarchy / inspect_components " +
+                            "to check RectTransform anchors, sizes, and Canvas Scaler settings.";
+                        if (_consecutiveCameraAttempts >= 2)
+                            blockMsg += " You have attempted camera manipulation " + _consecutiveCameraAttempts +
+                                " times. STOP trying to fix the camera and focus on UI layout issues.";
+                        result = new JObject { ["success"] = false, ["error"] = blockMsg }.ToString();
+                        ConsoleLogger.Log($"[Agent] Camera manipulation blocked (attempt {_consecutiveCameraAttempts}): {call.Name}");
+                        ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
+                        _history.AddToolResult(call.Id, call.Name, result);
+                        OnToolCall?.Invoke(call.Name, call.Arguments, result);
+                        ReportToolResult(call.Name, result);
+                        continue;
+                    }
+
+                    // --- execute_code dedup: detect repeated similar code ---
+                    if (!string.IsNullOrEmpty(codeContent) && _recentExecuteCodes.Count > 0)
+                    {
+                        var lastCode = _recentExecuteCodes[_recentExecuteCodes.Count - 1];
+                        if (RoughSimilarity(codeContent, lastCode) > 0.8f)
+                        {
+                            _consecutiveSimilarCodeCount++;
+                            if (_consecutiveSimilarCodeCount >= MaxConsecutiveSimilarCode)
+                            {
+                                result = new JObject
+                                {
+                                    ["success"] = false,
+                                    ["error"] = "BLOCKED: You have submitted " + _consecutiveSimilarCodeCount +
+                                        " very similar execute_code calls in a row. This approach is not working. " +
+                                        "Try a completely different strategy — use set_rect_transform_batch, set_image_batch, " +
+                                        "inspect_hierarchy, or other specialized tools instead."
+                                }.ToString();
+                                ConsoleLogger.Log($"[Agent] Repeated execute_code blocked (similarity={_consecutiveSimilarCodeCount})");
+                                ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
+                                _history.AddToolResult(call.Id, call.Name, result);
+                                OnToolCall?.Invoke(call.Name, call.Arguments, result);
+                                ReportToolResult(call.Name, result);
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            _consecutiveSimilarCodeCount = 0;
+                        }
+                    }
+                    if (!string.IsNullOrEmpty(codeContent))
+                        _recentExecuteCodes.Add(codeContent);
+                }
+                else
+                {
+                    _consecutiveCameraAttempts = 0;
+                    _consecutiveSimilarCodeCount = 0;
+                }
+
+                // --- Track consecutive single-search calls (non-batch) ---
+                if (IsSingleSearchTool(call.Name))
+                {
+                    _consecutiveSingleSearchCalls++;
+                }
+                else
+                {
+                    _consecutiveSingleSearchCalls = 0;
+                }
+
                 var execArgs = call.Arguments;
-                if (call.Name == "analyze_screenshot" && !string.IsNullOrEmpty(_designImagePath))
+                if (call.Name == "analyze_screenshot" && !string.IsNullOrEmpty(_designImageAssetPath))
                 {
                     try
                     {
                         var argsObj = JObject.Parse(execArgs ?? "{}");
                         if (string.IsNullOrEmpty(argsObj["referenceImagePath"]?.ToString()))
                         {
-                            var projectRoot = System.IO.Path.GetDirectoryName(UnityEngine.Application.dataPath);
-                            var designAssetPath = _designImagePath.Replace("\\", "/");
-                            if (designAssetPath.StartsWith(projectRoot?.Replace("\\", "/") ?? ""))
-                                designAssetPath = designAssetPath.Substring(projectRoot.Length + 1);
-                            if (!designAssetPath.StartsWith("Assets/"))
-                            {
-                                var screenshotDir = "Assets/Screenshots";
-                                var destName = "design_reference_" + System.IO.Path.GetFileName(_designImagePath);
-                                var destPath = System.IO.Path.Combine(projectRoot, screenshotDir, destName);
-                                if (!System.IO.File.Exists(destPath) && System.IO.File.Exists(_designImagePath))
-                                {
-                                    var dir = System.IO.Path.GetDirectoryName(destPath);
-                                    if (!System.IO.Directory.Exists(dir)) System.IO.Directory.CreateDirectory(dir);
-                                    System.IO.File.Copy(_designImagePath, destPath, true);
-                                    UnityEditor.AssetDatabase.Refresh();
-                                }
-                                designAssetPath = screenshotDir + "/" + destName;
-                            }
-                            argsObj["referenceImagePath"] = designAssetPath;
+                            argsObj["referenceImagePath"] = _designImageAssetPath;
                             execArgs = argsObj.ToString();
-                            ConsoleLogger.Log($"[Agent] Auto-injected design reference image: {designAssetPath}");
+                            ConsoleLogger.Log($"[Agent] Auto-injected design reference image: {_designImageAssetPath}");
                         }
                     }
                     catch { }
@@ -769,6 +942,27 @@ namespace Indey.UIPrefabBuilder.Core
                     _postBuildSearchSteps++;
             }
 
+            // --- Post-analyze_screenshot guardrail ---
+            bool stepHasAnalyze = false;
+            bool stepHasExecuteCode = false;
+            foreach (var call in toolCalls)
+            {
+                if (call.Name == "analyze_screenshot") stepHasAnalyze = true;
+                if (call.Name == "execute_code") stepHasExecuteCode = true;
+            }
+            if (stepHasAnalyze)
+            {
+                _lastStepWasAnalyzeScreenshot = true;
+                _postAnalyzeExecuteCodeCount = 0;
+            }
+            else if (_lastStepWasAnalyzeScreenshot)
+            {
+                if (stepHasExecuteCode && !stepHasBuildTool)
+                    _postAnalyzeExecuteCodeCount++;
+                else
+                    _lastStepWasAnalyzeScreenshot = false;
+            }
+
             if (pendingImageParts.Count > 0 && _settings.SupportsVision)
             {
                 var parts = new List<ContentPart>();
@@ -798,6 +992,33 @@ namespace Indey.UIPrefabBuilder.Core
                     "You have been searching for a while after already creating elements. " +
                     "Please continue styling with the assets you have. Use color tints as fallback for missing assets.");
                 ConsoleLogger.Log($"[Agent] Post-build search nudge ({_postBuildSearchSteps} search steps after build).");
+                return;
+            }
+
+            // Batch search nudge: remind agent to use batch tools when making consecutive single searches
+            if (_consecutiveSingleSearchCalls >= MaxConsecutiveSingleSearchBeforeNudge && !_batchSearchNudgeInjected)
+            {
+                _batchSearchNudgeInjected = true;
+                _history.AddUser(
+                    "You are making many individual search calls. Use batch tools instead: " +
+                    "`search_assets_glob_batch` for multiple filename patterns, " +
+                    "`search_sprites_by_text_batch` for multiple text queries. " +
+                    "Batch all remaining searches into ONE call.");
+                ConsoleLogger.Log($"[Agent] Batch search nudge injected ({_consecutiveSingleSearchCalls} consecutive single searches).");
+                return;
+            }
+
+            // Post-analyze_screenshot guardrail: if agent keeps using execute_code after screenshot analysis
+            if (_lastStepWasAnalyzeScreenshot && _postAnalyzeExecuteCodeCount >= MaxPostAnalyzeExecuteCode)
+            {
+                _lastStepWasAnalyzeScreenshot = false;
+                _history.AddUser(
+                    "STOP using execute_code to debug rendering. You have used execute_code " + _postAnalyzeExecuteCodeCount +
+                    " times after analyze_screenshot without fixing UI layout. " +
+                    "The issue is in UI layout, NOT the camera or render pipeline. " +
+                    "Use set_rect_transform_batch to fix positions/sizes, set_image_batch to fix sprites, " +
+                    "and inspect_hierarchy/inspect_components to debug element structure.");
+                ConsoleLogger.Log($"[Agent] Post-analyze execute_code guardrail triggered ({_postAnalyzeExecuteCodeCount} execute_code calls after analyze_screenshot).");
                 return;
             }
 

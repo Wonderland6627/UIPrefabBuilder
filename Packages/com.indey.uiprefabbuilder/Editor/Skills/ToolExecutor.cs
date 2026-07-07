@@ -93,11 +93,14 @@ namespace Indey.UIPrefabBuilder.Skills
                 case "set_sibling_index": return DoSetSiblingIndex(args);
                 // GameObject management
                 case "destroy_object": return DoDestroyObject(args);
+                case "destroy_object_batch": return DoDestroyObjectBatch(args);
                 case "set_parent": return DoSetParent(args);
                 case "rename_object": return DoRenameObject(args);
                 // Query
                 case "inspect_hierarchy": return DoInspectHierarchy(args);
+                case "inspect_hierarchy_batch": return DoInspectHierarchyBatch(args);
                 case "inspect_components": return DoInspectComponents(args);
+                case "inspect_components_batch": return DoInspectComponentsBatch(args);
                 case "get_scene_overview": return DoGetSceneOverview();
                 case "get_scene_info": return DoGetSceneInfo();
                 case "find_by_name": return DoFindByName(args);
@@ -120,6 +123,9 @@ namespace Indey.UIPrefabBuilder.Skills
                 case "execute_code": return DoExecuteCode(args);
                 // Asset Indexing
                 case "match_sprite_by_image": return DoMatchSpriteByImage(args);
+                case "crop_design_image": return DoCropDesignImage(args);
+                case "match_sprite_by_region": return DoMatchSpriteByRegion(args);
+                case "match_sprite_by_region_batch": return DoMatchSpriteByRegionBatch(args);
                 case "search_sprites_by_text": return DoSearchSpritesByText(args);
                 case "search_sprites_by_text_batch": return DoSearchSpritesByTextBatch(args);
                 case "rebuild_asset_index": return DoRebuildAssetIndex(args);
@@ -868,6 +874,37 @@ namespace Indey.UIPrefabBuilder.Skills
             return Ok($"Destroyed '{name}'.");
         }
 
+        private string DoDestroyObjectBatch(JObject args)
+        {
+            var targets = args["targets"] as JArray;
+            if (targets == null || targets.Count == 0)
+                return Error("Missing or empty 'targets' array.");
+
+            int total = targets.Count, success = 0, fail = 0;
+            var results = new JArray();
+
+            foreach (var token in targets)
+            {
+                var name = token.ToString();
+                var go = FindGO(name);
+                if (go == null) { results.Add(ItemFail(name ?? "?", "Not found")); fail++; continue; }
+                var actualName = go.name;
+                Undo.DestroyObjectImmediate(go);
+                results.Add(new JObject { ["success"] = true, ["name"] = actualName });
+                success++;
+            }
+
+            return new JObject
+            {
+                ["success"] = fail == 0,
+                ["total"] = total,
+                ["succeeded"] = success,
+                ["failed"] = fail,
+                ["results"] = results,
+                ["message"] = $"Destroyed {success}/{total} objects."
+            }.ToString();
+        }
+
         private string DoSetParent(JObject args)
         {
             var go = FindGO(Str(args, "target"));
@@ -900,11 +937,52 @@ namespace Indey.UIPrefabBuilder.Skills
             return new JObject { ["success"] = true, ["hierarchy"] = HierarchyInspector.Describe(go, Int(args, "maxDepth", 4)) }.ToString();
         }
 
+        private string DoInspectHierarchyBatch(JObject args)
+        {
+            var targets = args["targets"] as JArray;
+            if (targets == null || targets.Count == 0)
+                return Error("Missing or empty 'targets' array.");
+
+            var maxDepth = Int(args, "maxDepth", 4);
+            var resultsObj = new JObject();
+
+            foreach (var token in targets)
+            {
+                var name = token.ToString();
+                var go = FindGO(name);
+                resultsObj[name] = go == null
+                    ? (JToken)new JObject { ["success"] = false, ["error"] = "Not found" }
+                    : new JObject { ["success"] = true, ["hierarchy"] = HierarchyInspector.Describe(go, maxDepth) };
+            }
+
+            return new JObject { ["success"] = true, ["results"] = resultsObj }.ToString();
+        }
+
         private string DoInspectComponents(JObject args)
         {
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
             return new JObject { ["success"] = true, ["components"] = HierarchyInspector.DescribeComponents(go) }.ToString();
+        }
+
+        private string DoInspectComponentsBatch(JObject args)
+        {
+            var targets = args["targets"] as JArray;
+            if (targets == null || targets.Count == 0)
+                return Error("Missing or empty 'targets' array.");
+
+            var resultsObj = new JObject();
+
+            foreach (var token in targets)
+            {
+                var name = token.ToString();
+                var go = FindGO(name);
+                resultsObj[name] = go == null
+                    ? (JToken)new JObject { ["success"] = false, ["error"] = "Not found" }
+                    : new JObject { ["success"] = true, ["components"] = HierarchyInspector.DescribeComponents(go) };
+            }
+
+            return new JObject { ["success"] = true, ["results"] = resultsObj }.ToString();
         }
 
         private string DoGetSceneOverview()
@@ -990,7 +1068,14 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
-            var result = PrefabHelper.Create(go, Str(args, "path"));
+            var path = Str(args, "path");
+            if (PrefabHelper.ExistsAtPath(path))
+            {
+                return Error($"Refused: a prefab asset already exists at '{path}'. " +
+                    "Overwriting existing project prefabs is not allowed — choose a different path for a new prefab, " +
+                    "or if you only needed to update objects already placed in the scene, that's done (no need to save/overwrite the source prefab).");
+            }
+            var result = PrefabHelper.Create(go, path);
             return result != null ? Ok($"Prefab saved to '{result}'.") : Error("Failed to save prefab.");
         }
 
@@ -1011,10 +1096,10 @@ namespace Indey.UIPrefabBuilder.Skills
 
         private string DoApplyPrefab(JObject args)
         {
-            var go = FindGO(Str(args, "target"));
-            if (go == null) return TargetNotFound(Str(args, "target"));
-            var ok = PrefabHelper.Apply(go);
-            return ok ? Ok($"Prefab overrides applied for '{go.name}'.") : Error("Not a prefab instance or apply failed.");
+            return Error("Disabled for safety: applying instance overrides back to the source prefab asset " +
+                "(PrefabUtility.ApplyPrefabInstance) modifies the project's prefab file directly, which is not allowed. " +
+                "You may only modify the GameObject instance in the scene Hierarchy. If the user wants the changes " +
+                "persisted as a prefab, save a NEW prefab via `save_as_prefab` at a different path instead.");
         }
 
         private string DoFindPrefabInstances(JObject args)
@@ -1123,6 +1208,41 @@ namespace Indey.UIPrefabBuilder.Skills
             tex.Apply();
         }
 
+        private static void EnsurePreviewCamera()
+        {
+            var camera = Camera.main;
+            if (camera == null)
+            {
+                foreach (var cam in UnityEngine.Object.FindObjectsOfType<Camera>())
+                {
+                    if (cam.isActiveAndEnabled) { camera = cam; break; }
+                }
+            }
+
+            if (camera == null)
+            {
+                var camGO = new GameObject("Preview Camera");
+                Undo.RegisterCreatedObjectUndo(camGO, "Create Preview Camera");
+                camGO.tag = "MainCamera";
+                camera = camGO.AddComponent<Camera>();
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = new Color(0.2f, 0.2f, 0.2f, 1f);
+                camera.cullingMask = -1;
+                camera.orthographic = false;
+                camera.depth = 0;
+                camera.transform.position = new Vector3(0, 0, -10);
+            }
+
+            var eventSystem = UnityEngine.Object.FindObjectOfType<UnityEngine.EventSystems.EventSystem>();
+            if (eventSystem == null)
+            {
+                var esGO = new GameObject("EventSystem");
+                Undo.RegisterCreatedObjectUndo(esGO, "Create EventSystem");
+                esGO.AddComponent<UnityEngine.EventSystems.EventSystem>();
+                esGO.AddComponent<UnityEngine.EventSystems.StandaloneInputModule>();
+            }
+        }
+
         private string DoTakeScreenshot(JObject args)
         {
             var filename = Str(args, "filename", "screenshot");
@@ -1131,6 +1251,8 @@ namespace Indey.UIPrefabBuilder.Skills
 
             try
             {
+                EnsurePreviewCamera();
+
                 int actualW = width, actualH = height;
 
                 var bytes = TryCaptureGameViewRT(out actualW, out actualH);
@@ -1254,6 +1376,25 @@ namespace Indey.UIPrefabBuilder.Skills
                 ["_multimodal"] = true,
                 ["_images"] = images
             }.ToString();
+        }
+
+        private static Texture2D LoadTextureFromFile(string fullPath)
+        {
+            try
+            {
+                var bytes = File.ReadAllBytes(fullPath);
+                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                if (!ImageConversion.LoadImage(tex, bytes, false))
+                {
+                    UnityEngine.Object.DestroyImmediate(tex);
+                    return null;
+                }
+                return tex;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         #endregion
@@ -1389,11 +1530,295 @@ namespace Indey.UIPrefabBuilder.Skills
                 });
             }
 
-            return new JObject
+            var imageMatchResult = new JObject
             {
                 ["success"] = true,
                 ["count"] = filtered.Count,
                 ["matches"] = matchArr
+            };
+            AddLowConfidenceHintIfNeeded(imageMatchResult, matchArr, "score", ImageMatchConfidentScore, "image");
+            return imageMatchResult.ToString();
+        }
+
+        /// <summary>
+        /// Resolves and loads the design mockup image attached to the current task
+        /// (see DesignImageContext), so region-based tools don't need the LLM to
+        /// supply raw image bytes.
+        /// </summary>
+        private static Texture2D LoadDesignImageTexture(out string error)
+        {
+            error = null;
+            var assetPath = DesignImageContext.CurrentAssetPath;
+            if (string.IsNullOrEmpty(assetPath))
+            {
+                error = "No design mockup image is attached to the current task. This tool only works when the user attached a design image at the start of the conversation.";
+                return null;
+            }
+
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var fullPath = Path.Combine(projectRoot, assetPath);
+            if (!File.Exists(fullPath))
+            {
+                error = $"Design mockup image not found on disk at: {assetPath}";
+                return null;
+            }
+
+            var tex = LoadTextureFromFile(fullPath);
+            if (tex == null) error = "Failed to decode the design mockup image.";
+            return tex;
+        }
+
+        /// <summary>Crops a normalized (0-1, top-left origin) rectangle out of a readable texture and returns PNG bytes.</summary>
+        private static byte[] CropTextureNormalized(Texture2D tex, float x, float y, float width, float height, out int outW, out int outH)
+        {
+            outW = 0; outH = 0;
+            int texW = tex.width, texH = tex.height;
+
+            int px = Mathf.Clamp(Mathf.RoundToInt(x * texW), 0, texW - 1);
+            int pTop = Mathf.Clamp(Mathf.RoundToInt(y * texH), 0, texH - 1);
+            int pw = Mathf.Clamp(Mathf.RoundToInt(width * texW), 1, texW - px);
+            int ph = Mathf.Clamp(Mathf.RoundToInt(height * texH), 1, texH - pTop);
+
+            // Unity texture pixel rows are bottom-up; our x/y are top-down (image reading order).
+            int pBottom = Mathf.Clamp(texH - pTop - ph, 0, texH - ph);
+
+            Color[] pixels;
+            try { pixels = tex.GetPixels(px, pBottom, pw, ph); }
+            catch { return null; }
+
+            var cropped = new Texture2D(pw, ph, TextureFormat.RGBA32, false);
+            try
+            {
+                cropped.SetPixels(pixels);
+                cropped.Apply();
+                outW = pw; outH = ph;
+                return cropped.EncodeToPNG();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cropped);
+            }
+        }
+
+        // Below these bars a "match" is still returned (it passed minConfidence) but is unlikely
+        // to actually look like the target element. Silently applying it produces exactly the
+        // "wrong sprite used with confidence" failure mode seen in production logs. Instead of
+        // hiding this uncertainty, we surface it to the model so it can choose a plain color
+        // fallback (and say so) rather than pretend a shaky guess is a solid match.
+        private const double ImageMatchConfidentScore = 0.65;
+        private const double TextMatchConfidentScore = 30.0;
+
+        /// <summary>
+        /// If the best (first) match's score/confidence is below the "confident" bar, tags it with
+        /// lowConfidence=true and adds a top-level `_hint` telling the model not to silently trust it.
+        /// </summary>
+        private static void AddLowConfidenceHintIfNeeded(JObject resultObj, JArray matches, string scoreField, double confidentBar, string kind)
+        {
+            if (resultObj == null || matches == null || matches.Count == 0) return;
+            if (!(matches[0] is JObject top)) return;
+            var topScore = top[scoreField]?.Value<double>() ?? 0;
+            if (topScore >= confidentBar) return;
+
+            top["lowConfidence"] = true;
+            resultObj["lowConfidence"] = true;
+            resultObj["_hint"] = $"Best {kind} match confidence is low ({topScore:0.###} vs a healthy bar of {confidentBar:0.###}). " +
+                "It likely does NOT visually match the target element. Do NOT silently apply it as if it were a solid match — " +
+                "prefer a plain color-tinted Image as an honest fallback, and mention in your final summary that no confident asset was found for this element.";
+        }
+
+        private static JArray BuildMatchArray(List<MatchResult> matches)
+        {
+            var arr = new JArray();
+            foreach (var m in matches)
+            {
+                var info = AssetFinder.GetInfo(m.assetPath);
+                arr.Add(new JObject
+                {
+                    ["assetPath"] = m.assetPath,
+                    ["guid"] = m.guid,
+                    ["confidence"] = Math.Round(m.confidence, 1),
+                    ["score"] = Math.Round(m.score, 4),
+                    ["assetInfo"] = info
+                });
+            }
+            return arr;
+        }
+
+        private string DoCropDesignImage(JObject args)
+        {
+            var x = Mathf.Clamp01(Float(args, "x", 0f));
+            var y = Mathf.Clamp01(Float(args, "y", 0f));
+            var width = Mathf.Clamp(Float(args, "width", 1f), 0.01f, 1f - x);
+            var height = Mathf.Clamp(Float(args, "height", 1f), 0.01f, 1f - y);
+            var label = Str(args, "label", "crop");
+
+            var tex = LoadDesignImageTexture(out var error);
+            if (tex == null) return Error(error);
+
+            byte[] pngBytes;
+            int outW, outH;
+            try { pngBytes = CropTextureNormalized(tex, x, y, width, height, out outW, out outH); }
+            finally { UnityEngine.Object.DestroyImmediate(tex); }
+
+            if (pngBytes == null || pngBytes.Length == 0)
+                return Error("Crop produced an empty image. Check that x/y/width/height are within 0-1.");
+
+            try
+            {
+                var cropDir = Path.Combine(Application.dataPath, "Screenshots", "Crops");
+                if (!Directory.Exists(cropDir)) Directory.CreateDirectory(cropDir);
+                var safeLabel = new string(label.Where(ch => char.IsLetterOrDigit(ch) || ch == '_' || ch == '-').ToArray());
+                if (string.IsNullOrEmpty(safeLabel)) safeLabel = "crop";
+                File.WriteAllBytes(Path.Combine(cropDir, $"{safeLabel}_{DateTime.Now:HHmmssfff}.png"), pngBytes);
+                AssetDatabase.Refresh();
+            }
+            catch { /* preview still works even if saving to disk fails */ }
+
+            var result = new JObject
+            {
+                ["success"] = true,
+                ["width"] = outW,
+                ["height"] = outH,
+                ["message"] = $"Cropped region (x={x:F2}, y={y:F2}, w={width:F2}, h={height:F2}) from the design mockup — {outW}x{outH}px."
+            };
+
+            if (BuilderSettings.Get().SupportsVision)
+            {
+                result["_multimodal"] = true;
+                result["_images"] = new JArray { $"data:image/png;base64,{Convert.ToBase64String(pngBytes)}" };
+            }
+
+            return result.ToString();
+        }
+
+        private string DoMatchSpriteByRegion(JObject args)
+        {
+            var settings = BuilderSettings.Get();
+            if (!settings.EnableAssetIndexing)
+                return Error("Asset indexing is not enabled. Enable it in Agent Settings and build the index first.");
+
+            var indexer = AssetIndexer.Instance;
+            if (!indexer.IsReady)
+            {
+                indexer.EnsureInitialized();
+                if (!indexer.IsReady)
+                    return Error("Asset index not ready. The embedding model may not be loaded. Check the model path in settings.");
+            }
+            if (indexer.IndexedCount == 0)
+                return Error("Asset index is empty. Run rebuild_asset_index first to build the visual index.");
+
+            var x = Mathf.Clamp01(Float(args, "x", 0f));
+            var y = Mathf.Clamp01(Float(args, "y", 0f));
+            var width = Mathf.Clamp(Float(args, "width", 1f), 0.01f, 1f - x);
+            var height = Mathf.Clamp(Float(args, "height", 1f), 0.01f, 1f - y);
+            var topK = Int(args, "topK", 5);
+            var minConfidence = Float(args, "minConfidence", 0.5f);
+
+            var tex = LoadDesignImageTexture(out var error);
+            if (tex == null) return Error(error);
+
+            byte[] cropBytes;
+            try { cropBytes = CropTextureNormalized(tex, x, y, width, height, out _, out _); }
+            finally { UnityEngine.Object.DestroyImmediate(tex); }
+
+            if (cropBytes == null)
+                return Error("Failed to crop the design mockup region. Check that x/y/width/height are within 0-1.");
+
+            var results = indexer.QueryByImage(cropBytes, topK);
+            if (results == null || results.Count == 0)
+                return new JObject { ["success"] = true, ["count"] = 0, ["matches"] = new JArray(),
+                    ["message"] = "No matching sprites found for this region." }.ToString();
+
+            var filtered = results.Where(r => r.score >= minConfidence).ToList();
+            var regionMatchArr = BuildMatchArray(filtered);
+            var regionMatchResult = new JObject
+            {
+                ["success"] = true,
+                ["region"] = new JObject { ["x"] = x, ["y"] = y, ["width"] = width, ["height"] = height },
+                ["count"] = filtered.Count,
+                ["matches"] = regionMatchArr
+            };
+            AddLowConfidenceHintIfNeeded(regionMatchResult, regionMatchArr, "score", ImageMatchConfidentScore, "image");
+            return regionMatchResult.ToString();
+        }
+
+        private string DoMatchSpriteByRegionBatch(JObject args)
+        {
+            var settings = BuilderSettings.Get();
+            if (!settings.EnableAssetIndexing)
+                return Error("Asset indexing is not enabled. Enable it in Agent Settings and build the index first.");
+
+            var indexer = AssetIndexer.Instance;
+            if (!indexer.IsReady)
+            {
+                indexer.EnsureInitialized();
+                if (!indexer.IsReady)
+                    return Error("Asset index not ready. The embedding model may not be loaded.");
+            }
+            if (indexer.IndexedCount == 0)
+                return Error("Asset index is empty. Run rebuild_asset_index first.");
+
+            var regionsToken = args["regions"] as JArray;
+            if (regionsToken == null || regionsToken.Count == 0)
+                return Error("Missing or empty 'regions' array.");
+
+            var globalMinConfidence = Float(args, "minConfidence", 0.5f);
+
+            var tex = LoadDesignImageTexture(out var error);
+            if (tex == null) return Error(error);
+
+            var resultsArr = new JArray();
+            try
+            {
+                foreach (var item in regionsToken)
+                {
+                    var regionObj = item as JObject;
+                    if (regionObj == null || regionObj["x"] == null || regionObj["y"] == null
+                        || regionObj["width"] == null || regionObj["height"] == null)
+                    {
+                        resultsArr.Add(new JObject { ["error"] = "Region missing required x/y/width/height fields." });
+                        continue;
+                    }
+
+                    var label = regionObj["label"]?.ToString() ?? "";
+                    var x = Mathf.Clamp01((float)regionObj["x"]);
+                    var y = Mathf.Clamp01((float)regionObj["y"]);
+                    var width = Mathf.Clamp((float)regionObj["width"], 0.01f, 1f - x);
+                    var height = Mathf.Clamp((float)regionObj["height"], 0.01f, 1f - y);
+                    var topK = regionObj["topK"] != null ? (int)regionObj["topK"] : 5;
+
+                    var cropBytes = CropTextureNormalized(tex, x, y, width, height, out _, out _);
+                    var results = cropBytes != null ? indexer.QueryByImage(cropBytes, topK) : null;
+
+                    if (results == null || results.Count == 0)
+                    {
+                        resultsArr.Add(new JObject { ["label"] = label, ["count"] = 0, ["matches"] = new JArray() });
+                        continue;
+                    }
+
+                    var filtered = results.Where(r => r.score >= globalMinConfidence).ToList();
+                    var regionMatchArr = BuildMatchArray(filtered);
+                    var regionResultObj = new JObject
+                    {
+                        ["label"] = label,
+                        ["region"] = new JObject { ["x"] = x, ["y"] = y, ["width"] = width, ["height"] = height },
+                        ["count"] = filtered.Count,
+                        ["matches"] = regionMatchArr
+                    };
+                    AddLowConfidenceHintIfNeeded(regionResultObj, regionMatchArr, "score", ImageMatchConfidentScore, "image");
+                    resultsArr.Add(regionResultObj);
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(tex);
+            }
+
+            return new JObject
+            {
+                ["success"] = true,
+                ["totalRegions"] = regionsToken.Count,
+                ["results"] = resultsArr
             }.ToString();
         }
 
@@ -1445,13 +1870,15 @@ namespace Indey.UIPrefabBuilder.Skills
                 });
             }
 
-            return new JObject
+            var textMatchResult = new JObject
             {
                 ["success"] = true,
                 ["query"] = query,
                 ["count"] = filtered.Count,
                 ["matches"] = matchArr
-            }.ToString();
+            };
+            AddLowConfidenceHintIfNeeded(textMatchResult, matchArr, "confidence", TextMatchConfidentScore, "text");
+            return textMatchResult.ToString();
         }
 
         private string DoSearchSpritesByTextBatch(JObject args)
@@ -1515,10 +1942,12 @@ namespace Indey.UIPrefabBuilder.Skills
                     });
                 }
 
-                resultsArr.Add(new JObject
+                var queryResultObj = new JObject
                 {
                     ["query"] = query, ["count"] = filtered.Count, ["matches"] = matchArr
-                });
+                };
+                AddLowConfidenceHintIfNeeded(queryResultObj, matchArr, "confidence", TextMatchConfidentScore, "text");
+                resultsArr.Add(queryResultObj);
             }
 
             return new JObject

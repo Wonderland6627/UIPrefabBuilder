@@ -401,6 +401,13 @@ namespace Indey.UIPrefabBuilder.Skills
                 "Delete a GameObject from the scene. Supports undo.",
                 Props(P("target", "string", "Name of the target GameObject to destroy", true))),
 
+            Def("destroy_object_batch",
+                "Delete multiple GameObjects from the scene in one call. ALWAYS use this when destroying 2+ objects (e.g. cleaning up multiple temporary reference prefabs) instead of separate destroy_object calls.",
+                Props(
+                    PArray("targets", "Array of GameObject names to destroy", true,
+                        new JObject { ["type"] = "string" })
+                )),
+
             Def("set_parent",
                 "Reparent a GameObject under a new parent.",
                 Props(
@@ -424,9 +431,24 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("maxDepth", "integer", "Maximum depth to traverse", false, 4)
                 )),
 
+            Def("inspect_hierarchy_batch",
+                "Describe the hierarchy tree of multiple GameObjects in one call. ALWAYS use this when inspecting 2+ roots instead of separate inspect_hierarchy calls.",
+                Props(
+                    PArray("targets", "Array of root GameObject names to inspect", true,
+                        new JObject { ["type"] = "string" }),
+                    P("maxDepth", "integer", "Maximum depth to traverse (applies to all targets)", false, 4)
+                )),
+
             Def("inspect_components",
                 "Describe all components on a specific GameObject.",
                 Props(P("target", "string", "Name of the GameObject to inspect", true))),
+
+            Def("inspect_components_batch",
+                "Describe all components on multiple GameObjects in one call. ALWAYS use this when inspecting 2+ objects instead of separate inspect_components calls.",
+                Props(
+                    PArray("targets", "Array of GameObject names to inspect", true,
+                        new JObject { ["type"] = "string" })
+                )),
 
             Def("get_scene_overview",
                 "Get an overview of all Canvas objects in the current scene.",
@@ -457,10 +479,10 @@ namespace Indey.UIPrefabBuilder.Skills
                 Props()),
 
             Def("save_as_prefab",
-                "Save a scene GameObject as a Prefab asset.",
+                "Save a scene GameObject as a NEW Prefab asset. Fails if a prefab already exists at the given path — overwriting existing project prefabs is not allowed. Use a fresh/unused path (e.g. add a suffix) if the target already exists.",
                 Props(
                     P("target", "string", "Name of the source GameObject in the scene", true),
-                    P("path", "string", "Asset path for the prefab, e.g. 'Assets/Prefabs/MyDialog.prefab'", true)
+                    P("path", "string", "Asset path for the NEW prefab (must not already exist), e.g. 'Assets/Prefabs/MyDialog.prefab'", true)
                 )),
 
             Def("instantiate_prefab",
@@ -470,10 +492,6 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("parent", "string", "Name of the parent GameObject (optional)", false),
                     P("name", "string", "Override name for the instance (optional)", false)
                 )),
-
-            Def("apply_prefab",
-                "Apply all overrides from a prefab instance back to its source prefab asset.",
-                Props(P("target", "string", "Name of the prefab instance in the scene", true))),
 
             Def("find_prefab_instances",
                 "Find all instances of a prefab in the current scene.",
@@ -517,11 +535,53 @@ namespace Indey.UIPrefabBuilder.Skills
 
             // ── Asset Indexing & Visual Match ──
             Def("match_sprite_by_image",
-                "Match a cropped design mockup region against indexed project sprites using visual similarity (CLIP embedding + cosine similarity). Returns Top-K matching sprite asset paths ranked by confidence. Requires asset indexing to be enabled and index built. Use this when you need to find the best-matching sprite for a UI element from a design mockup.",
+                "Match a cropped design mockup region against indexed project sprites using visual similarity (CLIP embedding + cosine similarity). Returns Top-K matching sprite asset paths ranked by confidence. Requires asset indexing to be enabled and index built. NOTE: this requires you to supply real cropped image bytes as base64, which you generally CANNOT produce yourself — prefer `match_sprite_by_region` / `match_sprite_by_region_batch` instead, which crop the attached design mockup for you from a bounding box.",
                 Props(
                     P("imageBase64", "string", "Base64-encoded PNG/JPG image bytes of the cropped region from the design mockup", true),
                     P("topK", "integer", "Number of top matches to return", false, 5),
                     P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out.", false, 0.5)
+                )),
+
+            Def("crop_design_image",
+                "Crop a rectangular region out of the design mockup image attached to this task and return it as a preview image, so you can visually confirm a bounding box before using it with match_sprite_by_region. Coordinates are normalized (0-1), origin at the top-left of the image. Purely for inspection — does not touch the scene.",
+                Props(
+                    P("x", "number", "Left edge, normalized 0-1 (0 = left edge of image)", true),
+                    P("y", "number", "Top edge, normalized 0-1 (0 = top edge of image)", true),
+                    P("width", "number", "Width of the region, normalized 0-1", true),
+                    P("height", "number", "Height of the region, normalized 0-1", true),
+                    P("label", "string", "Optional label for the crop (used in the saved filename)", false, "crop")
+                )),
+
+            Def("match_sprite_by_region",
+                "Match a region of the design mockup (given as a normalized bounding box) against indexed project sprites using real visual similarity (CLIP image embedding + cosine similarity) — NO need to crop or encode images yourself, the region is cropped server-side from the mockup attached to this task. This is the PREFERRED way to find the best-matching sprite for a specific visual element (icon, button, frame, etc.) seen in a design mockup. Requires asset indexing enabled and index built.",
+                Props(
+                    P("x", "number", "Left edge of the element's bounding box, normalized 0-1 (0 = left edge of image)", true),
+                    P("y", "number", "Top edge of the element's bounding box, normalized 0-1 (0 = top edge of image)", true),
+                    P("width", "number", "Width of the bounding box, normalized 0-1", true),
+                    P("height", "number", "Height of the bounding box, normalized 0-1", true),
+                    P("topK", "integer", "Number of top matches to return", false, 5),
+                    P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out.", false, 0.5)
+                )),
+
+            Def("match_sprite_by_region_batch",
+                "Match MULTIPLE regions of the design mockup against indexed project sprites in a single call. ALWAYS prefer this over multiple match_sprite_by_region calls when matching 2+ elements from the same mockup. Each region is a normalized bounding box (x, y, width, height in 0-1, top-left origin).",
+                Props(
+                    PArray("regions", "Array of regions to match. Example: [{\"x\":0.1,\"y\":0.05,\"width\":0.3,\"height\":0.08,\"label\":\"title banner\"},{\"x\":0.4,\"y\":0.5,\"width\":0.2,\"height\":0.1,\"label\":\"use button\"}]", true,
+                        new JObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JObject
+                            {
+                                ["x"] = new JObject { ["type"] = "number", ["description"] = "Left edge, normalized 0-1" },
+                                ["y"] = new JObject { ["type"] = "number", ["description"] = "Top edge, normalized 0-1" },
+                                ["width"] = new JObject { ["type"] = "number", ["description"] = "Width, normalized 0-1" },
+                                ["height"] = new JObject { ["type"] = "number", ["description"] = "Height, normalized 0-1" },
+                                ["label"] = new JObject { ["type"] = "string", ["description"] = "Optional label to identify this region in the results" },
+                                ["topK"] = new JObject { ["type"] = "integer", ["description"] = "Number of top matches to return for this region (default 5)" }
+                            },
+                            ["required"] = new JArray("x", "y", "width", "height")
+                        }),
+                    P("minConfidence", "number", "Minimum confidence threshold (0-1) applied to all regions. Results below this score are filtered out.", false, 0.5)
                 )),
 
             Def("search_sprites_by_text",

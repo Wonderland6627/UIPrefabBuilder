@@ -1,3 +1,4 @@
+using System.IO;
 using UnityEditor;
 using UnityEngine;
 
@@ -45,6 +46,18 @@ namespace Indey.UIPrefabBuilder.Config
         public string TokenizerMergesPath { get => tokenizerMergesPath; set => tokenizerMergesPath = value; }
 
         public static BuilderSettings Get() => instance;
+
+        /// <summary>Absolute path of Settings.asset inside the Unity Preferences folder.</summary>
+        public static string SettingsFilePath => GetFilePath();
+
+        public static string SettingsFolder
+        {
+            get
+            {
+                var path = GetFilePath();
+                return string.IsNullOrEmpty(path) ? null : Path.GetDirectoryName(path);
+            }
+        }
 
         public void Save() => Save(true);
     }

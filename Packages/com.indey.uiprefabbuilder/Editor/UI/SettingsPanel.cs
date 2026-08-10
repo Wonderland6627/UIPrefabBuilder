@@ -68,14 +68,6 @@ namespace Indey.UIPrefabBuilder.UI
             settings.Temperature = EditorGUILayout.FloatField("Temperature (-1=default)", settings.Temperature);
             settings.SupportsVision = EditorGUILayout.Toggle("Supports Vision", settings.SupportsVision);
 
-            GUILayout.Space(2);
-            if (GUILayout.Button("Save LLM Settings", EditorStyles.miniButton))
-            {
-                SecureKeyStore.SaveApiKey(_apiKeyDisplay);
-                settings.Save();
-                ConsoleLogger.Log("LLM settings saved");
-            }
-
             EditorGUILayout.EndVertical();
         }
 
@@ -106,13 +98,6 @@ namespace Indey.UIPrefabBuilder.UI
             GUILayout.Space(4);
             GUILayout.Label("Vision", EditorStyles.miniBoldLabel);
             settings.EnableVisualVerification = EditorGUILayout.Toggle("Visual Verification", settings.EnableVisualVerification);
-
-            GUILayout.Space(2);
-            if (GUILayout.Button("Save Agent Settings", EditorStyles.miniButton))
-            {
-                settings.Save();
-                ConsoleLogger.Log("Agent settings saved");
-            }
 
             EditorGUILayout.EndVertical();
         }
@@ -148,14 +133,6 @@ namespace Indey.UIPrefabBuilder.UI
             DrawSearchParameters();
             GUILayout.Space(4);
             DrawIndexActions();
-
-            GUILayout.Space(2);
-            if (GUILayout.Button("Save Indexing Settings", EditorStyles.miniButton))
-            {
-                settings.Save();
-                ProjectConfig.Save();
-                ConsoleLogger.Log("Indexing settings saved");
-            }
 
             EditorGUILayout.EndVertical();
         }
@@ -500,19 +477,15 @@ namespace Indey.UIPrefabBuilder.UI
                 }
             }
 
-            EditorGUILayout.EndHorizontal();
-
-            EditorGUILayout.BeginHorizontal();
-
-            if (GUILayout.Button("Open Index Folder", EditorStyles.miniButton))
+            if (GUILayout.Button("Open Folder", EditorStyles.miniButton, GUILayout.Width(80)))
             {
                 if (!System.IO.Directory.Exists(indexDir))
                     System.IO.Directory.CreateDirectory(indexDir);
                 EditorUtility.RevealInFinder(indexDir);
             }
 
-            GUI.enabled = indexer.IndexedCount > 0;
-            if (GUILayout.Button("Clear Index", EditorStyles.miniButton))
+            GUI.enabled = indexer.IndexedCount > 0 && !indexer.IsIndexing;
+            if (GUILayout.Button("Clear", EditorStyles.miniButton, GUILayout.Width(50)))
             {
                 if (EditorUtility.DisplayDialog("Clear Index",
                     $"Delete all {indexer.IndexedCount} indexed entries?\n\n" +
@@ -541,6 +514,40 @@ namespace Indey.UIPrefabBuilder.UI
         #endregion
 
         #region Helpers
+
+        private void DrawSettingsToolbar()
+        {
+            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+
+            if (GUILayout.Button("Open Config Folder", EditorStyles.toolbarButton, GUILayout.Width(120)))
+                OpenBuilderSettingsFolder();
+
+            GUILayout.FlexibleSpace();
+
+            if (GUILayout.Button("Save Settings", EditorStyles.toolbarButton, GUILayout.Width(90)))
+                SaveAllSettings();
+
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private void SaveAllSettings()
+        {
+            EnsureKeyLoaded();
+            SecureKeyStore.SaveApiKey(_apiKeyDisplay);
+            BuilderSettings.Get().Save();
+            ProjectConfig.Save();
+            ConsoleLogger.Log("Settings saved");
+        }
+
+        private static void OpenBuilderSettingsFolder()
+        {
+            BuilderSettings.Get().Save();
+            var dir = BuilderSettings.SettingsFolder;
+            if (string.IsNullOrEmpty(dir)) return;
+            if (!System.IO.Directory.Exists(dir))
+                System.IO.Directory.CreateDirectory(dir);
+            EditorUtility.RevealInFinder(dir);
+        }
 
         private static IndexingConfig GetOrCreateIndexingConfig()
         {
@@ -571,6 +578,7 @@ namespace Indey.UIPrefabBuilder.UI
         public void Draw(Rect rect)
         {
             GUILayout.BeginArea(rect);
+            DrawSettingsToolbar();
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
 
             DrawLLMSettings();
@@ -585,6 +593,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         public void Draw()
         {
+            DrawSettingsToolbar();
             DrawLLMSettings();
             GUILayout.Space(6);
             DrawAgentSettings();

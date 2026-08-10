@@ -7,7 +7,7 @@ namespace Indey.UIPrefabBuilder.Skills
     public static class LayoutHelper
     {
         public static VerticalLayoutGroup AddVerticalLayout(GameObject go, float spacing = 8, TextAnchor align = TextAnchor.UpperCenter, RectOffset pad = null,
-            bool childControlWidth = true, bool childControlHeight = true, bool childForceExpandWidth = true, bool childForceExpandHeight = true)
+            bool childControlWidth = true, bool childControlHeight = true, bool childForceExpandWidth = false, bool childForceExpandHeight = false)
         {
             var l = EnsureComponent<VerticalLayoutGroup>(go);
             l.spacing = spacing; l.childAlignment = align;
@@ -18,7 +18,7 @@ namespace Indey.UIPrefabBuilder.Skills
         }
 
         public static HorizontalLayoutGroup AddHorizontalLayout(GameObject go, float spacing = 8, TextAnchor align = TextAnchor.MiddleLeft, RectOffset pad = null,
-            bool childControlWidth = true, bool childControlHeight = true, bool childForceExpandWidth = true, bool childForceExpandHeight = true)
+            bool childControlWidth = true, bool childControlHeight = true, bool childForceExpandWidth = false, bool childForceExpandHeight = false)
         {
             var l = EnsureComponent<HorizontalLayoutGroup>(go);
             l.spacing = spacing; l.childAlignment = align;

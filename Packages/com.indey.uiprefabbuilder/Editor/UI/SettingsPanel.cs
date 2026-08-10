@@ -1,5 +1,6 @@
 using System;
 using Indey.UIPrefabBuilder.Config;
+using Indey.UIPrefabBuilder.Core;
 using Indey.UIPrefabBuilder.Indexing;
 using Indey.UIPrefabBuilder.Logging;
 using UnityEditor;
@@ -16,6 +17,8 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _foldIgnorePatterns;
         private Vector2 _scroll;
         private bool _repaintSubscribed;
+        private bool _visionProbeInProgress;
+        private string _visionProbeStatus = "";
 
         private void EnsureKeyLoaded()
         {
@@ -52,8 +55,16 @@ namespace Indey.UIPrefabBuilder.UI
 
             var settings = BuilderSettings.Get();
 
-            settings.BaseUrl = EditorGUILayout.TextField("Base URL", settings.BaseUrl);
-            settings.ModelName = EditorGUILayout.TextField("Model", settings.ModelName);
+            EditorGUI.BeginChangeCheck();
+            var newBaseUrl = EditorGUILayout.TextField("Base URL", settings.BaseUrl);
+            var newModel = EditorGUILayout.TextField("Model", settings.ModelName);
+            if (EditorGUI.EndChangeCheck())
+            {
+                if (newBaseUrl != settings.BaseUrl || newModel != settings.ModelName)
+                    VisionCapabilityProbe.InvalidateCache();
+                settings.BaseUrl = newBaseUrl;
+                settings.ModelName = newModel;
+            }
 
             EditorGUILayout.BeginHorizontal();
             GUILayout.Label("API Key", GUILayout.Width(60));
@@ -66,9 +77,80 @@ namespace Indey.UIPrefabBuilder.UI
             EditorGUILayout.EndHorizontal();
 
             settings.Temperature = EditorGUILayout.FloatField("Temperature (-1=default)", settings.Temperature);
-            settings.SupportsVision = EditorGUILayout.Toggle("Supports Vision", settings.SupportsVision);
+
+            EditorGUI.BeginDisabledGroup(_visionProbeInProgress);
+            var wantVision = EditorGUILayout.Toggle("Supports Vision", settings.SupportsVision);
+            EditorGUI.EndDisabledGroup();
+
+            if (wantVision != settings.SupportsVision)
+            {
+                if (wantVision)
+                    BeginVisionProbe(settings);
+                else
+                {
+                    settings.SupportsVision = false;
+                    settings.EnableVisualVerification = false;
+                    _visionProbeStatus = "";
+                    VisionCapabilityProbe.InvalidateCache();
+                    PersistKeyAndSettings(settings);
+                }
+            }
+
+            EditorGUILayout.HelpBox(
+                "On: probes the API with a tiny test image (required for design mockups).\n" +
+                "Off: text-only UI building; design images cannot be attached.",
+                MessageType.None);
+
+            if (_visionProbeInProgress)
+                EditorGUILayout.HelpBox("Checking vision support…", MessageType.Info);
+            else if (!string.IsNullOrEmpty(_visionProbeStatus))
+                EditorGUILayout.HelpBox(_visionProbeStatus, settings.SupportsVision ? MessageType.Info : MessageType.Warning);
 
             EditorGUILayout.EndVertical();
+        }
+
+        private void BeginVisionProbe(BuilderSettings settings)
+        {
+            if (_visionProbeInProgress) return;
+
+            // Persist API key before probing
+            SecureKeyStore.SaveApiKey(_apiKeyDisplay ?? "");
+            settings.Save();
+
+            _visionProbeInProgress = true;
+            _visionProbeStatus = "Checking…";
+            RequestRepaint();
+
+            VisionCapabilityProbe.ProbeAsync(settings, result =>
+            {
+                _visionProbeInProgress = false;
+                if (result != null && result.Supported)
+                {
+                    settings.SupportsVision = true;
+                    _visionProbeStatus = "Vision verified.";
+                    PersistKeyAndSettings(settings);
+                }
+                else
+                {
+                    settings.SupportsVision = false;
+                    settings.EnableVisualVerification = false;
+                    var reason = result?.Reason ?? "Unknown failure.";
+                    _visionProbeStatus = "Vision not available.";
+                    PersistKeyAndSettings(settings);
+                    EditorUtility.DisplayDialog(
+                        "Vision Not Supported",
+                        "Supports Vision was turned off because the probe failed.\n\n" + reason +
+                        "\n\nYou can still build UI with text-only prompts.",
+                        "OK");
+                }
+                RequestRepaint();
+            }, force: true);
+        }
+
+        private void PersistKeyAndSettings(BuilderSettings settings)
+        {
+            SecureKeyStore.SaveApiKey(_apiKeyDisplay ?? "");
+            settings.Save();
         }
 
         #endregion
@@ -97,7 +179,15 @@ namespace Indey.UIPrefabBuilder.UI
 
             GUILayout.Space(4);
             GUILayout.Label("Vision", EditorStyles.miniBoldLabel);
-            settings.EnableVisualVerification = EditorGUILayout.Toggle("Visual Verification", settings.EnableVisualVerification);
+            EditorGUI.BeginDisabledGroup(!settings.SupportsVision);
+            var ver = EditorGUILayout.Toggle("Visual Verification", settings.EnableVisualVerification && settings.SupportsVision);
+            if (settings.SupportsVision)
+                settings.EnableVisualVerification = ver;
+            else
+                settings.EnableVisualVerification = false;
+            EditorGUI.EndDisabledGroup();
+            if (!settings.SupportsVision)
+                EditorGUILayout.HelpBox("Requires Supports Vision.", MessageType.None);
 
             EditorGUILayout.EndVertical();
         }

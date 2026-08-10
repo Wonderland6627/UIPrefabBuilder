@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Vision 能力探测**：勾选 Supports Vision 时向 API 发送 1×1 测试图确认多模态可读图；失败自动取消勾选并弹窗说明；带设计稿发任务前缓存复检失败则中止本轮
+- **设计稿坐标换算**：`map_design_rect` / `map_design_rect_batch`，将归一化 bbox 转为 Canvas `anchoredPosition` + `sizeDelta`；任务消息注入 `[DesignImageMeta]`（像素尺寸与设计分辨率）
+
+### Fixed
+- **`EnableVisualVerification` 未生效**：有设计稿且发生过 Build 时，结束前强制 nudge 一次 `take_screenshot` → `analyze_screenshot`
+- **LayoutGroup 默认 ForceExpand**：`childForceExpandWidth/Height` 默认改为 `false`，减少设计稿间距被撑开
+
+### Improved
+- 无 Vision 时禁用设计稿附加区；Visual Verification 依赖 Supports Vision
+- 设计稿还原 Prompt 收紧：禁止目测估位，优先坐标换算与显式 Rect
+- 默认模型名改为 `gemini-3.6-flash`
+
 ## [0.3.0] - 2026-07-07
 
 ### Added

@@ -8,7 +8,7 @@ namespace Indey.UIPrefabBuilder.Config
     public class BuilderSettings : ScriptableSingleton<BuilderSettings>
     {
         [SerializeField] private string baseUrl = "https://api.openai.com/v1";
-        [SerializeField] private string modelName = "gpt-4o-mini";
+        [SerializeField] private string modelName = "gemini-3.6-flash";
         [SerializeField] private int requestTimeoutSeconds = 60;
         [SerializeField] private int maxRetryCount = 2;
         [SerializeField] private int executeTimeoutSeconds = 5;

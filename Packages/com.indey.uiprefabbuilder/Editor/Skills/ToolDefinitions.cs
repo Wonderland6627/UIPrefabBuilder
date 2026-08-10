@@ -285,8 +285,8 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("padBottom", "integer", "Bottom padding", false, 0),
                     P("childControlWidth", "boolean", "Whether the layout group controls child widths", false, true),
                     P("childControlHeight", "boolean", "Whether the layout group controls child heights", false, true),
-                    P("childForceExpandWidth", "boolean", "Whether children are forced to expand to fill available width", false, true),
-                    P("childForceExpandHeight", "boolean", "Whether children are forced to expand to fill available height", false, true)
+                    P("childForceExpandWidth", "boolean", "Whether children are forced to expand to fill available width. Default false — keep false for design-mockup fidelity.", false, false),
+                    P("childForceExpandHeight", "boolean", "Whether children are forced to expand to fill available height. Default false — keep false for design-mockup fidelity.", false, false)
                 )),
 
             Def("add_horizontal_layout",
@@ -301,8 +301,8 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("padBottom", "integer", "Bottom padding", false, 0),
                     P("childControlWidth", "boolean", "Whether the layout group controls child widths", false, true),
                     P("childControlHeight", "boolean", "Whether the layout group controls child heights", false, true),
-                    P("childForceExpandWidth", "boolean", "Whether children are forced to expand to fill available width", false, true),
-                    P("childForceExpandHeight", "boolean", "Whether children are forced to expand to fill available height", false, true)
+                    P("childForceExpandWidth", "boolean", "Whether children are forced to expand to fill available width. Default false — keep false for design-mockup fidelity.", false, false),
+                    P("childForceExpandHeight", "boolean", "Whether children are forced to expand to fill available height. Default false — keep false for design-mockup fidelity.", false, false)
                 )),
 
             Def("add_grid_layout",
@@ -550,6 +550,35 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("width", "number", "Width of the region, normalized 0-1", true),
                     P("height", "number", "Height of the region, normalized 0-1", true),
                     P("label", "string", "Optional label for the crop (used in the saved filename)", false, "crop")
+                )),
+
+            Def("map_design_rect",
+                "Convert a normalized design-mockup bbox (0-1, top-left origin) into Canvas RectTransform values (anchoredPosition + sizeDelta) for center anchor (0.5,0.5). Uses the attached design image pixel size fitted into ProjectConfig design resolution. ALWAYS call this (or the batch variant) before set_rect_transform when reproducing a design mockup — do not guess pixel sizes.",
+                Props(
+                    P("x", "number", "Left edge, normalized 0-1", true),
+                    P("y", "number", "Top edge, normalized 0-1", true),
+                    P("width", "number", "Width, normalized 0-1", true),
+                    P("height", "number", "Height, normalized 0-1", true),
+                    P("label", "string", "Optional label returned in the result", false)
+                )),
+
+            Def("map_design_rect_batch",
+                "Convert MULTIPLE normalized design-mockup bboxes into Canvas RectTransform values in one call. ALWAYS prefer this over multiple map_design_rect calls.",
+                Props(
+                    PArray("regions", "Array of regions. Example: [{\"x\":0.1,\"y\":0.05,\"width\":0.8,\"height\":0.1,\"label\":\"header\"}]", true,
+                        new JObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JObject
+                            {
+                                ["x"] = new JObject { ["type"] = "number", ["description"] = "Left edge, normalized 0-1" },
+                                ["y"] = new JObject { ["type"] = "number", ["description"] = "Top edge, normalized 0-1" },
+                                ["width"] = new JObject { ["type"] = "number", ["description"] = "Width, normalized 0-1" },
+                                ["height"] = new JObject { ["type"] = "number", ["description"] = "Height, normalized 0-1" },
+                                ["label"] = new JObject { ["type"] = "string", ["description"] = "Optional label" }
+                            },
+                            ["required"] = new JArray { "x", "y", "width", "height" }
+                        })
                 )),
 
             Def("match_sprite_by_region",

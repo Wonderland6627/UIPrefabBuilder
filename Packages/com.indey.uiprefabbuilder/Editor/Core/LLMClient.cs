@@ -41,6 +41,267 @@ namespace Indey.UIPrefabBuilder.Core
 
         public void RefreshApiKey() => _cachedApiKey = SecureKeyStore.LoadApiKey();
 
+        /// <summary>
+        /// Non-streaming multimodal probe: sends a 1x1 PNG and asks the model to reply VISION_OK.
+        /// Does not use tools or enter MessageHistory.
+        /// Must be called from the main thread (EditorPrefs / settings are snapshotted before Task.Run).
+        /// </summary>
+        public void ProbeVisionSupportAsync(
+            Action<VisionProbeResult> onComplete,
+            Action<Exception> onError,
+            CancellationToken ct)
+        {
+            // Snapshot Unity-thread-only state on the caller (main) thread.
+            RefreshApiKey();
+            var apiKey = _cachedApiKey;
+            var modelName = _settings.ModelName;
+            var baseUrl = _settings.BaseUrl;
+            var temperature = _settings.Temperature;
+            var requestTimeoutSeconds = _settings.RequestTimeoutSeconds;
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (string.IsNullOrEmpty(apiKey))
+                    {
+                        MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(new VisionProbeResult
+                        {
+                            Supported = false,
+                            IsAuthOrNetworkError = true,
+                            Reason = "API Key not configured. Open Settings to set it."
+                        }));
+                        return;
+                    }
+
+                    // 1x1 red PNG
+                    const string TinyPngBase64 =
+                        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+                    var messages = new JArray
+                    {
+                        new JObject
+                        {
+                            ["role"] = "user",
+                            ["content"] = new JArray
+                            {
+                                new JObject
+                                {
+                                    ["type"] = "text",
+                                    ["text"] = "Is there an image attached to this message? Answer with a single word: YES or NO. No explanation."
+                                },
+                                new JObject
+                                {
+                                    ["type"] = "image_url",
+                                    ["image_url"] = new JObject
+                                    {
+                                        ["url"] = "data:image/png;base64," + TinyPngBase64,
+                                        ["detail"] = "low"
+                                    }
+                                }
+                            }
+                        }
+                    };
+
+                    // Budget must cover reasoning tokens: thinking models (Gemini, o-series, ...)
+                    // spend the allowance internally and would otherwise return a truncated answer.
+                    var bodyObj = new JObject
+                    {
+                        ["model"] = modelName,
+                        ["stream"] = false,
+                        ["messages"] = messages,
+                        ["max_tokens"] = 2048
+                    };
+                    if (temperature >= 0)
+                        bodyObj["temperature"] = 0;
+
+                    var url = NormalizeUrl(baseUrl);
+                    using var req = new HttpRequestMessage(HttpMethod.Post, url);
+                    req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + apiKey);
+                    req.Content = new StringContent(bodyObj.ToString(Newtonsoft.Json.Formatting.None), Encoding.UTF8, "application/json");
+
+                    using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Min(30, Math.Max(10, requestTimeoutSeconds))));
+
+                    HttpResponseMessage resp;
+                    try
+                    {
+                        resp = await _http.SendAsync(req, timeoutCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(new VisionProbeResult
+                        {
+                            Supported = false,
+                            IsAuthOrNetworkError = true,
+                            Reason = "Vision probe timed out contacting the API."
+                        }));
+                        return;
+                    }
+
+                    using (resp)
+                    {
+                        var errBody = await resp.Content.ReadAsStringAsync();
+                        var statusCode = (int)resp.StatusCode;
+
+                        if (!resp.IsSuccessStatusCode)
+                        {
+                            var result = ClassifyProbeHttpFailure(statusCode, errBody);
+                            MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(result));
+                            return;
+                        }
+
+                        var parsed = ParseNonStreamResponse(errBody);
+                        var content = parsed.Content ?? "";
+                        var verdict = ClassifyProbeContent(content, ReadFinishReason(errBody));
+                        MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(verdict));
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception e)
+                {
+                    MainThreadDispatcher.Enqueue(() => onError?.Invoke(e));
+                }
+            }, ct);
+        }
+
+        private static VisionProbeResult ClassifyProbeHttpFailure(int statusCode, string errBody)
+        {
+            var body = errBody ?? "";
+            var lower = body.ToLowerInvariant();
+
+            if (statusCode == 401 || statusCode == 403)
+            {
+                return new VisionProbeResult
+                {
+                    Supported = false,
+                    IsAuthOrNetworkError = true,
+                    Reason = $"Authentication failed (HTTP {statusCode}). Check API Key."
+                };
+            }
+
+            if (statusCode == 404)
+            {
+                return new VisionProbeResult
+                {
+                    Supported = false,
+                    IsAuthOrNetworkError = true,
+                    Reason = $"Endpoint not found (HTTP 404). Check Base URL.\n{Truncate(body, 300)}"
+                };
+            }
+
+            bool looksLikeNoVision =
+                lower.Contains("image") || lower.Contains("vision") || lower.Contains("multimodal")
+                || lower.Contains("does not support") || lower.Contains("unsupported")
+                || lower.Contains("not support") || lower.Contains("invalid content");
+
+            if (statusCode == 400 && looksLikeNoVision)
+            {
+                return new VisionProbeResult
+                {
+                    Supported = false,
+                    IsAuthOrNetworkError = false,
+                    Reason = $"API rejected the image — this model/endpoint likely does not support vision.\n{Truncate(body, 400)}"
+                };
+            }
+
+            return new VisionProbeResult
+            {
+                Supported = false,
+                IsAuthOrNetworkError = statusCode >= 500 || statusCode == 429,
+                Reason = $"Vision probe HTTP {statusCode}: {Truncate(body, 400)}"
+            };
+        }
+
+        private static string ReadFinishReason(string json)
+        {
+            try
+            {
+                return JObject.Parse(json)["choices"]?[0]?["finish_reason"]?.ToString() ?? "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static VisionProbeResult ClassifyProbeContent(string content, string finishReason)
+        {
+            var text = (content ?? "").Trim();
+            var upper = text.ToUpperInvariant();
+
+            bool saysNo =
+                HasWord(upper, "NO")
+                || upper.Contains("VISION_UNSUPPORTED")
+                || text.IndexOf("cannot see", StringComparison.OrdinalIgnoreCase) >= 0
+                || text.IndexOf("can't see", StringComparison.OrdinalIgnoreCase) >= 0
+                || text.IndexOf("unable to see", StringComparison.OrdinalIgnoreCase) >= 0
+                || text.IndexOf("no image", StringComparison.OrdinalIgnoreCase) >= 0
+                || text.IndexOf("don't support", StringComparison.OrdinalIgnoreCase) >= 0
+                || text.IndexOf("do not support", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            if (saysNo)
+            {
+                return new VisionProbeResult
+                {
+                    Supported = false,
+                    IsAuthOrNetworkError = false,
+                    Reason = $"Model reported it cannot see images: \"{Truncate(text, 200)}\""
+                };
+            }
+
+            if (HasWord(upper, "YES") || upper.Contains("VISION_OK"))
+            {
+                return new VisionProbeResult
+                {
+                    Supported = true,
+                    Reason = "Model acknowledged the probe image."
+                };
+            }
+
+            if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase))
+            {
+                return new VisionProbeResult
+                {
+                    Supported = false,
+                    IsAuthOrNetworkError = true,
+                    Reason = "The model ran out of output tokens before answering (likely spent on internal reasoning). " +
+                             "Try again, or use a model with a smaller reasoning budget."
+                };
+            }
+
+            // Ambiguous but HTTP succeeded — treat as unsupported to avoid false confidence
+            return new VisionProbeResult
+            {
+                Supported = false,
+                IsAuthOrNetworkError = false,
+                Reason = $"Vision probe reply was ambiguous (expected YES or NO): \"{Truncate(text, 200)}\""
+            };
+        }
+
+        /// <summary>Whole-word match so "NORMAL" does not count as "NO".</summary>
+        private static bool HasWord(string haystack, string word)
+        {
+            if (string.IsNullOrEmpty(haystack)) return false;
+            int idx = 0;
+            while ((idx = haystack.IndexOf(word, idx, StringComparison.Ordinal)) >= 0)
+            {
+                bool leftOk = idx == 0 || !char.IsLetterOrDigit(haystack[idx - 1]);
+                int end = idx + word.Length;
+                bool rightOk = end >= haystack.Length || !char.IsLetterOrDigit(haystack[end]);
+                if (leftOk && rightOk) return true;
+                idx = end;
+            }
+            return false;
+        }
+
+        private static string Truncate(string s, int max)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return s.Length <= max ? s : s.Substring(0, max) + "...";
+        }
+
         public void ChatWithToolsAsync(
             IReadOnlyList<ChatMessage> messages,
             JArray tools,

@@ -33,6 +33,8 @@ namespace Indey.UIPrefabBuilder.Core
         private bool _searchBudgetWarningInjected;
         private int _postBuildSearchSteps;
         private bool _postBuildNudgeInjected;
+        private bool _visualVerifyNudgeInjected;
+        private bool _didAnalyzeScreenshot;
         private readonly Dictionary<string, string> _searchCache = new Dictionary<string, string>();
         private const int HardCap = 500;
         private const int MaxConsecutiveEmptySearches = 6;
@@ -183,9 +185,71 @@ namespace Indey.UIPrefabBuilder.Core
             _designImagePath = imagePaths.Count > 0 ? imagePaths[0] : null;
             _designImageAssetPath = EnsureDesignImageAssetPath(_designImagePath);
             DesignImageContext.CurrentAssetPath = _designImageAssetPath;
+            TryFillDesignImageSize(_designImagePath, _designImageAssetPath);
+            RebuildSystemPrompt(); // refresh with design-mockup-aware Verify / Analysis sections
+
+            var meta = BuildDesignImageMetaBlock();
+            if (!string.IsNullOrEmpty(meta))
+            {
+                textContent = textContent + "\n\n" + meta;
+                parts[0].Text = textContent;
+            }
+
             _history.AddUserMultimodal(parts, pinImage: true);
             _txManager.Begin("AI Agent Task");
             TransitionTo(AgentState.Thinking);
+        }
+
+        private static void TryFillDesignImageSize(string rawPath, string assetPath)
+        {
+            DesignImageContext.Width = 0;
+            DesignImageContext.Height = 0;
+
+            string fullPath = null;
+            try
+            {
+                if (!string.IsNullOrEmpty(assetPath))
+                {
+                    var projectRoot = Path.GetDirectoryName(Application.dataPath);
+                    fullPath = Path.Combine(projectRoot, assetPath);
+                }
+                if ((fullPath == null || !File.Exists(fullPath)) && !string.IsNullOrEmpty(rawPath) && File.Exists(rawPath))
+                    fullPath = rawPath;
+
+                if (fullPath == null || !File.Exists(fullPath)) return;
+
+                var bytes = File.ReadAllBytes(fullPath);
+                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                if (ImageConversion.LoadImage(tex, bytes, false))
+                {
+                    DesignImageContext.Width = tex.width;
+                    DesignImageContext.Height = tex.height;
+                }
+                UnityEngine.Object.DestroyImmediate(tex);
+            }
+            catch (Exception e)
+            {
+                ConsoleLogger.Error($"[Agent] Failed to read design image size: {e.Message}");
+            }
+        }
+
+        private static string BuildDesignImageMetaBlock()
+        {
+            var cfg = ProjectConfig.Current;
+            int dw = cfg?.basicInfo?.designWidth > 0 ? cfg.basicInfo.designWidth : 1920;
+            int dh = cfg?.basicInfo?.designHeight > 0 ? cfg.basicInfo.designHeight : 1080;
+            var sb = new StringBuilder();
+            sb.AppendLine("[DesignImageMeta]");
+            if (!string.IsNullOrEmpty(DesignImageContext.CurrentAssetPath))
+                sb.AppendLine($"assetPath={DesignImageContext.CurrentAssetPath}");
+            if (DesignImageContext.HasSize)
+                sb.AppendLine($"pixelSize={DesignImageContext.Width}x{DesignImageContext.Height}");
+            else
+                sb.AppendLine("pixelSize=unknown");
+            sb.AppendLine($"canvasDesignResolution={dw}x{dh}");
+            sb.AppendLine("coordHint=normalized(0-1,top-left) -> canvas pixels via map_design_rect / map_design_rect_batch");
+            sb.Append("Do NOT guess approximate positions — call map_design_rect(_batch) before set_rect_transform_batch.");
+            return sb.ToString();
         }
 
         /// <summary>
@@ -301,16 +365,27 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine("### Phase 3: Verify (MANDATORY)");
                 if (_settings.SupportsVision)
                 {
-                    sb.AppendLine("- Do NOT screenshot after every step. Only take screenshots when:");
-                    sb.AppendLine("  1) You suspect a layout problem, or 2) You are nearly done and want a check before delivery");
-                    sb.AppendLine("- `take_screenshot` → `analyze_screenshot` to visually inspect the Game View");
-                    sb.AppendLine("- When the user provides a design mockup, use `analyze_screenshot` with `referenceImagePath` to compare side-by-side");
-                    sb.AppendLine("- Fix issues found, then take one more screenshot to confirm");
+                    bool forceVisual = _settings.EnableVisualVerification && !string.IsNullOrEmpty(_designImageAssetPath);
+                    if (forceVisual)
+                    {
+                        sb.AppendLine("- Visual Verification is ON for this design-mockup task.");
+                        sb.AppendLine("- Before delivery you MUST: `take_screenshot` → `analyze_screenshot` (design reference is auto-injected) and fix mismatches.");
+                        sb.AppendLine("- Do not claim completion until at least one screenshot comparison has been done after building.");
+                    }
+                    else
+                    {
+                        sb.AppendLine("- Do NOT screenshot after every step. Only take screenshots when:");
+                        sb.AppendLine("  1) You suspect a layout problem, or 2) You are nearly done and want a check before delivery");
+                        sb.AppendLine("- `take_screenshot` → `analyze_screenshot` to visually inspect the Game View");
+                        sb.AppendLine("- When the user provides a design mockup, use `analyze_screenshot` with `referenceImagePath` to compare side-by-side");
+                        sb.AppendLine("- Fix issues found, then take one more screenshot to confirm");
+                    }
                     sb.AppendLine("- `take_screenshot` automatically ensures a Camera and EventSystem exist in the scene — NEVER write `execute_code` to create/fix cameras, Canvas render mode, clearFlags, or cullingMask. If a screenshot still looks wrong, the cause is UI layout (RectTransform/anchors/Canvas Scaler design resolution) or missing sprites, NOT the render pipeline — use `inspect_hierarchy`/`inspect_components` to debug instead of repeated camera experiments.");
                 }
                 else
                 {
-                    sb.AppendLine("- Visual screenshot analysis is NOT available with the current model.");
+                    sb.AppendLine("- Visual screenshot analysis is NOT available with the current model (Supports Vision is off).");
+                    sb.AppendLine("- You CANNOT see design mockups or screenshots. Do NOT pretend you can.");
                     sb.AppendLine("- `take_screenshot` only saves an image for the user to review — you cannot see it.");
                     sb.AppendLine("- Rely on **structural self-inspection** instead:");
                     sb.AppendLine("  - `inspect_hierarchy` with maxDepth to review the full tree");
@@ -330,6 +405,7 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine("## BATCH-FIRST PRINCIPLE (CRITICAL)");
                 sb.AppendLine("0a. Searching 2+ sprites by text → `search_sprites_by_text_batch` (NOT multiple search_sprites_by_text calls)");
                 sb.AppendLine("0b. Searching 2+ filename patterns → `search_assets_glob_batch` (NOT multiple search_assets_glob calls)");
+                sb.AppendLine("0c. Mapping 2+ design-mockup regions to canvas rects → `map_design_rect_batch`");
                 sb.AppendLine("1. Creating 2+ elements → `create_batch`");
                 sb.AppendLine("2. Positioning 2+ elements → `set_rect_transform_batch`");
                 sb.AppendLine("3. Single element positioning → `set_rect_transform` (NOT separate set_anchor/set_size/set_position)");
@@ -394,8 +470,9 @@ namespace Indey.UIPrefabBuilder.Core
                     sb.AppendLine("## DESIGN MOCKUP ANALYSIS");
                     sb.AppendLine("When the user provides a design mockup image:");
                     sb.AppendLine("1. **Analyze Structure**: Identify the UI hierarchy — panels, buttons, text labels, icons, backgrounds, decorations.");
-                    sb.AppendLine("2. **Describe Elements**: For each UI element, describe its visual appearance (color, shape, size), approximate position relative to the canvas, and functional role.");
-                    sb.AppendLine("3. **Match Assets**: Use the visual asset index to find matching local sprites:");
+                    sb.AppendLine("2. **Measure Elements**: For each UI element, determine its normalized bbox (0-1, top-left origin) on the mockup. Do NOT use vague 'approximate' positions.");
+                    sb.AppendLine("3. **Convert Coordinates**: Call `map_design_rect_batch` (or `map_design_rect`) to convert normalized bboxes into Canvas `anchoredPosition` + `sizeDelta` using the design resolution. Prefer center-anchor values returned by the tool.");
+                    sb.AppendLine("4. **Match Assets**: Use the visual asset index to find matching local sprites:");
                     if (_settings.EnableAssetIndexing)
                     {
                         var idxForMockup = AssetIndexer.Instance;
@@ -414,8 +491,8 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine("   - Use `search_assets` / `search_assets_glob` to find sprites by filename patterns.");
                     }
                     sb.AppendLine("   - Fall back to `search_assets_glob` if no good match is found in the visual index.");
-                    sb.AppendLine("4. **Build UI**: Use `create_batch` and positioning tools to reconstruct the design as a Unity UGUI hierarchy.");
-                    sb.AppendLine("5. **Verify**: `take_screenshot` → `analyze_screenshot` (with `referenceImagePath` pointing to the user's mockup) to compare side-by-side. Fix discrepancies.");
+                    sb.AppendLine("5. **Build UI**: Use `create_batch` then `set_rect_transform_batch` with the mapped coordinates. Prefer explicit RectTransform sizing over LayoutGroups for design fidelity. If you must use LayoutGroup, set childForceExpandWidth/Height to false.");
+                    sb.AppendLine("6. **Verify**: `take_screenshot` → `analyze_screenshot` (with `referenceImagePath` pointing to the user's mockup) to compare side-by-side. Fix discrepancies.");
                     sb.AppendLine();
 
                     sb.AppendLine("## VISUAL FIDELITY CHECKLIST");
@@ -423,8 +500,8 @@ namespace Indey.UIPrefabBuilder.Core
                     sb.AppendLine("1. **Background layers**: Observe whether the design has distinct background layers (popup frame, header banner, tab bar, list area). If so, each must be a separate Image with the correct sprite — do NOT skip any visible background.");
                     sb.AppendLine("2. **Title/Header bar**: If the design shows a colored banner or decorative bar behind the title text, create a separate Image element for it — do not render it as plain text only.");
                     sb.AppendLine("3. **Tab/Button states**: If the design has tabs or toggle buttons, observe the visual difference between selected and unselected states (color, shape, brightness) and reproduce them with DIFFERENT sprites or tint colors.");
-                    sb.AppendLine("4. **Text styling**: Observe the design's text effects (outline, shadow, glow) and reproduce them using TMPro settings. Match font colors from the mockup.");
-                    sb.AppendLine("5. **Spacing & proportions**: Estimate element sizes relative to the popup width. Verify that padding, margins, and gaps between items visually match the design.");
+                    sb.AppendLine("4. **Text styling**: Observe the design's text effects (outline, shadow, glow) and reproduce them using TMPro settings. Match font colors from the mockup. ALWAYS pass exact `text` content.");
+                    sb.AppendLine("5. **Spacing & proportions**: Use `map_design_rect` sizes — do NOT estimate relative sizes by eye alone. Verify padding, margins, and gaps against the mapped values.");
                     sb.AppendLine("6. **Icon sizes**: If the design shows a list with icons, ensure uniform icon size and vertical centering with labels.");
                     sb.AppendLine("7. **Close button**: Place the close button in the same relative position as the design (inside/outside/below the popup).");
                     sb.AppendLine("8. **Overlay/Dimming**: If the design shows a semi-transparent dark overlay behind the popup, add one. If not, skip it.");
@@ -506,6 +583,8 @@ namespace Indey.UIPrefabBuilder.Core
             _searchBudgetWarningInjected = false;
             _postBuildSearchSteps = 0;
             _postBuildNudgeInjected = false;
+            _visualVerifyNudgeInjected = false;
+            _didAnalyzeScreenshot = false;
             _searchCache.Clear();
             _consecutiveCameraAttempts = 0;
             _consecutiveSingleSearchCalls = 0;
@@ -561,7 +640,7 @@ namespace Indey.UIPrefabBuilder.Core
             return name == "search_assets" || name == "search_assets_glob" || name == "search_assets_glob_batch"
                 || name == "search_sprites_by_text" || name == "search_sprites_by_text_batch"
                 || name == "match_sprite_by_image" || name == "match_sprite_by_region" || name == "match_sprite_by_region_batch"
-                || name == "crop_design_image"
+                || name == "crop_design_image" || name == "map_design_rect" || name == "map_design_rect_batch"
                 || name == "get_project_config" || name == "get_scene_overview"
                 || name == "get_index_status" || name == "inspect_hierarchy" || name == "inspect_hierarchy_batch"
                 || name == "inspect_components" || name == "inspect_components_batch";
@@ -642,6 +721,20 @@ namespace Indey.UIPrefabBuilder.Core
             }
             else
             {
+                // Force visual verification once before allowing completion on design-mockup builds
+                if (ShouldForceVisualVerification())
+                {
+                    _visualVerifyNudgeInjected = true;
+                    _history.AddAssistant(response.Content);
+                    _history.AddUser(
+                        "VISUAL VERIFICATION REQUIRED before finishing: you built UI from a design mockup but have not completed screenshot comparison. " +
+                        "Call `take_screenshot` then `analyze_screenshot` now (design reference is auto-injected). " +
+                        "Fix any mismatches found, then you may summarize and finish.");
+                    ConsoleLogger.Log("[Agent] Forced visual verification nudge (design mockup build without analyze_screenshot).");
+                    TransitionTo(AgentState.Thinking);
+                    return;
+                }
+
                 _history.AddAssistant(response.Content);
 
                 // NOTE: We intentionally do NOT force the model to start building just because it
@@ -653,6 +746,16 @@ namespace Indey.UIPrefabBuilder.Core
                 ConsoleLogger.Log($"[Agent] Task completed in {_currentStep} steps. (search={_totalSearchSteps}, build={_totalBuildSteps})");
                 TransitionTo(AgentState.Completed);
             }
+        }
+
+        private bool ShouldForceVisualVerification()
+        {
+            if (_visualVerifyNudgeInjected) return false;
+            if (!_settings.SupportsVision || !_settings.EnableVisualVerification) return false;
+            if (string.IsNullOrEmpty(_designImageAssetPath)) return false;
+            if (_totalBuildSteps <= 0) return false;
+            if (_didAnalyzeScreenshot) return false;
+            return true;
         }
 
         private void ExecuteToolCalls(List<ToolCallInfo> toolCalls)
@@ -839,6 +942,9 @@ namespace Indey.UIPrefabBuilder.Core
                     result = new JObject { ["success"] = false, ["error"] = e.Message }.ToString();
                     ConsoleLogger.Error($"[Agent] Tool exception: {call.Name} -> {e.Message}");
                 }
+
+                if (call.Name == "analyze_screenshot")
+                    _didAnalyzeScreenshot = true;
 
                 if (isSearchTool)
                 {

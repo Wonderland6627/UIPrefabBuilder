@@ -22,6 +22,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private readonly List<ChatBubble> _bubbles = new List<ChatBubble>();
         private readonly List<string> _attachedFiles = new List<string>();
+        private bool _visionSendPending;
         private string _streamBuffer = "";
         private string _thinkingStreamBuffer = "";
         private bool _isStreaming;
@@ -390,7 +391,10 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawAttachmentArea()
         {
+            var supportsVision = BuilderSettings.Get().SupportsVision;
+
             EditorGUILayout.BeginHorizontal();
+            EditorGUI.BeginDisabledGroup(!supportsVision || _visionSendPending);
             if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(22)))
             {
                 var path = EditorUtility.OpenFilePanelWithFilters(
@@ -399,7 +403,11 @@ namespace Indey.UIPrefabBuilder.UI
                 if (!string.IsNullOrEmpty(path))
                     TryAddAttachment(path);
             }
-            if (_attachedFiles.Count == 0)
+            EditorGUI.EndDisabledGroup();
+
+            if (!supportsVision)
+                GUILayout.Label("Design mockups require Supports Vision (Settings).", EditorStyles.miniLabel);
+            else if (_attachedFiles.Count == 0)
                 GUILayout.Label("Attach design mockup...", EditorStyles.miniLabel);
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
@@ -500,12 +508,17 @@ namespace Indey.UIPrefabBuilder.UI
             bool hasFiles = _attachedFiles.Count > 0;
 
             if (!hasText && !hasFiles) return;
+            if (_visionSendPending) return;
 
-            if (hasFiles && !BuilderSettings.Get().SupportsVision)
+            var settings = BuilderSettings.Get();
+
+            if (hasFiles && !settings.SupportsVision)
             {
-                EditorUtility.DisplayDialog("Vision Not Enabled",
-                    "The current model does not have 'Supports Vision' enabled.\n\n" +
-                    "Please enable it in Settings before sending images.", "OK");
+                EditorUtility.DisplayDialog("Vision Required",
+                    "Design mockup images require a vision-capable model.\n\n" +
+                    "Enable Supports Vision in Settings (left panel). The tool will probe the API with a test image.\n\n" +
+                    "Without vision you can still build UI using text-only prompts.",
+                    "OK");
                 return;
             }
 
@@ -517,13 +530,50 @@ namespace Indey.UIPrefabBuilder.UI
                     fileNames.AppendLine($"  [{Path.GetFileName(f)}]");
                 displayText = (hasText ? text + "\n" : "") + fileNames.ToString().TrimEnd();
             }
-            AddBubble(BubbleType.User, displayText, hasFiles ? new List<string>(_attachedFiles) : null);
 
             if (hasFiles)
-                _agent?.StartTask(text, new List<string>(_attachedFiles));
-            else
-                _agent?.StartTask(text);
+            {
+                var filesCopy = new List<string>(_attachedFiles);
+                var userText = text;
+                var bubbleText = displayText;
 
+                if (VisionCapabilityProbe.IsCacheValid(settings))
+                {
+                    BeginImageTask(userText, filesCopy, bubbleText);
+                    return;
+                }
+
+                _visionSendPending = true;
+                AddBubble(BubbleType.AI, "Checking vision support before starting…");
+                _needsRepaint = true;
+
+                VisionCapabilityProbe.ProbeAsync(settings, result =>
+                {
+                    _visionSendPending = false;
+                    if (result != null && result.Supported)
+                    {
+                        BeginImageTask(userText, filesCopy, bubbleText);
+                    }
+                    else
+                    {
+                        settings.SupportsVision = false;
+                        settings.EnableVisualVerification = false;
+                        settings.Save();
+                        var reason = result?.Reason ?? "Unknown failure.";
+                        AddBubble(BubbleType.Error,
+                            "Task aborted: vision probe failed. Supports Vision has been turned off.\n\n" + reason);
+                        EditorUtility.DisplayDialog(
+                            "Vision Probe Failed",
+                            "This image task was cancelled because the model/endpoint failed the vision probe.\n\n" + reason,
+                            "OK");
+                        _needsRepaint = true;
+                    }
+                });
+                return;
+            }
+
+            AddBubble(BubbleType.User, displayText, null);
+            _agent?.StartTask(text);
             _input = "";
             _attachedFiles.Clear();
             _streamBuffer = "";
@@ -531,6 +581,20 @@ namespace Indey.UIPrefabBuilder.UI
             _isStreaming = false;
             _isThinking = false;
             GUI.FocusControl(null);
+        }
+
+        private void BeginImageTask(string userText, List<string> files, string bubbleText)
+        {
+            AddBubble(BubbleType.User, bubbleText, new List<string>(files));
+            _agent?.StartTask(userText, files);
+            _input = "";
+            _attachedFiles.Clear();
+            _streamBuffer = "";
+            _thinkingStreamBuffer = "";
+            _isStreaming = false;
+            _isThinking = false;
+            GUI.FocusControl(null);
+            _needsRepaint = true;
         }
 
         private void FinalizeThinkingStream(string fullThinking)

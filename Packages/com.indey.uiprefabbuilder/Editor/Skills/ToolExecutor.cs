@@ -124,6 +124,8 @@ namespace Indey.UIPrefabBuilder.Skills
                 // Asset Indexing
                 case "match_sprite_by_image": return DoMatchSpriteByImage(args);
                 case "crop_design_image": return DoCropDesignImage(args);
+                case "map_design_rect": return DoMapDesignRect(args);
+                case "map_design_rect_batch": return DoMapDesignRectBatch(args);
                 case "match_sprite_by_region": return DoMatchSpriteByRegion(args);
                 case "match_sprite_by_region_batch": return DoMatchSpriteByRegionBatch(args);
                 case "search_sprites_by_text": return DoSearchSpritesByText(args);
@@ -634,7 +636,7 @@ namespace Indey.UIPrefabBuilder.Skills
             if (go == null) return TargetNotFound(Str(args, "target"));
             LayoutHelper.AddVerticalLayout(go, Float(args, "spacing", 8), ParseTextAnchor(Str(args, "childAlignment", "UpperCenter")), BuildPadding(args),
                 Bool(args, "childControlWidth", true), Bool(args, "childControlHeight", true),
-                Bool(args, "childForceExpandWidth", true), Bool(args, "childForceExpandHeight", true));
+                Bool(args, "childForceExpandWidth", false), Bool(args, "childForceExpandHeight", false));
             return Ok($"VerticalLayoutGroup added to '{go.name}'.");
         }
 
@@ -644,7 +646,7 @@ namespace Indey.UIPrefabBuilder.Skills
             if (go == null) return TargetNotFound(Str(args, "target"));
             LayoutHelper.AddHorizontalLayout(go, Float(args, "spacing", 8), ParseTextAnchor(Str(args, "childAlignment", "MiddleCenter")), BuildPadding(args),
                 Bool(args, "childControlWidth", true), Bool(args, "childControlHeight", true),
-                Bool(args, "childForceExpandWidth", true), Bool(args, "childForceExpandHeight", true));
+                Bool(args, "childForceExpandWidth", false), Bool(args, "childForceExpandHeight", false));
             return Ok($"HorizontalLayoutGroup added to '{go.name}'.");
         }
 
@@ -1642,6 +1644,140 @@ namespace Indey.UIPrefabBuilder.Skills
                 });
             }
             return arr;
+        }
+
+        private string DoMapDesignRect(JObject args)
+        {
+            var mapped = MapDesignRectInternal(
+                Float(args, "x", 0f),
+                Float(args, "y", 0f),
+                Float(args, "width", 0f),
+                Float(args, "height", 0f),
+                Str(args, "label", null),
+                out var error);
+            if (mapped == null) return Error(error);
+            return mapped.ToString();
+        }
+
+        private string DoMapDesignRectBatch(JObject args)
+        {
+            var regionsToken = args["regions"];
+            JArray regions;
+            if (regionsToken is JArray arr)
+                regions = arr;
+            else if (regionsToken != null && regionsToken.Type == JTokenType.String)
+            {
+                try { regions = JArray.Parse(regionsToken.ToString()); }
+                catch { return Error("Invalid JSON in 'regions' parameter."); }
+            }
+            else
+                return Error("Missing 'regions' array.");
+
+            var results = new JArray();
+            int success = 0, fail = 0;
+            foreach (var item in regions)
+            {
+                if (!(item is JObject obj))
+                {
+                    results.Add(new JObject { ["success"] = false, ["error"] = "Region must be an object." });
+                    fail++;
+                    continue;
+                }
+                var mapped = MapDesignRectInternal(
+                    obj["x"] != null ? (float)obj["x"] : 0f,
+                    obj["y"] != null ? (float)obj["y"] : 0f,
+                    obj["width"] != null ? (float)obj["width"] : 0f,
+                    obj["height"] != null ? (float)obj["height"] : 0f,
+                    obj["label"]?.ToString(),
+                    out var error);
+                if (mapped == null)
+                {
+                    results.Add(new JObject { ["success"] = false, ["error"] = error, ["label"] = obj["label"] });
+                    fail++;
+                }
+                else
+                {
+                    results.Add(mapped);
+                    success++;
+                }
+            }
+
+            return new JObject
+            {
+                ["success"] = fail == 0,
+                ["total"] = regions.Count,
+                ["mapped"] = success,
+                ["failed"] = fail,
+                ["results"] = results,
+                ["message"] = $"Mapped {success}/{regions.Count} regions. Use anchoredPosition/sizeDelta with anchorMin=anchorMax=(0.5,0.5)."
+            }.ToString();
+        }
+
+        private static JObject MapDesignRectInternal(float nx, float ny, float nw, float nh, string label, out string error)
+        {
+            error = null;
+            if (nw <= 0f || nh <= 0f)
+            {
+                error = "width and height must be > 0 (normalized 0-1).";
+                return null;
+            }
+
+            nx = Mathf.Clamp01(nx);
+            ny = Mathf.Clamp01(ny);
+            nw = Mathf.Clamp(nw, 0.001f, 1f - nx);
+            nh = Mathf.Clamp(nh, 0.001f, 1f - ny);
+
+            var cfg = ProjectConfig.Current;
+            float canvasW = cfg?.basicInfo?.designWidth > 0 ? cfg.basicInfo.designWidth : 1920;
+            float canvasH = cfg?.basicInfo?.designHeight > 0 ? cfg.basicInfo.designHeight : 1080;
+
+            float imgW = DesignImageContext.HasSize ? DesignImageContext.Width : canvasW;
+            float imgH = DesignImageContext.HasSize ? DesignImageContext.Height : canvasH;
+
+            // Fit design image into canvas reference resolution (letterbox if aspect differs)
+            float scale = Mathf.Min(canvasW / imgW, canvasH / imgH);
+            float fittedW = imgW * scale;
+            float fittedH = imgH * scale;
+            float offsetX = (canvasW - fittedW) * 0.5f;
+            float offsetY = (canvasH - fittedH) * 0.5f;
+
+            float px = nx * imgW;
+            float py = ny * imgH;
+            float pw = nw * imgW;
+            float ph = nh * imgH;
+
+            float centerX = px + pw * 0.5f;
+            float centerY = py + ph * 0.5f;
+
+            // Top-left image space -> canvas pixel space (top-left of canvas)
+            float canvasX = offsetX + centerX * scale;
+            float canvasY = offsetY + centerY * scale;
+
+            // Center-origin Unity UI (Y up)
+            float anchoredX = canvasX - canvasW * 0.5f;
+            float anchoredY = canvasH * 0.5f - canvasY;
+            float sizeW = pw * scale;
+            float sizeH = ph * scale;
+
+            var result = new JObject
+            {
+                ["success"] = true,
+                ["anchoredPosition"] = new JObject { ["x"] = Math.Round(anchoredX, 2), ["y"] = Math.Round(anchoredY, 2) },
+                ["sizeDelta"] = new JObject { ["width"] = Math.Round(sizeW, 2), ["height"] = Math.Round(sizeH, 2) },
+                ["anchorMin"] = new JObject { ["x"] = 0.5, ["y"] = 0.5 },
+                ["anchorMax"] = new JObject { ["x"] = 0.5, ["y"] = 0.5 },
+                ["pivot"] = new JObject { ["x"] = 0.5, ["y"] = 0.5 },
+                ["normalized"] = new JObject { ["x"] = nx, ["y"] = ny, ["width"] = nw, ["height"] = nh },
+                ["scale"] = Math.Round(scale, 6),
+                ["imagePixelSize"] = new JObject { ["width"] = imgW, ["height"] = imgH },
+                ["canvasDesignResolution"] = new JObject { ["width"] = canvasW, ["height"] = canvasH },
+                ["hint"] = "Pass these values to set_rect_transform / set_rect_transform_batch (x/y = anchoredPosition, width/height = sizeDelta, set anchors to MiddleCenter)."
+            };
+            if (!string.IsNullOrEmpty(label))
+                result["label"] = label;
+            if (!DesignImageContext.HasSize)
+                result["warning"] = "Design image pixel size unknown — assumed equal to canvas design resolution.";
+            return result;
         }
 
         private string DoCropDesignImage(JObject args)

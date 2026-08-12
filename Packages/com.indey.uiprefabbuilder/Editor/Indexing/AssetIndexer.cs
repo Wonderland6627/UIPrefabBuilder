@@ -154,10 +154,7 @@ namespace Indey.UIPrefabBuilder.Indexing
                 var hash = ComputeFileHash(path);
                 if (!_store.NeedsUpdate(path, hash)) continue;
 
-                var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
-                if (tex == null) continue;
-
-                var vector = _embedding.ExtractEmbedding(tex);
+                var vector = ExtractEmbeddingForAsset(path);
                 if (vector == null) continue;
 
                 var guid = AssetDatabase.AssetPathToGUID(path);
@@ -359,10 +356,7 @@ namespace Indey.UIPrefabBuilder.Indexing
             for (int i = startIdx; i < end; i++)
             {
                 var path = paths[i];
-                var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
-                if (tex == null) continue;
-
-                var vector = _embedding.ExtractEmbedding(tex);
+                var vector = ExtractEmbeddingForAsset(path);
                 if (vector == null) continue;
 
                 var guid = AssetDatabase.AssetPathToGUID(path);
@@ -398,6 +392,33 @@ namespace Indey.UIPrefabBuilder.Indexing
         {
             var ext = Path.GetExtension(path);
             return ValidExtensions.Contains(ext);
+        }
+
+        /// <summary>
+        /// 计算资源的 CLIP embedding。优先读取磁盘上的原始文件字节（PNG/JPG）解码，
+        /// 避免使用 Unity 导入管线产出的 Texture2D —— 后者可能被 NPOT 缩放或压缩，
+        /// 导致非 2 次幂 sprite 以变形的样子进索引、拉低视觉匹配准确率。
+        /// 原始解码失败时（如 .tga/.psd）回退到导入后的 Texture2D。
+        /// </summary>
+        private float[] ExtractEmbeddingForAsset(string path)
+        {
+            var ext = Path.GetExtension(path)?.ToLowerInvariant();
+            if (ext == ".png" || ext == ".jpg" || ext == ".jpeg")
+            {
+                try
+                {
+                    var fullPath = Path.Combine(ProjectRoot, path);
+                    if (File.Exists(fullPath))
+                    {
+                        var vector = _embedding.ExtractEmbeddingFromBytes(File.ReadAllBytes(fullPath));
+                        if (vector != null) return vector;
+                    }
+                }
+                catch { }
+            }
+
+            var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+            return tex == null ? null : _embedding.ExtractEmbedding(tex);
         }
 
         private string ComputeFileHash(string assetPath)

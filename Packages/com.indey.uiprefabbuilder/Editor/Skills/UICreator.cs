@@ -73,14 +73,14 @@ namespace Indey.UIPrefabBuilder.Skills
         }
 
         public static GameObject CreateImage(string name, Transform parent, string spritePath, Vector2 size)
+            => CreateImage(name, parent, spritePath, size, out _);
+
+        public static GameObject CreateImage(string name, Transform parent, string spritePath, Vector2 size, out string spriteError)
         {
             var go = CreateUI(name, parent);
             var img = AddImageComponent(go);
-            if (!string.IsNullOrEmpty(spritePath))
-            {
-                var sp = AssetDatabase.LoadAssetAtPath<Sprite>(spritePath);
-                if (sp != null) img.sprite = sp;
-            }
+            spriteError = ComponentHelper.LoadSpriteOrError(spritePath, out var sp);
+            if (spriteError == null && sp != null) img.sprite = sp;
             SetSize(go, size);
             return go;
         }
@@ -239,6 +239,7 @@ namespace Indey.UIPrefabBuilder.Skills
                     customType.GetProperty("text")?.SetValue(c, text);
                     customType.GetProperty("fontSize")?.SetValue(c, (float)size);
                     customType.GetProperty("color")?.SetValue(c, color);
+                    ApplyTMPAlignment(c, align);
                     EnsureTMPPersists(c, text);
                     return;
                 }
@@ -250,12 +251,42 @@ namespace Indey.UIPrefabBuilder.Skills
                 _tmpTextType.GetProperty("text")?.SetValue(c, text);
                 _tmpTextType.GetProperty("fontSize")?.SetValue(c, (float)size);
                 _tmpTextType.GetProperty("color")?.SetValue(c, color);
+                ApplyTMPAlignment(c, align);
                 EnsureTMPPersists(c, text);
                 return;
             }
             var t = go.AddComponent<Text>();
             t.text = text; t.fontSize = size; t.color = color; t.alignment = align;
             t.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        }
+
+        /// <summary>
+        /// 将 UGUI 的 <see cref="TextAnchor"/> 映射为 TMPro.TextAlignmentOptions 并通过反射写入。
+        /// TMP 默认对齐为 TopLeft，若不显式设置会导致文本全部贴在左上角。
+        /// </summary>
+        private static void ApplyTMPAlignment(Component c, TextAnchor align)
+        {
+            if (c == null) return;
+            var alignmentProp = c.GetType().GetProperty("alignment");
+            if (alignmentProp == null || !alignmentProp.PropertyType.IsEnum) return;
+
+            string name;
+            switch (align)
+            {
+                case TextAnchor.UpperLeft: name = "TopLeft"; break;
+                case TextAnchor.UpperCenter: name = "Top"; break;
+                case TextAnchor.UpperRight: name = "TopRight"; break;
+                case TextAnchor.MiddleLeft: name = "Left"; break;
+                case TextAnchor.MiddleCenter: name = "Center"; break;
+                case TextAnchor.MiddleRight: name = "Right"; break;
+                case TextAnchor.LowerLeft: name = "BottomLeft"; break;
+                case TextAnchor.LowerCenter: name = "Bottom"; break;
+                case TextAnchor.LowerRight: name = "BottomRight"; break;
+                default: name = "TopLeft"; break;
+            }
+
+            if (Enum.TryParse(alignmentProp.PropertyType, name, true, out var alignVal))
+                alignmentProp.SetValue(c, alignVal);
         }
 
         /// <summary>

@@ -115,6 +115,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 // Screenshot & Visual Analysis
                 case "take_screenshot": return DoTakeScreenshot(args);
                 case "analyze_screenshot": return DoAnalyzeScreenshot(args);
+                case "report_visual_verdict": return DoReportVisualVerdict(args);
                 // Project Config
                 case "get_project_config": return DoGetProjectConfig();
                 // Progress
@@ -229,8 +230,12 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var parent = FindGO(Str(args, "parent"));
             if (parent == null) return TargetNotFound(Str(args, "parent"));
-            return Created(UICreator.CreateImage(Str(args, "name"), parent.transform, Str(args, "spritePath", ""),
-                new Vector2(Float(args, "width", 100), Float(args, "height", 100))));
+            var go = UICreator.CreateImage(Str(args, "name"), parent.transform, Str(args, "spritePath", ""),
+                new Vector2(Float(args, "width", 100), Float(args, "height", 100)), out var spriteError);
+            if (go == null) return Error("Failed to create.");
+            var result = new JObject { ["success"] = true, ["name"] = go.name, ["path"] = GetHierarchyPath(go) };
+            if (!string.IsNullOrEmpty(spriteError)) result["warning"] = spriteError;
+            return result.ToString();
         }
 
         private string DoCreateInputField(JObject args)
@@ -309,6 +314,7 @@ namespace Indey.UIPrefabBuilder.Skills
                     var fontSize = item["fontSize"] != null ? (int)item["fontSize"] : 18;
 
                     GameObject go = null;
+                    string itemSpriteError = null;
                     switch (type)
                     {
                         case "canvas": go = UICreator.CreateCanvas(name); break;
@@ -323,7 +329,7 @@ namespace Indey.UIPrefabBuilder.Skills
                             go = UICreator.CreateText(name, parentT, text ?? "", fontSize, color); break;
                         case "image":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
-                            go = UICreator.CreateImage(name, parentT, spritePath, new Vector2(w, h)); break;
+                            go = UICreator.CreateImage(name, parentT, spritePath, new Vector2(w, h), out itemSpriteError); break;
                         case "inputfield":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
                             go = UICreator.CreateInputField(name, parentT, text ?? "Enter text...", new Vector2(w, h)); break;
@@ -349,7 +355,9 @@ namespace Indey.UIPrefabBuilder.Skills
                         ComponentHelper.SetText(go, text);
                     }
 
-                    results.Add(new JObject { ["success"] = true, ["name"] = go.name, ["path"] = GetHierarchyPath(go) });
+                    var itemResult = new JObject { ["success"] = true, ["name"] = go.name, ["path"] = GetHierarchyPath(go) };
+                    if (!string.IsNullOrEmpty(itemSpriteError)) itemResult["warning"] = itemSpriteError;
+                    results.Add(itemResult);
                     success++;
                 }
                 catch (Exception e)
@@ -489,8 +497,12 @@ namespace Indey.UIPrefabBuilder.Skills
             Color? color = null;
             if (args["r"] != null || args["g"] != null || args["b"] != null)
                 color = new Color(Float(args, "r", 1), Float(args, "g", 1), Float(args, "b", 1), Float(args, "a", 1));
-            ComponentHelper.SetImageProperties(go, Str(args, "spritePath", null), Str(args, "type", null),
-                Str(args, "fillMethod", null), NullFloat(args, "fillAmount"), NullBool(args, "preserveAspect"), color);
+            var spriteError = ComponentHelper.SetImageProperties(go, Str(args, "spritePath", null), Str(args, "type", null),
+                Str(args, "fillMethod", null), NullFloat(args, "fillAmount"), NullBool(args, "preserveAspect"), color,
+                out var missingImage);
+            if (missingImage) return Error($"'{go.name}' has no Image component. Add one with add_component, or target the child that renders the graphic.");
+            if (!string.IsNullOrEmpty(spriteError))
+                return new JObject { ["success"] = true, ["message"] = $"Image properties updated on '{go.name}'.", ["warning"] = spriteError }.ToString();
             return Ok($"Image properties updated on '{go.name}'.");
         }
 
@@ -525,8 +537,17 @@ namespace Indey.UIPrefabBuilder.Skills
                     var fillMethod = item["fillMethod"]?.ToString();
                     float? fillAmount = item["fillAmount"] != null ? (float?)item["fillAmount"] : null;
                     bool? preserveAspect = item["preserveAspect"] != null ? (bool?)item["preserveAspect"] : null;
-                    ComponentHelper.SetImageProperties(go, spritePath, type, fillMethod, fillAmount, preserveAspect, color);
-                    results.Add(new JObject { ["success"] = true, ["name"] = go.name });
+                    var spriteError = ComponentHelper.SetImageProperties(go, spritePath, type, fillMethod, fillAmount,
+                        preserveAspect, color, out var missingImage);
+                    if (missingImage)
+                    {
+                        results.Add(ItemFail(target ?? go.name, $"'{go.name}' has no Image component."));
+                        fail++;
+                        continue;
+                    }
+                    var imgResult = new JObject { ["success"] = true, ["name"] = go.name };
+                    if (!string.IsNullOrEmpty(spriteError)) imgResult["warning"] = spriteError;
+                    results.Add(imgResult);
                     success++;
                 }
                 catch (Exception e)
@@ -543,7 +564,8 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
-            ComponentHelper.SetImageSprite(go, Str(args, "spritePath"));
+            var spriteError = ComponentHelper.SetImageSprite(go, Str(args, "spritePath"));
+            if (!string.IsNullOrEmpty(spriteError)) return Error(spriteError);
             return Ok($"Sprite set on '{go.name}'.");
         }
 
@@ -871,9 +893,41 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
+
+            var block = DescribeDestroyBlock(go, Bool(args, "force"));
+            if (block != null) return Error(block);
+
             var name = go.name;
             Undo.DestroyObjectImmediate(go);
             return Ok($"Destroyed '{name}'.");
+        }
+
+        /// <summary>
+        /// Tearing down an instantiated prefab (or the whole Canvas) to rebuild from scratch throws
+        /// away hand-authored art the agent cannot reproduce. Returns a refusal message, or null when
+        /// the destroy is allowed.
+        /// </summary>
+        private static string DescribeDestroyBlock(GameObject go, bool force)
+        {
+            if (force) return null;
+
+            if (PrefabUtility.IsAnyPrefabInstanceRoot(go))
+            {
+                var source = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);
+                return $"'{go.name}' is the root of a prefab instance ({source}). " +
+                    "Do NOT delete it to rebuild from scratch — adjust the instance in place " +
+                    "(set_rect_transform_batch / set_image_batch / set_text_properties_batch), " +
+                    "or hide the children you do not need. Pass force=true only if the user explicitly asked for removal.";
+            }
+
+            if (go.GetComponent<Canvas>() != null && go.transform.parent == null && go.transform.childCount > 0)
+            {
+                return $"'{go.name}' is a root Canvas with {go.transform.childCount} child element(s). " +
+                    "Deleting it discards the whole UI. Fix the elements in place instead, " +
+                    "or pass force=true if a full rebuild is really intended.";
+            }
+
+            return null;
         }
 
         private string DoDestroyObjectBatch(JObject args)
@@ -884,12 +938,17 @@ namespace Indey.UIPrefabBuilder.Skills
 
             int total = targets.Count, success = 0, fail = 0;
             var results = new JArray();
+            var force = Bool(args, "force");
 
             foreach (var token in targets)
             {
                 var name = token.ToString();
                 var go = FindGO(name);
                 if (go == null) { results.Add(ItemFail(name ?? "?", "Not found")); fail++; continue; }
+
+                var block = DescribeDestroyBlock(go, force);
+                if (block != null) { results.Add(ItemFail(name ?? "?", block)); fail++; continue; }
+
                 var actualName = go.name;
                 Undo.DestroyObjectImmediate(go);
                 results.Add(new JObject { ["success"] = true, ["name"] = actualName });
@@ -1122,6 +1181,7 @@ namespace Indey.UIPrefabBuilder.Skills
         private static byte[] TryCaptureGameViewRT(out int w, out int h)
         {
             w = h = 0;
+            byte[] uniformFallback = null;
             try
             {
                 var gameViewType = typeof(EditorWindow).Assembly.GetType("UnityEditor.GameView");
@@ -1155,40 +1215,154 @@ namespace Indey.UIPrefabBuilder.Skills
                             RenderTexture.active = prev;
                             FlipTextureVertically(tex);
                             var bytes = tex.EncodeToPNG();
+                            var hasVariance = TextureHasVisualVariance(tex);
                             UnityEngine.Object.DestroyImmediate(tex);
-                            return bytes;
+                            if (hasVariance) return bytes;
+                            if (uniformFallback == null) uniformFallback = bytes;
                         }
                     }
                     type = type.BaseType;
                 }
             }
             catch { }
-            return null;
+            return uniformFallback;
         }
 
-        private static byte[] FallbackCameraRender(int width, int height)
+        private struct CanvasCaptureState
         {
+            public Canvas Canvas;
+            public RenderMode Mode;
+            public Camera WorldCamera;
+        }
+
+        /// <summary>
+        /// Authored popup prefabs usually ship hidden: CanvasGroup.alpha=0, an intro Animator that
+        /// has not run, or a zeroed localScale. Forcing them visible for the duration of the capture
+        /// keeps the agent from "fixing" the prefab just to make screenshots work.
+        /// </summary>
+        private static void ForceVisibleForCapture(Canvas canvas, List<Action> restores)
+        {
+            foreach (var group in canvas.GetComponentsInChildren<CanvasGroup>(true))
+            {
+                if (group == null) continue;
+                if (group.alpha >= 0.99f && group.gameObject.activeSelf) continue;
+                var g = group;
+                var alpha = g.alpha;
+                var wasActive = g.gameObject.activeSelf;
+                restores.Add(() =>
+                {
+                    if (g == null) return;
+                    g.alpha = alpha;
+                    g.gameObject.SetActive(wasActive);
+                });
+                g.alpha = 1f;
+                if (!wasActive) g.gameObject.SetActive(true);
+            }
+
+            foreach (var animator in canvas.GetComponentsInChildren<Animator>(true))
+            {
+                if (animator == null || !animator.enabled) continue;
+                var a = animator;
+                restores.Add(() => { if (a != null) a.enabled = true; });
+                a.enabled = false;
+            }
+
+            foreach (var rect in canvas.GetComponentsInChildren<RectTransform>(true))
+            {
+                if (rect == null) continue;
+                var scale = rect.localScale;
+                if (scale.x > 0.01f && scale.y > 0.01f) continue;
+                var r = rect;
+                restores.Add(() => { if (r != null) r.localScale = scale; });
+                r.localScale = new Vector3(scale.x <= 0.01f ? 1f : scale.x, scale.y <= 0.01f ? 1f : scale.y, 1f);
+            }
+        }
+
+        /// <summary>
+        /// ScreenSpaceOverlay UI is invisible to Camera.Render(). Temporarily switch active
+        /// Overlay canvases to ScreenSpaceCamera, render, then restore — this is the reliable
+        /// path for agent visual verification on Unity 2021.3.
+        /// </summary>
+        private static byte[] CaptureUiViaCamera(int width, int height, out int actualW, out int actualH)
+        {
+            actualW = width;
+            actualH = height;
             var camera = Camera.main ?? UnityEngine.Object.FindObjectOfType<Camera>();
             if (camera == null) return null;
 
-            var rt = new RenderTexture(width, height, 24);
-            var prevTarget = camera.targetTexture;
-            camera.targetTexture = rt;
-            camera.Render();
+            var restored = new List<CanvasCaptureState>();
+            var restores = new List<Action>();
+            RenderTexture rt = null;
+            Texture2D tex = null;
+            try
+            {
+                foreach (var canvas in UnityEngine.Object.FindObjectsOfType<Canvas>())
+                {
+                    if (canvas == null || !canvas.isActiveAndEnabled) continue;
 
-            RenderTexture.active = rt;
-            var tex = new Texture2D(width, height, TextureFormat.RGB24, false);
-            tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-            tex.Apply();
+                    // A popup hidden behind alpha=0 / a zeroed scale is invisible in every render mode,
+                    // so visibility is forced on every canvas, not just the ones being re-pointed.
+                    ForceVisibleForCapture(canvas, restores);
 
-            camera.targetTexture = prevTarget;
-            RenderTexture.active = null;
+                    // ScreenSpaceCamera without a camera assigned falls back to Overlay rendering,
+                    // which Camera.Render() also cannot see.
+                    var needsCamera = canvas.renderMode == RenderMode.ScreenSpaceOverlay
+                        || (canvas.renderMode == RenderMode.ScreenSpaceCamera && canvas.worldCamera == null);
+                    if (!needsCamera) continue;
 
-            FlipTextureVertically(tex);
-            var bytes = tex.EncodeToPNG();
-            UnityEngine.Object.DestroyImmediate(tex);
-            UnityEngine.Object.DestroyImmediate(rt);
-            return bytes;
+                    restored.Add(new CanvasCaptureState
+                    {
+                        Canvas = canvas,
+                        Mode = canvas.renderMode,
+                        WorldCamera = canvas.worldCamera
+                    });
+                    canvas.renderMode = RenderMode.ScreenSpaceCamera;
+                    canvas.worldCamera = camera;
+                }
+
+                Canvas.ForceUpdateCanvases();
+
+                rt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+                var prevTarget = camera.targetTexture;
+                var prevActive = RenderTexture.active;
+                camera.targetTexture = rt;
+                camera.Render();
+
+                RenderTexture.active = rt;
+                tex = new Texture2D(width, height, TextureFormat.RGB24, false);
+                tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                tex.Apply();
+
+                camera.targetTexture = prevTarget;
+                RenderTexture.active = prevActive;
+
+                // Camera.Render into an RT is already upright — do not flip.
+                if (!TextureHasVisualVariance(tex))
+                    return null;
+
+                actualW = width;
+                actualH = height;
+                return tex.EncodeToPNG();
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                for (int i = restores.Count - 1; i >= 0; i--)
+                {
+                    try { restores[i]?.Invoke(); } catch { }
+                }
+                foreach (var state in restored)
+                {
+                    if (state.Canvas == null) continue;
+                    state.Canvas.renderMode = state.Mode;
+                    state.Canvas.worldCamera = state.WorldCamera;
+                }
+                if (tex != null) UnityEngine.Object.DestroyImmediate(tex);
+                if (rt != null) UnityEngine.Object.DestroyImmediate(rt);
+            }
         }
 
         private static void FlipTextureVertically(Texture2D tex)
@@ -1208,6 +1382,48 @@ namespace Indey.UIPrefabBuilder.Skills
             }
             tex.SetPixels(pixels);
             tex.Apply();
+        }
+
+        private static bool TextureHasVisualVariance(Texture2D tex)
+        {
+            if (tex == null || tex.width < 2 || tex.height < 2) return false;
+            float min = 1f, max = 0f;
+            const int samples = 12;
+            for (int y = 0; y < samples; y++)
+            {
+                for (int x = 0; x < samples; x++)
+                {
+                    var c = tex.GetPixel(
+                        Mathf.RoundToInt((tex.width - 1) * x / (float)(samples - 1)),
+                        Mathf.RoundToInt((tex.height - 1) * y / (float)(samples - 1)));
+                    var luminance = c.r * 0.2126f + c.g * 0.7152f + c.b * 0.0722f;
+                    min = Mathf.Min(min, luminance);
+                    max = Mathf.Max(max, luminance);
+                }
+            }
+            return max - min > 0.02f;
+        }
+
+        private static bool PngHasVisualVariance(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0) return false;
+            var tex = new Texture2D(2, 2, TextureFormat.RGB24, false);
+            try
+            {
+                return ImageConversion.LoadImage(tex, bytes, false) && TextureHasVisualVariance(tex);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(tex);
+            }
+        }
+
+        private static bool SceneHasVisibleUi()
+        {
+            return UnityEngine.Object.FindObjectsOfType<Canvas>()
+                .Any(canvas => canvas != null && canvas.isActiveAndEnabled
+                    && canvas.GetComponentsInChildren<Graphic>(false)
+                        .Any(graphic => graphic != null && graphic.isActiveAndEnabled && graphic.color.a > 0.01f));
         }
 
         private static void EnsurePreviewCamera()
@@ -1245,43 +1461,102 @@ namespace Indey.UIPrefabBuilder.Skills
             }
         }
 
+        private static void ResolveScreenshotSize(JObject args, out int width, out int height)
+        {
+            var cfg = ProjectConfig.Current;
+            int designW = cfg?.basicInfo?.designWidth > 0 ? cfg.basicInfo.designWidth : 1080;
+            int designH = cfg?.basicInfo?.designHeight > 0 ? cfg.basicInfo.designHeight : 1920;
+
+            const int maxLong = 1080;
+            float scale = 1f;
+            int longSide = Math.Max(designW, designH);
+            if (longSide > maxLong) scale = maxLong / (float)longSide;
+
+            int defaultW = Mathf.Max(64, Mathf.RoundToInt(designW * scale));
+            int defaultH = Mathf.Max(64, Mathf.RoundToInt(designH * scale));
+
+            width = args["width"] != null ? Int(args, "width", defaultW) : defaultW;
+            height = args["height"] != null ? Int(args, "height", defaultH) : defaultH;
+            width = Mathf.Clamp(width, 64, 4096);
+            height = Mathf.Clamp(height, 64, 4096);
+        }
+
+        private static void DeleteScreenshotIfExists(string absolutePath)
+        {
+            try
+            {
+                if (File.Exists(absolutePath))
+                {
+                    File.Delete(absolutePath);
+                    var meta = absolutePath + ".meta";
+                    if (File.Exists(meta)) File.Delete(meta);
+                }
+            }
+            catch { }
+        }
+
         private string DoTakeScreenshot(JObject args)
         {
             var filename = Str(args, "filename", "screenshot");
-            var width = Int(args, "width", 540);
-            var height = Int(args, "height", 960);
+            ResolveScreenshotSize(args, out var width, out var height);
 
             try
             {
                 EnsurePreviewCamera();
 
                 int actualW = width, actualH = height;
+                string capturePath = null;
 
-                var bytes = TryCaptureGameViewRT(out actualW, out actualH);
+                // Primary: temporary ScreenSpaceCamera render (captures Overlay UI reliably).
+                var bytes = CaptureUiViaCamera(width, height, out actualW, out actualH);
+                if (bytes != null) capturePath = "camera";
 
+                // Secondary: GameView RT (may be stale on Unity 2021.3 — only accept if non-uniform).
                 if (bytes == null)
                 {
-                    bytes = FallbackCameraRender(width, height);
-                    actualW = width;
-                    actualH = height;
+                    var gvBytes = TryCaptureGameViewRT(out actualW, out actualH);
+                    if (gvBytes != null && PngHasVisualVariance(gvBytes))
+                    {
+                        bytes = gvBytes;
+                        capturePath = "gameview";
+                    }
                 }
-
-                if (bytes == null)
-                    return Error("Screenshot failed: Game View not available and no camera found.");
 
                 var screenshotDir = Path.Combine(Application.dataPath, "Screenshots");
                 if (!Directory.Exists(screenshotDir)) Directory.CreateDirectory(screenshotDir);
                 var filePath = Path.Combine(screenshotDir, filename + ".png");
+                var assetPath = $"Assets/Screenshots/{filename}.png";
+
+                if (bytes == null || !PngHasVisualVariance(bytes))
+                {
+                    DeleteScreenshotIfExists(filePath);
+                    AssetDatabase.Refresh();
+                    var reason = SceneHasVisibleUi()
+                        ? "Screenshot capture is nearly uniform even though visible UI Graphics exist. " +
+                          "Do not analyze any previous file at this path — retake after fixing capture, or inspect hierarchy."
+                        : "Screenshot capture failed (no non-uniform image). Ensure a Canvas with visible UI exists.";
+                    return new JObject
+                    {
+                        ["success"] = false,
+                        ["error"] = reason,
+                        ["validCapture"] = false
+                    }.ToString();
+                }
+
                 File.WriteAllBytes(filePath, bytes);
                 AssetDatabase.Refresh();
 
+                var captureId = Guid.NewGuid().ToString("N");
                 var result = new JObject
                 {
                     ["success"] = true,
-                    ["message"] = $"Screenshot saved to Assets/Screenshots/{filename}.png ({actualW}x{actualH})",
-                    ["filePath"] = $"Assets/Screenshots/{filename}.png",
+                    ["message"] = $"Screenshot saved to {assetPath} ({actualW}x{actualH}, via {capturePath})",
+                    ["filePath"] = assetPath,
                     ["width"] = actualW,
-                    ["height"] = actualH
+                    ["height"] = actualH,
+                    ["captureId"] = captureId,
+                    ["validCapture"] = true,
+                    ["capturePath"] = capturePath
                 };
 
                 if (BuilderSettings.Get().SupportsVision)
@@ -1321,11 +1596,23 @@ namespace Indey.UIPrefabBuilder.Skills
             }
 
             var bytes = File.ReadAllBytes(fullPath);
+            if (!PngHasVisualVariance(bytes))
+            {
+                return new JObject
+                {
+                    ["success"] = false,
+                    ["error"] = $"Screenshot at '{path}' is nearly uniform (blank/gray) and cannot be used for visual verification. " +
+                        "Call `take_screenshot` again and only analyze a capture that returns success=true / validCapture=true. " +
+                        "Do NOT claim Matches against a blank image."
+                }.ToString();
+            }
+
             var base64 = Convert.ToBase64String(bytes);
             var imageUrl = $"data:image/png;base64,{base64}";
 
             var images = new JArray { imageUrl };
             bool hasRef = false;
+            string framingNote = null;
 
             if (!string.IsNullOrEmpty(refPath))
             {
@@ -1335,6 +1622,7 @@ namespace Indey.UIPrefabBuilder.Skills
                     var refBytes = File.ReadAllBytes(refFullPath);
                     images.Add($"data:image/png;base64,{Convert.ToBase64String(refBytes)}");
                     hasRef = true;
+                    framingNote = BuildFramingNote(bytes, refBytes);
                 }
             }
 
@@ -1348,6 +1636,12 @@ namespace Indey.UIPrefabBuilder.Skills
             else if (hasRef)
             {
                 message = "Compare the current UI build (Image 1) against the design mockup (Image 2). "
+                    + "HARD RULE: If Image 1 is blank, nearly solid gray/black, or does not show the built UI, "
+                    + "report CAPTURE FAILURE immediately and do NOT claim Matches for any category.\n"
+                    + "FIRST, list every element you can actually SEE in Image 1 (icons, check marks, labels, frames). "
+                    + "Anything you cannot see in Image 1 is MISSING, even if you created it earlier — "
+                    + "never describe an element from your build plan as if it were rendered.\n"
+                    + (framingNote != null ? framingNote + "\n" : "")
                     + "For EACH of the following categories, state whether it matches or list the specific difference:\n"
                     + "1. **Background/Frame**: Is the popup background sprite correct? Are decorative borders visible?\n"
                     + "2. **Header/Title bar**: Is there a colored banner behind the title? Does the text have outline/shadow?\n"
@@ -1357,11 +1651,15 @@ namespace Indey.UIPrefabBuilder.Skills
                     + "6. **Spacing & alignment**: Are margins, paddings, and element gaps proportionally correct?\n"
                     + "7. **Close button**: Is it positioned and styled as shown in the design?\n"
                     + "8. **Overlay/Dimming**: Is the background overlay present if shown in the design?\n\n"
-                    + "For each mismatch, describe the fix needed (e.g. 'Header needs a blue banner Image behind the title text').";
+                    + "For each mismatch, describe the fix needed (e.g. 'Header needs a blue banner Image behind the title text').\n\n"
+                    + "THEN call `report_visual_verdict` with screenshotPath='" + path + "', matches, "
+                    + "visibleElements (what you actually see in Image 1), missingElements and mismatches.";
             }
             else
             {
-                message = "Analyze this UI screenshot for visual quality. Check:\n"
+                message = "Analyze this UI screenshot for visual quality. "
+                    + "HARD RULE: If the image is blank/nearly solid gray, report CAPTURE FAILURE — do not invent layout observations.\n"
+                    + "Check:\n"
                     + "1. Layout alignment and spacing consistency\n"
                     + "2. Text readability (overlap, truncation, color contrast)\n"
                     + "3. Missing or broken sprites\n"
@@ -1376,8 +1674,287 @@ namespace Indey.UIPrefabBuilder.Skills
                 ["success"] = true,
                 ["message"] = message,
                 ["_multimodal"] = true,
-                ["_images"] = images
+                ["_images"] = images,
+                ["validCapture"] = true,
+                ["_hint"] = "success=true only means the image was delivered — it is NOT a passing verdict. " +
+                    "After you have looked at the image you MUST call `report_visual_verdict` for this exact screenshotPath."
             }.ToString();
+        }
+
+        /// <summary>
+        /// Structured outcome of a visual comparison. `analyze_screenshot` only proves an image was
+        /// delivered to the model; this is where the model has to commit to what it actually saw, so
+        /// the completion gate can distinguish "verified" from "described from memory".
+        /// </summary>
+        private string DoReportVisualVerdict(JObject args)
+        {
+            var path = Str(args, "screenshotPath");
+            if (string.IsNullOrEmpty(path))
+                return Error("Missing 'screenshotPath'. Report the verdict for the screenshot you just analyzed.");
+
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            if (!File.Exists(Path.Combine(projectRoot, path)))
+                return Error($"Screenshot not found: {path}. Report the verdict for a screenshot that exists on disk.");
+
+            if (args["matches"] == null)
+                return Error("Missing 'matches'. State explicitly whether the build matches the design mockup.");
+
+            var matches = Bool(args, "matches");
+            var claims = ParseVisibleClaims(args["visibleElements"]);
+            var missing = StringList(args, "missingElements");
+            var mismatches = StringList(args, "mismatches");
+
+            if (claims.Count == 0)
+            {
+                return Error("'visibleElements' is empty or malformed. Each entry needs a label plus the normalized " +
+                    "bounding box (x, y, width, height in 0-1, top-left origin) where you SEE that element in the screenshot. " +
+                    "A verdict without located observations is not verification.");
+            }
+
+            if (matches && (missing.Count > 0 || mismatches.Count > 0))
+            {
+                return Error($"Contradictory verdict: matches=true but you listed {missing.Count} missing element(s) " +
+                    $"and {mismatches.Count} mismatch(es). Set matches=false and fix them, " +
+                    "or drop the entries if they are not real differences.");
+            }
+
+            var unsubstantiated = FindUnsubstantiatedClaims(Path.Combine(projectRoot, path), claims);
+            if (unsubstantiated.Count > 0)
+            {
+                return Error("These claimed elements are not detectable at the coordinates you gave — the region is " +
+                    "indistinguishable from its surroundings: " + string.Join("; ", unsubstantiated) + ". " +
+                    "Either give the correct bounding box, or move the entry to `missingElements` and set matches=false.");
+            }
+
+            if (matches)
+            {
+                var placeholders = FindUntexturedIconImages();
+                if (placeholders.Count > 0)
+                {
+                    return Error($"matches=true is rejected: {placeholders.Count} icon-sized Image(s) still have no sprite " +
+                        "and render as flat colour blocks — " + string.Join(", ", placeholders) + ". " +
+                        "A colour block is not the mockup's artwork. Assign the real sprites, " +
+                        "or set matches=false and list them in `mismatches`.");
+                }
+            }
+
+            var result = new JObject
+            {
+                ["success"] = true,
+                ["screenshotPath"] = path,
+                ["matches"] = matches,
+                ["visibleElements"] = new JArray(claims.Select(c => (JToken)c.Label)),
+                ["missingElements"] = new JArray(missing.Select(v => (JToken)v)),
+                ["mismatches"] = new JArray(mismatches.Select(v => (JToken)v))
+            };
+
+            result["message"] = matches
+                ? "Verdict recorded: build matches the design."
+                : $"Verdict recorded: {missing.Count} missing, {mismatches.Count} mismatched. " +
+                  "Fix ONLY these items — do not rebuild the UI from scratch — " +
+                  "then take_screenshot → analyze_screenshot → report_visual_verdict again.";
+
+            return result.ToString();
+        }
+
+        private struct VisibleClaim
+        {
+            public string Label;
+            public Rect Region;
+        }
+
+        private static List<VisibleClaim> ParseVisibleClaims(JToken token)
+        {
+            var claims = new List<VisibleClaim>();
+            var arr = token as JArray;
+            if (arr == null && token != null && token.Type == JTokenType.String)
+            {
+                // Some models send batch payloads as a JSON-encoded string.
+                try { arr = JArray.Parse(token.ToString()); } catch { }
+            }
+            if (arr == null) return claims;
+
+            foreach (var entry in arr)
+            {
+                if (!(entry is JObject obj)) continue;
+                var label = obj["label"]?.ToString();
+                if (string.IsNullOrWhiteSpace(label)) continue;
+                if (obj["x"] == null || obj["y"] == null || obj["width"] == null || obj["height"] == null) continue;
+
+                var region = new Rect(
+                    (float)obj["x"], (float)obj["y"],
+                    (float)obj["width"], (float)obj["height"]);
+                if (region.width <= 0.001f || region.height <= 0.001f) continue;
+
+                claims.Add(new VisibleClaim { Label = label.Trim(), Region = region });
+            }
+            return claims;
+        }
+
+        /// <summary>
+        /// Checks each claimed element against the pixels. A region counts as substantiated when it
+        /// either contains internal detail or clearly differs from the ring of pixels around it;
+        /// anything else means the model is describing something the screenshot does not show.
+        /// </summary>
+        private static List<string> FindUnsubstantiatedClaims(string screenshotFullPath, List<VisibleClaim> claims)
+        {
+            var failed = new List<string>();
+            var tex = LoadTextureFromFile(screenshotFullPath);
+            if (tex == null) return failed;
+
+            try
+            {
+                foreach (var claim in claims)
+                {
+                    if (claim.Region.x < -0.01f || claim.Region.y < -0.01f
+                        || claim.Region.xMax > 1.01f || claim.Region.yMax > 1.01f)
+                    {
+                        failed.Add($"{claim.Label} (bounding box outside the image)");
+                        continue;
+                    }
+
+                    if (!RegionIsDistinguishable(tex, claim.Region))
+                        failed.Add(claim.Label);
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(tex);
+            }
+            return failed;
+        }
+
+        private static bool RegionIsDistinguishable(Texture2D tex, Rect normalized)
+        {
+            // Normalized rects use a top-left origin; Texture2D sampling starts bottom-left.
+            int x0 = Mathf.Clamp(Mathf.RoundToInt(normalized.x * tex.width), 0, tex.width - 1);
+            int x1 = Mathf.Clamp(Mathf.RoundToInt(normalized.xMax * tex.width), x0 + 1, tex.width);
+            int yTop = Mathf.Clamp(Mathf.RoundToInt((1f - normalized.yMax) * tex.height), 0, tex.height - 1);
+            int yBottom = Mathf.Clamp(Mathf.RoundToInt((1f - normalized.y) * tex.height), yTop + 1, tex.height);
+
+            var inner = SampleRegion(tex, x0, yTop, x1, yBottom, out var innerRange);
+            if (innerRange > 0.05f) return true;
+
+            int padX = Mathf.Max(2, (x1 - x0) / 3);
+            int padY = Mathf.Max(2, (yBottom - yTop) / 3);
+            var outer = SampleRegion(tex,
+                Mathf.Max(0, x0 - padX), Mathf.Max(0, yTop - padY),
+                Mathf.Min(tex.width, x1 + padX), Mathf.Min(tex.height, yBottom + padY),
+                out _);
+
+            var diff = Mathf.Abs(inner.r - outer.r) + Mathf.Abs(inner.g - outer.g) + Mathf.Abs(inner.b - outer.b);
+            return diff > 0.06f;
+        }
+
+        private static Color SampleRegion(Texture2D tex, int x0, int y0, int x1, int y1, out float luminanceRange)
+        {
+            const int samples = 8;
+            float r = 0, g = 0, b = 0, min = 1f, max = 0f;
+            int count = 0;
+
+            for (int sy = 0; sy < samples; sy++)
+            {
+                for (int sx = 0; sx < samples; sx++)
+                {
+                    int px = Mathf.Clamp(x0 + (x1 - x0) * sx / (samples - 1), 0, tex.width - 1);
+                    int py = Mathf.Clamp(y0 + (y1 - y0) * sy / (samples - 1), 0, tex.height - 1);
+                    var c = tex.GetPixel(px, py);
+                    r += c.r; g += c.g; b += c.b;
+                    var luminance = c.r * 0.2126f + c.g * 0.7152f + c.b * 0.0722f;
+                    min = Mathf.Min(min, luminance);
+                    max = Mathf.Max(max, luminance);
+                    count++;
+                }
+            }
+
+            luminanceRange = max - min;
+            return count == 0 ? Color.black : new Color(r / count, g / count, b / count);
+        }
+
+        /// <summary>
+        /// Icon-sized Images without a sprite are the placeholder colour blocks that keep getting
+        /// reported as finished artwork. Large sprite-less Images are left alone — flat panels and
+        /// dimming overlays are legitimate.
+        /// </summary>
+        private static List<string> FindUntexturedIconImages()
+        {
+            const float iconMaxSize = 220f;
+            var names = new List<string>();
+
+            foreach (var canvas in UnityEngine.Object.FindObjectsOfType<Canvas>())
+            {
+                if (canvas == null || !canvas.isActiveAndEnabled) continue;
+                foreach (var img in canvas.GetComponentsInChildren<Image>(false))
+                {
+                    if (img == null || !img.isActiveAndEnabled) continue;
+                    if (img.sprite != null || img.color.a <= 0.01f) continue;
+
+                    var size = img.rectTransform.rect.size;
+                    if (size.x <= 1f || size.y <= 1f) continue;
+                    if (size.x > iconMaxSize || size.y > iconMaxSize) continue;
+
+                    names.Add(GetHierarchyPath(img.gameObject));
+                    if (names.Count >= 12) return names;
+                }
+            }
+            return names;
+        }
+
+        private static bool TryGetPngSize(byte[] bytes, out int width, out int height)
+        {
+            width = height = 0;
+            if (bytes == null || bytes.Length < 24) return false;
+            if (bytes[0] != 0x89 || bytes[1] != 0x50 || bytes[2] != 0x4E || bytes[3] != 0x47) return false;
+            // IHDR width/height are big-endian 32-bit ints at offsets 16 and 20.
+            width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+            height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+            return width > 0 && height > 0;
+        }
+
+        /// <summary>
+        /// The capture is a full-screen render at the project design resolution, while a mockup is
+        /// usually a crop of one popup. Without this note the model judges proportions against the
+        /// wrong frame and reports bogus spacing/size mismatches.
+        /// </summary>
+        private static string BuildFramingNote(byte[] shotBytes, byte[] refBytes)
+        {
+            if (!TryGetPngSize(shotBytes, out var sw, out var sh)) return null;
+            if (!TryGetPngSize(refBytes, out var rw, out var rh)) return null;
+
+            var shotAspect = sw / (float)sh;
+            var refAspect = rw / (float)rh;
+            var note = $"FRAMING: Image 1 is a full-screen capture ({sw}x{sh}, aspect {shotAspect:0.00}); " +
+                       $"Image 2 is the mockup ({rw}x{rh}, aspect {refAspect:0.00}).";
+
+            if (Mathf.Abs(shotAspect - refAspect) > 0.15f)
+            {
+                note += " The two frames differ, so do NOT judge by full-frame proportions: " +
+                        "compare the popup content itself (element order, sprites, colors, relative sizes inside the popup), " +
+                        "and ignore differences that only come from the surrounding screen area.";
+            }
+            return note;
+        }
+
+        private static List<string> StringList(JObject args, string key)
+        {
+            var list = new List<string>();
+            if (args[key] is JArray arr)
+            {
+                foreach (var token in arr)
+                {
+                    var s = token?.ToString();
+                    if (!string.IsNullOrWhiteSpace(s)) list.Add(s.Trim());
+                }
+                return list;
+            }
+
+            var raw = Str(args, key, null);
+            if (string.IsNullOrWhiteSpace(raw)) return list;
+            foreach (var part in raw.Split(','))
+            {
+                if (!string.IsNullOrWhiteSpace(part)) list.Add(part.Trim());
+            }
+            return list;
         }
 
         private static Texture2D LoadTextureFromFile(string fullPath)
@@ -1440,6 +2017,9 @@ namespace Indey.UIPrefabBuilder.Skills
             var code = Str(args, "code");
             if (string.IsNullOrWhiteSpace(code)) return Error("No code provided.");
 
+            var destructive = DescribeDestructiveCode(code);
+            if (destructive != null) return Error(destructive);
+
             CompileResult compileResult;
             try { compileResult = _compiler.CompileInternal(code); }
             catch (Exception e) { return Error($"Compile exception: {e.Message}"); }
@@ -1480,6 +2060,32 @@ namespace Indey.UIPrefabBuilder.Skills
             return actionResult.Success ? Ok(actionResult.Message ?? "Done.") : Error(actionResult.Message ?? "Unknown error.");
         }
 
+        /// <summary>
+        /// destroy_object refuses to delete prefab instances and populated Canvases; without this
+        /// check the same teardown just moves into execute_code and the guard means nothing.
+        /// Returns a refusal message, or null when the code is safe to run.
+        /// </summary>
+        private static string DescribeDestructiveCode(string code)
+        {
+            var destroyCalls = new[] { "DestroyImmediate", "Destroy(", "DestroyObject" };
+            foreach (var call in destroyCalls)
+            {
+                if (code.IndexOf(call, StringComparison.Ordinal) < 0) continue;
+                return $"execute_code must not delete GameObjects (found '{call}'). " +
+                    "Deleting and re-creating UI loses authored prefab art and repeatedly regresses the build. " +
+                    "Adjust the existing objects instead (set_rect_transform_batch / set_image_batch / set_text_properties_batch), " +
+                    "or use `destroy_object` if a specific object really must go — it enforces the prefab-instance guard.";
+            }
+
+            if (code.IndexOf("RemoveComponent", StringComparison.Ordinal) >= 0)
+            {
+                return "execute_code must not strip components off prefab instances (found 'RemoveComponent'). " +
+                    "Disable the behaviour instead, or fix the layout with the dedicated UI tools.";
+            }
+
+            return null;
+        }
+
         #endregion
 
         #region Asset Indexing
@@ -1510,7 +2116,7 @@ namespace Indey.UIPrefabBuilder.Skills
             catch { return Error("Invalid base64 image data."); }
 
             var topK = Int(args, "topK", 5);
-            var minConfidence = Float(args, "minConfidence", 0.5f);
+            var minConfidence = Float(args, "minConfidence", (float)ImageMatchConfidentScore);
 
             var results = indexer.QueryByImage(imageBytes, topK);
             if (results == null || results.Count == 0)
@@ -1518,19 +2124,7 @@ namespace Indey.UIPrefabBuilder.Skills
                     ["message"] = "No matching sprites found." }.ToString();
 
             var filtered = results.Where(r => r.score >= minConfidence).ToList();
-            var matchArr = new JArray();
-            foreach (var m in filtered)
-            {
-                var info = AssetFinder.GetInfo(m.assetPath);
-                matchArr.Add(new JObject
-                {
-                    ["assetPath"] = m.assetPath,
-                    ["guid"] = m.guid,
-                    ["confidence"] = Math.Round(m.confidence, 1),
-                    ["score"] = Math.Round(m.score, 4),
-                    ["assetInfo"] = info
-                });
-            }
+            var matchArr = BuildMatchArray(filtered);
 
             var imageMatchResult = new JObject
             {
@@ -1633,14 +2227,11 @@ namespace Indey.UIPrefabBuilder.Skills
             var arr = new JArray();
             foreach (var m in matches)
             {
-                var info = AssetFinder.GetInfo(m.assetPath);
                 arr.Add(new JObject
                 {
                     ["assetPath"] = m.assetPath,
-                    ["guid"] = m.guid,
                     ["confidence"] = Math.Round(m.confidence, 1),
-                    ["score"] = Math.Round(m.score, 4),
-                    ["assetInfo"] = info
+                    ["score"] = Math.Round(m.score, 4)
                 });
             }
             return arr;
@@ -1848,7 +2439,7 @@ namespace Indey.UIPrefabBuilder.Skills
             var width = Mathf.Clamp(Float(args, "width", 1f), 0.01f, 1f - x);
             var height = Mathf.Clamp(Float(args, "height", 1f), 0.01f, 1f - y);
             var topK = Int(args, "topK", 5);
-            var minConfidence = Float(args, "minConfidence", 0.5f);
+            var minConfidence = Float(args, "minConfidence", (float)ImageMatchConfidentScore);
 
             var tex = LoadDesignImageTexture(out var error);
             if (tex == null) return Error(error);
@@ -1898,7 +2489,7 @@ namespace Indey.UIPrefabBuilder.Skills
             if (regionsToken == null || regionsToken.Count == 0)
                 return Error("Missing or empty 'regions' array.");
 
-            var globalMinConfidence = Float(args, "minConfidence", 0.5f);
+            var globalMinConfidence = Float(args, "minConfidence", (float)ImageMatchConfidentScore);
 
             var tex = LoadDesignImageTexture(out var error);
             if (tex == null) return Error(error);
@@ -1992,19 +2583,7 @@ namespace Indey.UIPrefabBuilder.Skills
             }
 
             var filtered = results.Where(r => r.confidence >= minConfidence).ToList();
-            var matchArr = new JArray();
-            foreach (var m in filtered)
-            {
-                var info = AssetFinder.GetInfo(m.assetPath);
-                matchArr.Add(new JObject
-                {
-                    ["assetPath"] = m.assetPath,
-                    ["guid"] = m.guid,
-                    ["confidence"] = Math.Round(m.confidence, 1),
-                    ["score"] = Math.Round(m.score, 4),
-                    ["assetInfo"] = info
-                });
-            }
+            var matchArr = BuildMatchArray(filtered);
 
             var textMatchResult = new JObject
             {
@@ -2064,19 +2643,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 }
 
                 var filtered = results.Where(r => r.confidence >= globalMinConfidence).ToList();
-                var matchArr = new JArray();
-                foreach (var m in filtered)
-                {
-                    var info = AssetFinder.GetInfo(m.assetPath);
-                    matchArr.Add(new JObject
-                    {
-                        ["assetPath"] = m.assetPath,
-                        ["guid"] = m.guid,
-                        ["confidence"] = Math.Round(m.confidence, 1),
-                        ["score"] = Math.Round(m.score, 4),
-                        ["assetInfo"] = info
-                    });
-                }
+                var matchArr = BuildMatchArray(filtered);
 
                 var queryResultObj = new JObject
                 {

@@ -17,23 +17,64 @@ namespace Indey.UIPrefabBuilder.Skills
             i.color = color;
         }
 
-        public static void SetImageSprite(GameObject go, string path)
+        /// <summary>
+        /// 尝试按资源路径加载 Sprite，失败时给出可诊断的错误信息（区分"路径不存在"与
+        /// "资源存在但 TextureType 不是 Sprite"两种常见情况），避免静默赋 null 变成白方块。
+        /// 返回 null 表示成功（或 path 为空即无需加载），否则返回错误描述。
+        /// </summary>
+        public static string LoadSpriteOrError(string path, out Sprite sprite)
         {
-            var i = go?.GetComponent<Image>();
-            if (i == null) return;
-            Undo.RecordObject(i, "Sprite");
-            i.sprite = AssetDatabase.LoadAssetAtPath<Sprite>(path);
+            sprite = null;
+            if (string.IsNullOrEmpty(path)) return null;
+
+            sprite = AssetDatabase.LoadAssetAtPath<Sprite>(path);
+            if (sprite != null) return null;
+
+            var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+            if (tex != null)
+                return $"Asset at '{path}' exists but is NOT imported as a Sprite (its TextureImporter textureType is not 'Sprite'). Change the importer to Sprite, or choose a Sprite asset.";
+            return $"No Sprite found at asset path '{path}'. Verify the path is correct and the asset exists/imported.";
         }
 
-        public static void SetImageProperties(GameObject go, string spritePath, string type, string fillMethod,
-            float? fillAmount, bool? preserveAspect, Color? color)
+        public static string SetImageSprite(GameObject go, string path)
         {
+            var i = go?.GetComponent<Image>();
+            if (i == null) return "Target has no Image component.";
+            var err = LoadSpriteOrError(path, out var sp);
+            if (err != null) return err;
+            Undo.RecordObject(i, "Sprite");
+            i.sprite = sp;
+            return null;
+        }
+
+        /// <summary>
+        /// 写入 Image 属性。<paramref name="missingImage"/> 为 true 时表示目标根本没有 Image 组件
+        /// （调用方应视为失败），否则返回值仅描述 sprite 加载失败这类可继续的问题。
+        /// </summary>
+        public static string SetImageProperties(GameObject go, string spritePath, string type, string fillMethod,
+            float? fillAmount, bool? preserveAspect, Color? color, out bool missingImage)
+        {
+            missingImage = false;
             var img = go?.GetComponent<Image>();
-            if (img == null) return;
+            if (img == null)
+            {
+                missingImage = true;
+                return "Target has no Image component.";
+            }
             Undo.RecordObject(img, "Image Props");
 
+            string spriteErr = null;
             if (!string.IsNullOrEmpty(spritePath))
-                img.sprite = AssetDatabase.LoadAssetAtPath<Sprite>(spritePath);
+            {
+                spriteErr = LoadSpriteOrError(spritePath, out var sp);
+                if (spriteErr == null)
+                {
+                    img.sprite = sp;
+                    // Image.color multiplies the sprite pixels. Buttons are created with a blue
+                    // default tint, which turns an assigned yellow sprite green unless reset.
+                    if (!color.HasValue) img.color = Color.white;
+                }
+            }
 
             if (!string.IsNullOrEmpty(type) && Enum.TryParse<Image.Type>(type, true, out var imgType))
                 img.type = imgType;
@@ -49,6 +90,8 @@ namespace Indey.UIPrefabBuilder.Skills
 
             if (color.HasValue)
                 img.color = color.Value;
+
+            return spriteErr;
         }
 
         public static void SetText(GameObject go, string text)
@@ -115,27 +158,29 @@ namespace Indey.UIPrefabBuilder.Skills
 
                 if (!string.IsNullOrEmpty(alignment))
                 {
-                    var alignEnumType = t.Assembly.GetType("TMPro.TextAlignmentOptions");
-                    if (alignEnumType != null)
+                    var alignmentProp = t.GetProperty("alignment");
+                    if (alignmentProp != null && alignmentProp.PropertyType.IsEnum)
                     {
                         var mapped = MapTMPAlignment(alignment);
-                        if (Enum.TryParse(alignEnumType, mapped, true, out var alignVal))
-                            SetReflectionProp(c, "alignment", alignVal);
+                        if (Enum.TryParse(alignmentProp.PropertyType, mapped, true, out var alignVal))
+                            alignmentProp.SetValue(c, alignVal);
                     }
                 }
 
                 if (!string.IsNullOrEmpty(fontStyle))
                 {
-                    var styleEnumType = t.Assembly.GetType("TMPro.FontStyles");
-                    if (styleEnumType != null && Enum.TryParse(styleEnumType, fontStyle, true, out var styleVal))
-                        SetReflectionProp(c, "fontStyle", styleVal);
+                    var styleProp = t.GetProperty("fontStyle");
+                    if (styleProp != null && styleProp.PropertyType.IsEnum
+                        && Enum.TryParse(styleProp.PropertyType, fontStyle, true, out var styleVal))
+                        styleProp.SetValue(c, styleVal);
                 }
 
                 if (!string.IsNullOrEmpty(overflow))
                 {
-                    var overflowEnumType = t.Assembly.GetType("TMPro.TextOverflowModes");
-                    if (overflowEnumType != null && Enum.TryParse(overflowEnumType, overflow, true, out var ovVal))
-                        SetReflectionProp(c, "overflowMode", ovVal);
+                    var overflowProp = t.GetProperty("overflowMode");
+                    if (overflowProp != null && overflowProp.PropertyType.IsEnum
+                        && Enum.TryParse(overflowProp.PropertyType, overflow, true, out var ovVal))
+                        overflowProp.SetValue(c, ovVal);
                 }
 
                 ForceTMPMeshUpdate(c);

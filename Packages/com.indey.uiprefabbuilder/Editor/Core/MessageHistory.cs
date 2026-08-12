@@ -221,6 +221,10 @@ namespace Indey.UIPrefabBuilder.Core
             {
                 var obj = Newtonsoft.Json.Linq.JObject.Parse(result);
 
+                var compactVisualResult = CompactVisualSearchResult(obj, maxChars);
+                if (compactVisualResult != null)
+                    return compactVisualResult;
+
                 var assetsArr = obj["assets"] as Newtonsoft.Json.Linq.JArray;
                 if (assetsArr != null && assetsArr.Count > 20)
                 {
@@ -256,6 +260,79 @@ namespace Indey.UIPrefabBuilder.Core
             return result.Substring(0, maxChars) + "... (truncated)";
         }
 
+        /// <summary>
+        /// Keeps every visual-search query/region while retaining only the most useful matches.
+        /// This avoids cutting the JSON in the middle and hiding later regions from the model.
+        /// </summary>
+        private static string CompactVisualSearchResult(Newtonsoft.Json.Linq.JObject source, int maxChars)
+        {
+            if (!(source["results"] is Newtonsoft.Json.Linq.JArray results)) return null;
+            if (!results.Any(IsVisualSearchResultItem)) return null;
+
+            for (int matchesPerItem = 3; matchesPerItem >= 1; matchesPerItem--)
+            {
+                var compact = new Newtonsoft.Json.Linq.JObject
+                {
+                    ["success"] = source["success"] ?? true
+                };
+                if (source["totalRegions"] != null) compact["totalRegions"] = source["totalRegions"];
+                if (source["totalQueries"] != null) compact["totalQueries"] = source["totalQueries"];
+
+                var compactResults = new Newtonsoft.Json.Linq.JArray();
+                foreach (var token in results)
+                {
+                    if (!(token is Newtonsoft.Json.Linq.JObject item)) continue;
+                    compactResults.Add(CompactVisualSearchItem(item, matchesPerItem));
+                }
+
+                compact["results"] = compactResults;
+                if (results.OfType<Newtonsoft.Json.Linq.JObject>().Any(
+                    item => item["lowConfidence"] != null && (bool)item["lowConfidence"]))
+                    compact["_hint"] = "One or more best matches have low confidence; do not apply them as reliable visual matches.";
+                compact["_compacted"] = $"Preserved all {compactResults.Count} results with top {matchesPerItem} match(es) each.";
+                var json = compact.ToString(Newtonsoft.Json.Formatting.None);
+                if (json.Length <= maxChars) return json;
+            }
+
+            return null;
+        }
+
+        private static bool IsVisualSearchResultItem(Newtonsoft.Json.Linq.JToken token)
+        {
+            if (!(token is Newtonsoft.Json.Linq.JObject item)) return false;
+            return item["matches"] is Newtonsoft.Json.Linq.JArray
+                && (item["label"] != null || item["query"] != null);
+        }
+
+        private static Newtonsoft.Json.Linq.JObject CompactVisualSearchItem(
+            Newtonsoft.Json.Linq.JObject item, int matchesPerItem)
+        {
+            var compact = new Newtonsoft.Json.Linq.JObject();
+            if (item["label"] != null) compact["label"] = item["label"];
+            if (item["query"] != null) compact["query"] = item["query"];
+            if (item["error"] != null) compact["error"] = item["error"];
+            if (item["lowConfidence"] != null) compact["lowConfidence"] = item["lowConfidence"];
+
+            var matches = new Newtonsoft.Json.Linq.JArray();
+            if (item["matches"] is Newtonsoft.Json.Linq.JArray sourceMatches)
+            {
+                foreach (var matchToken in sourceMatches.Take(matchesPerItem))
+                {
+                    if (!(matchToken is Newtonsoft.Json.Linq.JObject match)) continue;
+                    var compactMatch = new Newtonsoft.Json.Linq.JObject();
+                    if (match["assetPath"] != null) compactMatch["assetPath"] = match["assetPath"];
+                    if (match["score"] != null) compactMatch["score"] = match["score"];
+                    if (match["confidence"] != null) compactMatch["confidence"] = match["confidence"];
+                    if (match["lowConfidence"] != null) compactMatch["lowConfidence"] = match["lowConfidence"];
+                    matches.Add(compactMatch);
+                }
+            }
+
+            compact["count"] = matches.Count;
+            compact["matches"] = matches;
+            return compact;
+        }
+
         private void CompressIfNeeded()
         {
             DegradeOldImages();
@@ -268,11 +345,26 @@ namespace Indey.UIPrefabBuilder.Core
                 if (_messages[i].Role != ChatRole.Tool) continue;
                 if (_messages[i].Content.Length <= 200) continue;
                 if (_messages[i].HasMultimodalContent) continue;
+                if (IsCompactVisualSearchResult(_messages[i].Content)) continue;
 
                 _messages[i].Content = SummarizeToolResult(_messages[i].Content);
                 _messages[i].ContentParts = null;
 
                 if (_messages.Count <= SoftLimit) return;
+            }
+        }
+
+        private static bool IsCompactVisualSearchResult(string result)
+        {
+            try
+            {
+                var obj = Newtonsoft.Json.Linq.JObject.Parse(result);
+                if (!(obj["results"] is Newtonsoft.Json.Linq.JArray results)) return false;
+                return results.Any(IsVisualSearchResultItem);
+            }
+            catch
+            {
+                return false;
             }
         }
 

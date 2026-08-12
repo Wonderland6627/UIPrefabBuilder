@@ -33,8 +33,28 @@ namespace Indey.UIPrefabBuilder.Core
         private bool _searchBudgetWarningInjected;
         private int _postBuildSearchSteps;
         private bool _postBuildNudgeInjected;
-        private bool _visualVerifyNudgeInjected;
+        // Reminders that only push the agent through the capture → analyze → verdict protocol are
+        // budgeted separately from the fix rounds, so protocol chatter can never eat the budget that
+        // exists for actually correcting the UI.
+        private int _protocolNudgeCount;
+        private const int MaxProtocolNudges = 12;
+        private int _emptyResponseNudgeCount;
+        private const int MaxEmptyResponseNudges = 2;
+        // Fix reminders injected since the last tool call. Reset by any tool activity, so this only
+        // grows while the model answers with plain text and ignores the instruction.
+        private int _consecutiveFixNudges;
+        private const int MaxConsecutiveFixNudges = 2;
         private bool _didAnalyzeScreenshot;
+        private string _latestScreenshotPath;
+        private string _latestCaptureId;
+        private string _lastAnalyzedScreenshotPath;
+        private bool _screenshotCaptureFailed;
+        private string _verdictScreenshotPath;
+        private bool _verdictMatches;
+        private string _verdictIssues;
+        private int _verdictFixRounds;
+        private bool _unresolvedSummaryRequested;
+        private const int MaxVerdictFixRounds = 3;
         private readonly Dictionary<string, string> _searchCache = new Dictionary<string, string>();
         private const int HardCap = 500;
         private const int MaxConsecutiveEmptySearches = 6;
@@ -148,7 +168,6 @@ namespace Indey.UIPrefabBuilder.Core
             ConsoleLogger.Log($"=== NEW TASK (with {imagePaths.Count} image(s)) ===");
             ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
             ConsoleLogger.Log($"[Config] tools={_toolRegistry.Definitions.Count}");
-            ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
             ConsoleLogger.LogBlock("USER_REQUEST", textContent + $"\n[Attached: {imagePaths.Count} image(s)]");
 
             _cts?.Cancel();
@@ -187,6 +206,7 @@ namespace Indey.UIPrefabBuilder.Core
             DesignImageContext.CurrentAssetPath = _designImageAssetPath;
             TryFillDesignImageSize(_designImagePath, _designImageAssetPath);
             RebuildSystemPrompt(); // refresh with design-mockup-aware Verify / Analysis sections
+            ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
 
             var meta = BuildDesignImageMetaBlock();
             if (!string.IsNullOrEmpty(meta))
@@ -362,6 +382,13 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine("- `add_horizontal_layout` / `add_vertical_layout` for automatic child arrangement");
                 sb.AppendLine("- Call multiple independent tools in the same step (parallel)");
                 sb.AppendLine();
+                sb.AppendLine("#### MANDATORY STYLING RULES (do NOT rely on defaults)");
+                sb.AppendLine("- TEXT ALIGNMENT: newly created text defaults to left/top-left. For EVERY visible text you MUST set `alignment` explicitly via `set_text_properties(_batch)` — titles and button labels are almost always `Center`. Never leave a heading or button label unaligned.");
+                sb.AppendLine("- FONT HIERARCHY: set `fontSize` per role (title > body > caption) and use `fontStyle=Bold` for titles/labels. Do not leave everything at the default size.");
+                sb.AppendLine("- BUTTON/PANEL BACKGROUNDS: a freshly created button is a flat solid-color rectangle. You MUST assign a real background sprite via `set_image(_batch)` and set `type=Sliced` for 9-slice frames so corners are not stretched. If no sprite exists, tint the color to match the mockup — never ship the default blue.");
+                sb.AppendLine("- SPRITE FAILURES ARE NOT SILENT: if `create_image`/`set_image`/`set_image_sprite` returns a `warning`/`error` about the sprite (path wrong, or asset not imported as Sprite), the element is now a blank/white box. Fix the path or pick another sprite and retry — do NOT proceed as if it succeeded.");
+                sb.AppendLine("- TEXT EFFECTS: for titles and button labels over colored backgrounds, add Outline/Shadow via `add_outline(_batch)` when the mockup shows an outline or drop shadow.");
+                sb.AppendLine();
                 sb.AppendLine("### Phase 3: Verify (MANDATORY)");
                 if (_settings.SupportsVision)
                 {
@@ -369,8 +396,13 @@ namespace Indey.UIPrefabBuilder.Core
                     if (forceVisual)
                     {
                         sb.AppendLine("- Visual Verification is ON for this design-mockup task.");
-                        sb.AppendLine("- Before delivery you MUST: `take_screenshot` → `analyze_screenshot` (design reference is auto-injected) and fix mismatches.");
-                        sb.AppendLine("- Do not claim completion until at least one screenshot comparison has been done after building.");
+                        sb.AppendLine("- Before delivery you MUST complete this chain on the SAME image: `take_screenshot` → `analyze_screenshot` (design reference is auto-injected) → `report_visual_verdict`.");
+                        sb.AppendLine("- `analyze_screenshot` returning success=true only means the image was delivered. It is NOT a passing verdict — the task cannot finish until `report_visual_verdict` covers your latest capture.");
+                        sb.AppendLine("- `report_visual_verdict` must describe what the image ACTUALLY shows, and every `visibleElements` entry needs the bounding box where you see it. Those pixels are sampled: a claim about a region that looks like plain background is rejected. An element you created but cannot see is `missingElements`, never `visibleElements`.");
+                        sb.AppendLine("- matches=true is also rejected while icon-sized Images still have no sprite. A flat green/pink/blue square is a PLACEHOLDER, not the mockup's check mark or gender icon — say so instead of counting it as done.");
+                        sb.AppendLine("- If the verdict is matches=false, fix ONLY the listed items and repeat the chain. Do NOT delete and rebuild the UI: every rebuild so far has lost artwork and made the result worse. Missing icons almost always mean a failed sprite assignment, a zero-size RectTransform, or an element covered by a later sibling — inspect before re-styling.");
+                        sb.AppendLine("- If `take_screenshot` returns success=false / validCapture=false, the capture FAILED — do NOT call analyze on any old file at that path. Retake until success=true.");
+                        sb.AppendLine("- Your final summary must match the last verified screenshot. Never list an element as delivered when your own verdict marked it missing; state remaining problems openly instead.");
                     }
                     else
                     {
@@ -380,7 +412,7 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine("- When the user provides a design mockup, use `analyze_screenshot` with `referenceImagePath` to compare side-by-side");
                         sb.AppendLine("- Fix issues found, then take one more screenshot to confirm");
                     }
-                    sb.AppendLine("- `take_screenshot` automatically ensures a Camera and EventSystem exist in the scene — NEVER write `execute_code` to create/fix cameras, Canvas render mode, clearFlags, or cullingMask. If a screenshot still looks wrong, the cause is UI layout (RectTransform/anchors/Canvas Scaler design resolution) or missing sprites, NOT the render pipeline — use `inspect_hierarchy`/`inspect_components` to debug instead of repeated camera experiments.");
+                    sb.AppendLine("- `take_screenshot` automatically ensures a Camera and EventSystem exist, and temporarily forces hidden CanvasGroups, intro Animators and zeroed scales into a visible state for the capture — NEVER modify a prefab instance to make a screenshot work, and never write `execute_code` for cameras, Canvas render mode, clearFlags, or cullingMask. If a capture still fails, the cause is UI layout or missing sprites — use `inspect_hierarchy`/`inspect_components` to debug.");
                 }
                 else
                 {
@@ -491,8 +523,10 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine("   - Use `search_assets` / `search_assets_glob` to find sprites by filename patterns.");
                     }
                     sb.AppendLine("   - Fall back to `search_assets_glob` if no good match is found in the visual index.");
+                    sb.AppendLine("   - **EXISTING PREFAB FIRST**: if search finds a highly name-related UI prefab (e.g. `UIChangeNameGender`, `*ChangeName*`, `*Share*`), prefer `instantiate_prefab` then adjust layout/sprites to the mockup. Do NOT ignore a near-exact prefab and rebuild from scratch.");
+                    sb.AppendLine("   - Once instantiated, KEEP it: adjust the instance in place. Deleting the prefab instance (or the Canvas) to hand-build a replacement throws away authored art you cannot reproduce, and `destroy_object` will refuse it.");
                     sb.AppendLine("5. **Build UI**: Use `create_batch` then `set_rect_transform_batch` with the mapped coordinates. Prefer explicit RectTransform sizing over LayoutGroups for design fidelity. If you must use LayoutGroup, set childForceExpandWidth/Height to false.");
-                    sb.AppendLine("6. **Verify**: `take_screenshot` → `analyze_screenshot` (with `referenceImagePath` pointing to the user's mockup) to compare side-by-side. Fix discrepancies.");
+                    sb.AppendLine("6. **Verify**: `take_screenshot` → `analyze_screenshot` (with `referenceImagePath` pointing to the user's mockup) to compare side-by-side. Fix discrepancies. Only success=true captures count.");
                     sb.AppendLine();
 
                     sb.AppendLine("## VISUAL FIDELITY CHECKLIST");
@@ -583,8 +617,19 @@ namespace Indey.UIPrefabBuilder.Core
             _searchBudgetWarningInjected = false;
             _postBuildSearchSteps = 0;
             _postBuildNudgeInjected = false;
-            _visualVerifyNudgeInjected = false;
+            _protocolNudgeCount = 0;
+            _consecutiveFixNudges = 0;
+            _emptyResponseNudgeCount = 0;
             _didAnalyzeScreenshot = false;
+            _latestScreenshotPath = null;
+            _latestCaptureId = null;
+            _lastAnalyzedScreenshotPath = null;
+            _screenshotCaptureFailed = false;
+            _verdictScreenshotPath = null;
+            _verdictMatches = false;
+            _verdictIssues = null;
+            _verdictFixRounds = 0;
+            _unresolvedSummaryRequested = false;
             _searchCache.Clear();
             _consecutiveCameraAttempts = 0;
             _consecutiveSingleSearchCalls = 0;
@@ -721,16 +766,30 @@ namespace Indey.UIPrefabBuilder.Core
             }
             else
             {
-                // Force visual verification once before allowing completion on design-mockup builds
-                if (ShouldForceVisualVerification())
+                // Force visual verification before allowing completion on design-mockup builds
+                var gateNudge = BuildVisualGateNudge(out var isProtocolNudge);
+                if (gateNudge != null)
                 {
-                    _visualVerifyNudgeInjected = true;
+                    if (isProtocolNudge) _protocolNudgeCount++;
+                    else _consecutiveFixNudges++;
                     _history.AddAssistant(response.Content);
+                    _history.AddUser(gateNudge);
+                    ConsoleLogger.Log($"[Agent] Visual gate ({(isProtocolNudge ? $"protocol {_protocolNudgeCount}/{MaxProtocolNudges}" : $"fix round {_verdictFixRounds}/{MaxVerdictFixRounds}")}): {gateNudge}");
+                    TransitionTo(AgentState.Thinking);
+                    return;
+                }
+
+                // An empty response (no tool calls AND no text) is a model hiccup, not a real
+                // completion signal — Gemini occasionally emits it mid-build. Nudge it to continue
+                // or produce a proper summary instead of silently ending the task.
+                if (string.IsNullOrWhiteSpace(response.Content) && _emptyResponseNudgeCount < MaxEmptyResponseNudges)
+                {
+                    _emptyResponseNudgeCount++;
                     _history.AddUser(
-                        "VISUAL VERIFICATION REQUIRED before finishing: you built UI from a design mockup but have not completed screenshot comparison. " +
-                        "Call `take_screenshot` then `analyze_screenshot` now (design reference is auto-injected). " +
-                        "Fix any mismatches found, then you may summarize and finish.");
-                    ConsoleLogger.Log("[Agent] Forced visual verification nudge (design mockup build without analyze_screenshot).");
+                        "Your last message was EMPTY (no tool calls, no text). This is not a valid way to finish. " +
+                        "If the task is NOT complete, continue with the next tool call now. " +
+                        "If it IS complete, reply with a brief text summary of what you built and any known issues.");
+                    ConsoleLogger.Log($"[Agent] Empty response nudge #{_emptyResponseNudgeCount} (no tools, no content).");
                     TransitionTo(AgentState.Thinking);
                     return;
                 }
@@ -748,18 +807,145 @@ namespace Indey.UIPrefabBuilder.Core
             }
         }
 
-        private bool ShouldForceVisualVerification()
+        /// <summary>
+        /// Stores a verdict that covers the latest capture. Returns false when the verdict is about an
+        /// older screenshot, so the caller can turn the tool result into a visible rejection.
+        /// </summary>
+        private bool RecordVisualVerdict(JObject resultObj)
         {
-            if (_visualVerifyNudgeInjected) return false;
-            if (!_settings.SupportsVision || !_settings.EnableVisualVerification) return false;
-            if (string.IsNullOrEmpty(_designImageAssetPath)) return false;
-            if (_totalBuildSteps <= 0) return false;
-            if (_didAnalyzeScreenshot) return false;
+            var path = resultObj["screenshotPath"]?.ToString();
+            var matches = resultObj["matches"]?.Value<bool>() ?? false;
+
+            // Only a verdict about the latest capture can clear the gate; an older path proves nothing
+            // about the current scene.
+            if (string.IsNullOrEmpty(_latestScreenshotPath)
+                || !string.Equals(path, _latestScreenshotPath, StringComparison.OrdinalIgnoreCase))
+            {
+                _verdictScreenshotPath = null;
+                _verdictMatches = false;
+                return false;
+            }
+
+            _verdictScreenshotPath = path;
+            _verdictMatches = matches;
+
+            var issues = new List<string>();
+            foreach (var key in new[] { "missingElements", "mismatches" })
+            {
+                if (!(resultObj[key] is JArray arr)) continue;
+                foreach (var token in arr)
+                {
+                    var s = token?.ToString();
+                    if (!string.IsNullOrWhiteSpace(s)) issues.Add(s);
+                }
+            }
+
+            if (!matches)
+            {
+                _verdictFixRounds++;
+                _verdictIssues = issues.Count > 0 ? string.Join("; ", issues) : null;
+            }
+
+            ConsoleLogger.Log($"[Agent] Visual verdict: matches={matches}, issues={issues.Count}, round={_verdictFixRounds}.");
             return true;
+        }
+
+        /// <summary>Reads a single string argument out of a tool-call payload, or null when unavailable.</summary>
+        private static string ReadArgument(string argumentsJson, string key)
+        {
+            try { return JObject.Parse(argumentsJson ?? "{}")[key]?.ToString(); }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Returns the message to inject instead of completing, or null when the build may finish.
+        /// The gate walks the chain capture → analyze → verdict, because a successful analyze_screenshot
+        /// only proves an image was delivered, not that the result actually resembles the mockup.
+        /// </summary>
+        private string BuildVisualGateNudge(out bool isProtocolNudge)
+        {
+            isProtocolNudge = true;
+            if (!_settings.SupportsVision || !_settings.EnableVisualVerification) return null;
+            if (string.IsNullOrEmpty(_designImageAssetPath)) return null;
+            if (_totalBuildSteps <= 0) return null;
+
+            var protocolGap = DescribeProtocolGap();
+            if (protocolGap != null)
+            {
+                if (_protocolNudgeCount < MaxProtocolNudges) return protocolGap;
+                return BuildHonestSummaryDemand(
+                    $"the verification chain never completed after {MaxProtocolNudges} reminders");
+            }
+
+            isProtocolNudge = false;
+
+            if (!_verdictMatches && _verdictFixRounds < MaxVerdictFixRounds)
+            {
+                // Fix rounds only advance when a new verdict arrives, so without this the same
+                // instruction is re-injected forever whenever the model keeps answering with plain
+                // text. Give up after a couple of ignored attempts instead of spinning to the step cap.
+                if (_consecutiveFixNudges >= MaxConsecutiveFixNudges)
+                    return BuildHonestSummaryDemand("you stopped again without re-running the verification chain after the fix instructions");
+
+                return "Your own verdict says the build does NOT match the design yet: " + (_verdictIssues ?? "see previous verdict") + ". " +
+                    "Fix ONLY those items with set_image_batch / set_rect_transform_batch / set_text_properties_batch — " +
+                    "do NOT rebuild the UI from scratch, earlier rebuilds made the result worse. " +
+                    "Missing icons usually mean the sprite failed to load, the element has zero size, or it is behind another element. " +
+                    "Then `take_screenshot` → `analyze_screenshot` → `report_visual_verdict` again.";
+            }
+
+            if (!_verdictMatches)
+                return BuildHonestSummaryDemand($"you have used all {MaxVerdictFixRounds} fix rounds and the build still does not match");
+
+            return null;
+        }
+
+        /// <summary>Missing link in the capture → analyze → verdict chain, or null when it is complete.</summary>
+        private string DescribeProtocolGap()
+        {
+            if (_screenshotCaptureFailed || string.IsNullOrEmpty(_latestScreenshotPath))
+            {
+                return "VISUAL VERIFICATION REQUIRED before finishing: you have no valid capture. " +
+                    "Call `take_screenshot` until it returns success=true / validCapture=true. " +
+                    "Gray/blank captures do NOT count and must never be analyzed.";
+            }
+
+            bool analyzedLatest = _didAnalyzeScreenshot
+                && string.Equals(_latestScreenshotPath, _lastAnalyzedScreenshotPath, StringComparison.OrdinalIgnoreCase);
+            if (!analyzedLatest)
+            {
+                return $"VISUAL VERIFICATION REQUIRED before finishing: call `analyze_screenshot` on '{_latestScreenshotPath}' " +
+                    "(your latest capture) with referenceImagePath set to the design mockup.";
+            }
+
+            if (!string.Equals(_latestScreenshotPath, _verdictScreenshotPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return $"VISUAL VERIFICATION INCOMPLETE: you analyzed '{_latestScreenshotPath}' but never recorded an accepted verdict. " +
+                    "Call `report_visual_verdict` for that exact path, giving each visible element its bounding box on the screenshot. " +
+                    "An element you created but cannot see in the image is MISSING, not visible.";
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Last resort when the gate has to let the task end unverified: demand a summary that admits
+        /// it, so an unverified build is never reported as a finished one.
+        /// </summary>
+        private string BuildHonestSummaryDemand(string reason)
+        {
+            if (_unresolvedSummaryRequested) return null;
+            _unresolvedSummaryRequested = true;
+            ConsoleLogger.Warning($"[Agent] Visual gate giving up: {reason}. Task will finish unverified.");
+            return $"Stop building: {reason}. Finish now with a summary that states plainly that the build is NOT verified " +
+                "against the mockup and lists the known unresolved differences" +
+                (string.IsNullOrEmpty(_verdictIssues) ? "" : ": " + _verdictIssues) + ". " +
+                "Describe only what is visible in the last screenshot — never claim an element you could not see.";
         }
 
         private void ExecuteToolCalls(List<ToolCallInfo> toolCalls)
         {
+            _consecutiveFixNudges = 0;
             int consecutiveFailures = 0;
             var pendingImageParts = new List<ContentPart>();
             string pendingAnalysisPrompt = null;
@@ -943,9 +1129,6 @@ namespace Indey.UIPrefabBuilder.Core
                     ConsoleLogger.Error($"[Agent] Tool exception: {call.Name} -> {e.Message}");
                 }
 
-                if (call.Name == "analyze_screenshot")
-                    _didAnalyzeScreenshot = true;
-
                 if (isSearchTool)
                 {
                     var cacheKey = $"{call.Name}:{call.Arguments}";
@@ -960,6 +1143,32 @@ namespace Indey.UIPrefabBuilder.Core
                     if (!success)
                     {
                         consecutiveFailures++;
+                        if (call.Name == "take_screenshot")
+                        {
+                            _screenshotCaptureFailed = true;
+                            _latestScreenshotPath = null;
+                            _latestCaptureId = null;
+                            _didAnalyzeScreenshot = false;
+                            _lastAnalyzedScreenshotPath = null;
+                        }
+                        else if (call.Name == "analyze_screenshot")
+                        {
+                            // Failed analyze (e.g. gray image) must not count as verification — but a
+                            // failure on some older path says nothing about an already-verified capture.
+                            var failedPath = ReadArgument(execArgs, "screenshotPath");
+                            if (string.IsNullOrEmpty(_lastAnalyzedScreenshotPath)
+                                || string.Equals(failedPath, _lastAnalyzedScreenshotPath, StringComparison.OrdinalIgnoreCase))
+                            {
+                                _didAnalyzeScreenshot = false;
+                                _lastAnalyzedScreenshotPath = null;
+                            }
+                        }
+                        else if (call.Name == "report_visual_verdict")
+                        {
+                            // A rejected verdict (contradictory or unsubstantiated) clears the gate flag.
+                            _verdictScreenshotPath = null;
+                            _verdictMatches = false;
+                        }
                         if (consecutiveFailures >= 3)
                         {
                             resultObj["_hint"] = "Multiple consecutive failures. Consider: " +
@@ -972,6 +1181,50 @@ namespace Indey.UIPrefabBuilder.Core
                     else
                     {
                         consecutiveFailures = 0;
+                        if (call.Name == "take_screenshot")
+                        {
+                            _screenshotCaptureFailed = false;
+                            _latestScreenshotPath = resultObj["filePath"]?.ToString();
+                            _latestCaptureId = resultObj["captureId"]?.ToString();
+                            // A new valid capture invalidates prior analysis/verdict of an older image.
+                            _didAnalyzeScreenshot = false;
+                            _lastAnalyzedScreenshotPath = null;
+                            _verdictScreenshotPath = null;
+                            _verdictMatches = false;
+                        }
+                        else if (call.Name == "report_visual_verdict")
+                        {
+                            if (!RecordVisualVerdict(resultObj))
+                            {
+                                // The tool only checks that the file exists, so a verdict about an
+                                // older capture reaches here as success — tell the model it did not count.
+                                consecutiveFailures++;
+                                resultObj["success"] = false;
+                                resultObj["error"] = string.IsNullOrEmpty(_latestScreenshotPath)
+                                    ? "Verdict rejected: there is no valid capture yet. Call `take_screenshot` first, then analyze and report on that exact file."
+                                    : $"Verdict rejected: it does not cover your latest capture '{_latestScreenshotPath}'. " +
+                                      "Analyze that screenshot and report the verdict for that exact path.";
+                                result = resultObj.ToString();
+                            }
+                        }
+                        else if (call.Name == "analyze_screenshot")
+                        {
+                            var analyzedPath = ReadArgument(execArgs, "screenshotPath");
+                            var isLatest = !string.IsNullOrEmpty(_latestScreenshotPath)
+                                && string.Equals(analyzedPath, _latestScreenshotPath, StringComparison.OrdinalIgnoreCase);
+                            if (isLatest && resultObj["validCapture"]?.Value<bool>() != false)
+                            {
+                                _didAnalyzeScreenshot = true;
+                                _lastAnalyzedScreenshotPath = analyzedPath;
+                            }
+                            else
+                            {
+                                // Analyzing a stale path proves nothing, but it must not undo an
+                                // analysis of the latest capture that already happened.
+                                resultObj["_hint"] = "analyze_screenshot only counts toward completion when it targets the latest successful take_screenshot filePath.";
+                                result = resultObj.ToString();
+                            }
+                        }
                     }
 
                     bool isSearchToolForHint = call.Name == "search_assets" || call.Name == "search_assets_glob" || call.Name == "search_assets_glob_batch"
@@ -1051,10 +1304,14 @@ namespace Indey.UIPrefabBuilder.Core
             // --- Post-analyze_screenshot guardrail ---
             bool stepHasAnalyze = false;
             bool stepHasExecuteCode = false;
+            bool stepHasUiTool = false;
             foreach (var call in toolCalls)
             {
                 if (call.Name == "analyze_screenshot") stepHasAnalyze = true;
-                if (call.Name == "execute_code") stepHasExecuteCode = true;
+                else if (call.Name == "execute_code") stepHasExecuteCode = true;
+                // execute_code is itself a build tool, so the spiral check has to compare against the
+                // dedicated UI tools only — otherwise the condition can never be true.
+                else if (IsBuildTool(call.Name)) stepHasUiTool = true;
             }
             if (stepHasAnalyze)
             {
@@ -1063,9 +1320,9 @@ namespace Indey.UIPrefabBuilder.Core
             }
             else if (_lastStepWasAnalyzeScreenshot)
             {
-                if (stepHasExecuteCode && !stepHasBuildTool)
+                if (stepHasExecuteCode && !stepHasUiTool)
                     _postAnalyzeExecuteCodeCount++;
-                else
+                else if (stepHasUiTool)
                     _lastStepWasAnalyzeScreenshot = false;
             }
 

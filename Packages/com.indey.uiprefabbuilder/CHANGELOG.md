@@ -1,18 +1,28 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2026-08-12
 
 ### Added
-- **Vision 能力探测**：勾选 Supports Vision 时向 API 发送 1×1 测试图确认多模态可读图；失败自动取消勾选并弹窗说明；带设计稿发任务前缓存复检失败则中止本轮
+- **结构化视觉裁定 `report_visual_verdict`**：`analyze_screenshot` 仅表示截图已送达模型；任务结束前必须对最新截图提交可接受的 verdict。`visibleElements` 需带归一化 bbox，工具会采样像素拒绝「看不见却声称可见」的断言；图标级无 Sprite 占位色块时拒绝 `matches=true`
+- **视觉验证闸门**：强制 `take_screenshot` → `analyze_screenshot` → `report_visual_verdict` 闭环；不匹配时最多 3 轮定点修复，用尽后要求诚实总结；空回复也会 nudge 继续
 - **设计稿坐标换算**：`map_design_rect` / `map_design_rect_batch`，将归一化 bbox 转为 Canvas `anchoredPosition` + `sizeDelta`；任务消息注入 `[DesignImageMeta]`（像素尺寸与设计分辨率）
+- **Vision 能力探测**：勾选 Supports Vision 时向 API 发送 1×1 测试图确认多模态可读图；失败自动取消勾选并弹窗说明；带设计稿发任务前缓存复检失败则中止本轮
+- **`search_assets_glob_batch`**：批量 Glob 文件名搜索
 
 ### Fixed
-- **`EnableVisualVerification` 未生效**：有设计稿且发生过 Build 时，结束前强制 nudge 一次 `take_screenshot` → `analyze_screenshot`
+- **`EnableVisualVerification` 未生效**：有设计稿且发生过 Build 时，结束前强制走完视觉验证链
 - **LayoutGroup 默认 ForceExpand**：`childForceExpandWidth/Height` 默认改为 `false`，减少设计稿间距被撑开
+- **Sprite 静默变白方块**：`set_image` / `set_image_sprite` 等区分「路径不存在」与「TextureType 不是 Sprite」，失败返回可诊断错误；赋 Sprite 时若未指定 color 则重置为白色，避免默认蓝色 tint 污染贴图
+- **CLIP 索引变形**：PNG/JPG 优先用磁盘原始字节解码 embedding，避免 Unity 导入管线 NPOT 缩放/压缩拉低视觉匹配准确率
 
 ### Improved
+- **Prefab 实例保护**：`destroy_object` / `destroy_object_batch` 拒绝删除 Prefab 实例与已有内容的 Canvas；`execute_code` 同步拦截 `Destroy` / `DestroyImmediate` / `RemoveComponent`，防止绕过护栏拆掉已实例化的美术资源
+- **截图可见性临时强制**：`take_screenshot` 捕获期间临时拉起隐藏的 CanvasGroup / 未播放的 intro Animator / 零 scale，避免 Agent 为截图去改 Prefab
+- **Visual Verification 自动开关记忆**：探测失败仅自动关闭，探测成功可恢复；用户手动开关后不再被探测覆盖
+- **视觉搜索结果压缩**：MessageHistory 压缩时保留全部 region/query，只裁剪每项 top matches，避免截断 JSON 丢掉后半区域
+- **图像匹配默认阈值**：`minConfidence` 默认提升至 `0.65`
 - 无 Vision 时禁用设计稿附加区；Visual Verification 依赖 Supports Vision
-- 设计稿还原 Prompt 收紧：禁止目测估位，优先坐标换算与显式 Rect
+- 设计稿还原 Prompt 收紧：禁止目测估位，优先已有相关 Prefab 实例化后再调布局/贴图；禁止删掉重建
 - 默认模型名改为 `gemini-3.6-flash`
 
 ## [0.3.0] - 2026-07-07

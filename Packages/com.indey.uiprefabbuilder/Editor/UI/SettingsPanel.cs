@@ -89,7 +89,7 @@ namespace Indey.UIPrefabBuilder.UI
                 else
                 {
                     settings.SupportsVision = false;
-                    settings.EnableVisualVerification = false;
+                    settings.AutoDisableVisualVerification();
                     _visionProbeStatus = "";
                     VisionCapabilityProbe.InvalidateCache();
                     PersistKeyAndSettings(settings);
@@ -127,13 +127,14 @@ namespace Indey.UIPrefabBuilder.UI
                 if (result != null && result.Supported)
                 {
                     settings.SupportsVision = true;
+                    settings.RestoreAutoDisabledVisualVerification();
                     _visionProbeStatus = "Vision verified.";
                     PersistKeyAndSettings(settings);
                 }
                 else
                 {
                     settings.SupportsVision = false;
-                    settings.EnableVisualVerification = false;
+                    settings.AutoDisableVisualVerification();
                     var reason = result?.Reason ?? "Unknown failure.";
                     _visionProbeStatus = "Vision not available.";
                     PersistKeyAndSettings(settings);
@@ -180,11 +181,12 @@ namespace Indey.UIPrefabBuilder.UI
             GUILayout.Space(4);
             GUILayout.Label("Vision", EditorStyles.miniBoldLabel);
             EditorGUI.BeginDisabledGroup(!settings.SupportsVision);
-            var ver = EditorGUILayout.Toggle("Visual Verification", settings.EnableVisualVerification && settings.SupportsVision);
-            if (settings.SupportsVision)
-                settings.EnableVisualVerification = ver;
-            else
-                settings.EnableVisualVerification = false;
+            var currentVer = settings.EnableVisualVerification && settings.SupportsVision;
+            var ver = EditorGUILayout.Toggle("Visual Verification", currentVer);
+            if (settings.SupportsVision && ver != currentVer)
+                settings.SetVisualVerificationByUser(ver);
+            else if (!settings.SupportsVision)
+                settings.AutoDisableVisualVerification();
             EditorGUI.EndDisabledGroup();
             if (!settings.SupportsVision)
                 EditorGUILayout.HelpBox("Requires Supports Vision.", MessageType.None);

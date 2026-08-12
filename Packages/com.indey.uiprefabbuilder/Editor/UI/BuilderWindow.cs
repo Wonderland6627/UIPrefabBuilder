@@ -552,12 +552,15 @@ namespace Indey.UIPrefabBuilder.UI
                     _visionSendPending = false;
                     if (result != null && result.Supported)
                     {
+                        settings.SupportsVision = true;
+                        settings.RestoreAutoDisabledVisualVerification();
+                        settings.Save();
                         BeginImageTask(userText, filesCopy, bubbleText);
                     }
                     else
                     {
                         settings.SupportsVision = false;
-                        settings.EnableVisualVerification = false;
+                        settings.AutoDisableVisualVerification();
                         settings.Save();
                         var reason = result?.Reason ?? "Unknown failure.";
                         AddBubble(BubbleType.Error,

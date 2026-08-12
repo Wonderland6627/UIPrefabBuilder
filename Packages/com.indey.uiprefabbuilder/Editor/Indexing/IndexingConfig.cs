@@ -12,7 +12,7 @@ namespace Indey.UIPrefabBuilder.Indexing
         public List<string> indexDirectories = new List<string> { };
         public List<string> ignorePatterns = new List<string> { };
         public int topKDefault = 5;
-        public float minConfidenceThreshold = 0.5f;
+        public float minConfidenceThreshold = 0.65f;
 
         public bool IsIgnored(string assetPath)
         {

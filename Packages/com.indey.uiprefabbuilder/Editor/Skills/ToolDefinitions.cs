@@ -398,14 +398,18 @@ namespace Indey.UIPrefabBuilder.Skills
 
             // ── GameObject Management ──
             Def("destroy_object",
-                "Delete a GameObject from the scene. Supports undo.",
-                Props(P("target", "string", "Name of the target GameObject to destroy", true))),
+                "Delete a GameObject from the scene. Supports undo. REFUSES to delete a prefab instance root or a populated root Canvas — never tear down an instantiated prefab to rebuild it from scratch; adjust it in place instead.",
+                Props(
+                    P("target", "string", "Name of the target GameObject to destroy", true),
+                    P("force", "boolean", "Override the prefab-instance / root-Canvas guard. Only use when the user explicitly asked for removal.", false, false)
+                )),
 
             Def("destroy_object_batch",
-                "Delete multiple GameObjects from the scene in one call. ALWAYS use this when destroying 2+ objects (e.g. cleaning up multiple temporary reference prefabs) instead of separate destroy_object calls.",
+                "Delete multiple GameObjects from the scene in one call. ALWAYS use this when destroying 2+ objects (e.g. cleaning up multiple temporary reference prefabs) instead of separate destroy_object calls. Same prefab-instance / root-Canvas guard as destroy_object.",
                 Props(
                     PArray("targets", "Array of GameObject names to destroy", true,
-                        new JObject { ["type"] = "string" })
+                        new JObject { ["type"] = "string" }),
+                    P("force", "boolean", "Override the prefab-instance / root-Canvas guard. Only use when the user explicitly asked for removal.", false, false)
                 )),
 
             Def("set_parent",
@@ -499,19 +503,45 @@ namespace Indey.UIPrefabBuilder.Skills
 
             // ── Screenshot & Visual Analysis ──
             Def("take_screenshot",
-                "Capture a screenshot of the Game view and save it to Assets/Screenshots/. Returns base64 image data for subsequent analyze_screenshot calls.",
+                "Capture a screenshot of the built UI and save it to Assets/Screenshots/. Uses a temporary ScreenSpaceCamera render so Overlay canvases are included. Only writes the file when the capture is non-uniform (validCapture=true). On failure, no usable file is produced — do NOT analyze a previous gray image at the same path; retake until success.",
                 Props(
                     P("filename", "string", "Filename without extension", false, "screenshot"),
-                    P("width", "integer", "Screenshot width in pixels", false, 540),
-                    P("height", "integer", "Screenshot height in pixels", false, 960)
+                    P("width", "integer", "Screenshot width in pixels (default: scaled design width)", false),
+                    P("height", "integer", "Screenshot height in pixels (default: scaled design height)", false)
                 )),
 
             Def("analyze_screenshot",
-                "Send a screenshot to the LLM for visual analysis. The image is injected as multimodal content so the model can see layout issues, alignment problems, and styling improvements. Use after take_screenshot to verify UI quality. IMPORTANT: When reproducing a design mockup, ALWAYS pass referenceImagePath to enable side-by-side comparison — this dramatically improves accuracy.",
+                "Send a screenshot to the LLM for visual analysis. Rejects blank/nearly-uniform images (success=false). The image is injected as multimodal content so the model can see layout issues. Use only after take_screenshot returns success=true. IMPORTANT: When reproducing a design mockup, ALWAYS pass referenceImagePath. success=true only means the image was delivered — it is NOT a passing verdict; you must follow up with report_visual_verdict.",
                 Props(
                     P("screenshotPath", "string", "Asset path to screenshot file, e.g. 'Assets/Screenshots/screenshot.png'", true),
                     P("prompt", "string", "Optional custom prompt. If omitted, a structured checklist prompt is auto-generated (with reference comparison if referenceImagePath is set)", false),
                     P("referenceImagePath", "string", "Asset path to the original design mockup image for comparison. STRONGLY RECOMMENDED when reproducing a design — enables structured diff analysis.", false)
+                )),
+
+            Def("report_visual_verdict",
+                "Record the structured outcome of comparing a screenshot against the design mockup. Call this right after you have looked at the images returned by analyze_screenshot. Every entry in visibleElements must carry the bounding box where you SEE it; the tool samples those pixels and rejects claims about regions that are indistinguishable from their surroundings. An element you created but cannot see is `missing`, not `visible`. matches=true is also rejected while icon-sized Images still have no sprite (flat colour placeholders). The task cannot be finished until the latest screenshot has an accepted verdict.",
+                Props(
+                    P("screenshotPath", "string", "Asset path of the screenshot you just analyzed", true),
+                    P("matches", "boolean", "true only when the build has no significant visual difference from the mockup", true),
+                    PArray("visibleElements", "Elements you can actually SEE, each located on the screenshot: {label, x, y, width, height} with the box normalized 0-1, top-left origin", true,
+                        new JObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JObject
+                            {
+                                ["label"] = new JObject { ["type"] = "string", ["description"] = "What the element is, e.g. 'green check mark on first option'" },
+                                ["x"] = new JObject { ["type"] = "number", ["description"] = "Left edge, 0-1" },
+                                ["y"] = new JObject { ["type"] = "number", ["description"] = "Top edge, 0-1 (top-left origin)" },
+                                ["width"] = new JObject { ["type"] = "number", ["description"] = "Width, 0-1" },
+                                ["height"] = new JObject { ["type"] = "number", ["description"] = "Height, 0-1" }
+                            },
+                            ["required"] = new JArray { "label", "x", "y", "width", "height" }
+                        }),
+                    PArray("missingElements", "Elements present in the mockup but NOT visible in the screenshot, e.g. ['green check marks', 'gender icons']", false,
+                        new JObject { ["type"] = "string" }),
+                    PArray("mismatches", "Elements that are visible but visually wrong (size, color, sprite, position), each with the fix needed", false,
+                        new JObject { ["type"] = "string" }),
+                    P("notes", "string", "Optional extra observations", false)
                 )),
 
             // ── Project Config ──
@@ -530,7 +560,7 @@ namespace Indey.UIPrefabBuilder.Skills
 
             // ── Code Execution ──
             Def("execute_code",
-                "Execute arbitrary C# code implementing IAgentAction. Use for complex batch operations or when other tools cannot achieve the desired result.",
+                "Execute arbitrary C# code implementing IAgentAction. Use for complex batch operations or when other tools cannot achieve the desired result. Destroy / DestroyImmediate / RemoveComponent calls are REJECTED — never delete or rebuild UI here; adjust the existing objects, or use destroy_object which enforces the prefab-instance guard.",
                 Props(P("code", "string", "Complete C# source code implementing IAgentAction interface", true))),
 
             // ── Asset Indexing & Visual Match ──
@@ -539,7 +569,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 Props(
                     P("imageBase64", "string", "Base64-encoded PNG/JPG image bytes of the cropped region from the design mockup", true),
                     P("topK", "integer", "Number of top matches to return", false, 5),
-                    P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out.", false, 0.5)
+                    P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out.", false, 0.65)
                 )),
 
             Def("crop_design_image",
@@ -589,7 +619,7 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("width", "number", "Width of the bounding box, normalized 0-1", true),
                     P("height", "number", "Height of the bounding box, normalized 0-1", true),
                     P("topK", "integer", "Number of top matches to return", false, 5),
-                    P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out.", false, 0.5)
+                    P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out.", false, 0.65)
                 )),
 
             Def("match_sprite_by_region_batch",
@@ -610,7 +640,7 @@ namespace Indey.UIPrefabBuilder.Skills
                             },
                             ["required"] = new JArray("x", "y", "width", "height")
                         }),
-                    P("minConfidence", "number", "Minimum confidence threshold (0-1) applied to all regions. Results below this score are filtered out.", false, 0.5)
+                    P("minConfidence", "number", "Minimum confidence threshold (0-1) applied to all regions. Results below this score are filtered out.", false, 0.65)
                 )),
 
             Def("search_sprites_by_text",

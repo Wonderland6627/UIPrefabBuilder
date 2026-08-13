@@ -99,13 +99,20 @@ namespace Indey.UIPrefabBuilder.Skills
                 )),
 
             Def("create_inputfield",
-                "Create an InputField element.",
+                "Create a complete, wired InputField (TMP_InputField when TextMeshPro is available): Background Image + Text Area (RectMask2D) + Placeholder + Text. Use this for any editable/name field in a mockup — a bare Image is not an input box.",
                 Props(
                     P("name", "string", "Name of the InputField", true),
                     P("parent", "string", "Name of the parent GameObject", true),
-                    P("placeholder", "string", "Placeholder text", false, "Enter text..."),
+                    P("placeholder", "string", "Placeholder (hint) text shown while empty", false, "Enter text..."),
+                    P("text", "string", "Initial text content shown in the field", false, ""),
                     P("width", "number", "Width", false, 200),
-                    P("height", "number", "Height", false, 30)
+                    P("height", "number", "Height", false, 30),
+                    P("fontSize", "integer", "Font size for both the text and the placeholder", false, 24),
+                    P("backgroundSpritePath", "string", "Asset path of the field's background/frame sprite (applied as Sliced)", false),
+                    P("r", "number", "Text color Red (0-1)", false),
+                    P("g", "number", "Text color Green (0-1)", false),
+                    P("b", "number", "Text color Blue (0-1)", false),
+                    P("a", "number", "Text color Alpha (0-1)", false)
                 )),
 
             Def("create_slider",
@@ -119,12 +126,45 @@ namespace Indey.UIPrefabBuilder.Skills
                 )),
 
             Def("create_toggle",
-                "Create a Toggle with a label.",
+                "Create a fully wired Toggle: Background (targetGraphic) + Background/Checkmark (Toggle.graphic = the SELECTED-state highlight) + optional Label. Use this for any grid cell / option that can be selected in the mockup, so the highlight is a real state instead of a static overlay image.",
                 Props(
                     P("name", "string", "Name of the Toggle", true),
                     P("parent", "string", "Name of the parent GameObject", true),
-                    P("label", "string", "Toggle label text", false, "Toggle"),
-                    P("isOn", "boolean", "Initial toggle state", false, true)
+                    P("label", "string", "Optional label text. Leave empty for icon-only cells.", false),
+                    P("isOn", "boolean", "Whether this option starts selected", false, true),
+                    P("width", "number", "Width", false, 160),
+                    P("height", "number", "Height", false, 160),
+                    P("backgroundSpritePath", "string", "Asset path of the normal (unselected) background sprite", false),
+                    P("checkmarkSpritePath", "string", "Asset path of the selected-state sprite (e.g. the yellow selection frame)", false),
+                    P("fontSize", "integer", "Label font size", false, 20),
+                    P("r", "number", "Label color Red (0-1)", false),
+                    P("g", "number", "Label color Green (0-1)", false),
+                    P("b", "number", "Label color Blue (0-1)", false),
+                    P("a", "number", "Label color Alpha (0-1)", false)
+                )),
+
+            Def("create_tab_bar",
+                "Create a real tab bar: one Toggle per tab inside a shared ToggleGroup, each with an unselected background Image (targetGraphic), a 'Selected' child Image (Toggle.graphic) and a 'Label'. ALWAYS use this for the tab strip of a mockup instead of hand-building plain buttons — plain buttons cannot express the selected/unselected difference the design shows.",
+                Props(
+                    P("name", "string", "Name of the tab bar root (tabs are named <name>_0, <name>_1, ...)", true),
+                    P("parent", "string", "Name of the parent GameObject", true),
+                    PArray("labels", "One label per tab, in left-to-right order, e.g. [\"Bookmark\", \"Alliance\"]", true,
+                        new JObject { ["type"] = "string" }),
+                    P("selectedIndex", "integer", "Index of the tab that starts selected", false, 0),
+                    P("tabWidth", "number", "Width of each tab", false, 240),
+                    P("tabHeight", "number", "Height of each tab", false, 80),
+                    P("spacing", "number", "Gap between tabs in pixels", false, 0),
+                    P("unselectedSpritePath", "string", "Sprite for the unselected tab background (applied as Sliced)", false),
+                    P("selectedSpritePath", "string", "Sprite for the selected tab (applied as Sliced) — in most designs this is DIFFERENT artwork, not just a tint", false),
+                    P("fontSize", "integer", "Label font size", false, 30),
+                    P("selectedTextR", "number", "Selected label color Red (0-1)", false),
+                    P("selectedTextG", "number", "Selected label color Green (0-1)", false),
+                    P("selectedTextB", "number", "Selected label color Blue (0-1)", false),
+                    P("selectedTextA", "number", "Selected label color Alpha (0-1)", false),
+                    P("unselectedTextR", "number", "Unselected label color Red (0-1)", false),
+                    P("unselectedTextG", "number", "Unselected label color Green (0-1)", false),
+                    P("unselectedTextB", "number", "Unselected label color Blue (0-1)", false),
+                    P("unselectedTextA", "number", "Unselected label color Alpha (0-1)", false)
                 )),
 
             Def("create_scrollview",
@@ -148,7 +188,7 @@ namespace Indey.UIPrefabBuilder.Skills
 
             // ── Batch Creation ──
             Def("create_batch",
-                "Create multiple UI elements in a single call. PREFERRED over individual create calls when creating 2+ elements. The 'items' parameter is a JSON string array. Each item: {type, name, parent, text?, spritePath?, width?, height?, fontSize?, r?, g?, b?, a?}. Supported types: canvas, panel, button, text, image, inputfield, slider, toggle, dropdown, scrollview.",
+                "Create multiple UI elements in a single call. PREFERRED over individual create calls when creating 2+ elements. The 'items' parameter is a JSON string array. Each item: {type, name, parent, text?, placeholder?, spritePath?, checkmarkSpritePath?, width?, height?, fontSize?, alignment?, isOn?, r?, g?, b?, a?}. Supported types: canvas, panel, button, text, image, inputfield, slider, toggle, dropdown, scrollview. `alignment` (Left/Center/Right/Top/Bottom) applies to text, `isOn`/`checkmarkSpritePath` to toggles, `placeholder` to inputfields. When a design mockup is attached this call is REJECTED until you have measured regions with map_design_rect_batch.",
                 Props(P("items", "string", "JSON array string of UI element descriptors", true))),
 
             // ── RectTransform (combined) ──
@@ -199,7 +239,7 @@ namespace Indey.UIPrefabBuilder.Skills
 
             // ── Image Properties (Batch) ──
             Def("set_image_batch",
-                "Set Image component properties for multiple elements in one call. ALWAYS use this when styling 2+ Image elements. Each item: {target (required), spritePath, type, fillMethod, fillAmount, preserveAspect, r/g/b/a}.",
+                "Set Image component properties for multiple elements in one call. ALWAYS use this when styling 2+ Image elements. Each item: {target (required), spritePath, type, fillMethod, fillAmount, preserveAspect, r/g/b/a}. Omit spritePath to keep the current artwork; pass spritePath=\"\" to CLEAR it so the element becomes a flat colour (a tint alone does NOT remove a wrong sprite). If the target has no Image the item fails and names the child that does.",
                 Props(P("items", "string", "JSON array string of image property configs", true))),
 
             // ── Image Properties ──
@@ -207,7 +247,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 "Set Image component properties: sprite, type (Simple/Sliced/Tiled/Filled), fill, and preserveAspect. All fields optional except target.",
                 Props(
                     P("target", "string", "Name of the target GameObject with Image component", true),
-                    P("spritePath", "string", "Asset path to sprite", false),
+                    P("spritePath", "string", "Asset path to a sprite. Omit to keep the current artwork; pass an empty string to CLEAR the sprite so the element renders as a flat colour — tinting alone leaves a wrong sprite visible.", false),
                     P("type", "string", "Image type: Simple, Sliced, Tiled, Filled", false),
                     P("fillMethod", "string", "Fill method (for Filled type): Horizontal, Vertical, Radial90, Radial180, Radial360", false),
                     P("fillAmount", "number", "Fill amount 0-1 (for Filled type)", false),
@@ -237,23 +277,35 @@ namespace Indey.UIPrefabBuilder.Skills
 
             // ── Text Properties (Batch) ──
             Def("set_text_properties_batch",
-                "Set text properties for multiple elements in one call. ALWAYS use this when styling 2+ Text/TMP elements. Each item: {target (required), text, fontSize, alignment, fontStyle, r/g/b/a, overflow}.",
+                "Set text properties for multiple elements in one call. ALWAYS use this when styling 2+ Text/TMP elements. Each item accepts every field of set_text_properties: {target (required), text, fontSize, alignment, fontStyle, r/g/b/a, overflow, fontAssetPath, outlineWidth, outlineR/G/B/A, characterSpacing, lineSpacing, enableAutoSizing, fontSizeMin, fontSizeMax, enableWordWrapping}. Items whose target has no Text/TMP component FAIL — read the per-item errors instead of assuming success.",
                 Props(P("items", "string", "JSON array string of text property configs", true))),
 
             // ── Text Properties ──
             Def("set_text_properties",
-                "Set multiple text properties in one call. Works with both Legacy Text and TextMeshPro. All fields optional except target.",
+                "Set text content and styling. Works with Legacy Text and TextMeshPro. FAILS (success=false) when the target has no text component, and reports a `warning` if it had to fall back to the target's only text child — never assume a call succeeded without reading the result. Targeting an InputField (or its Text child) is supported: the content is written to the InputField component, because its own `text` overwrites the label.",
                 Props(
-                    P("target", "string", "Name of the target GameObject with Text or TMP component", true),
+                    P("target", "string", "Name of the target GameObject with Text or TMP component. For a Button/Tab, target its 'Text'/'Label' CHILD, not the root.", true),
                     P("text", "string", "Text content", false),
-                    P("fontSize", "integer", "Font size", false),
+                    P("fontSize", "number", "Font size", false),
                     P("alignment", "string", "Text alignment: Left, Center, Right, Justified (TMP only)", false),
                     P("fontStyle", "string", "Font style: Normal, Bold, Italic, BoldAndItalic", false),
                     P("r", "number", "Text color Red (0-1)", false),
                     P("g", "number", "Text color Green (0-1)", false),
                     P("b", "number", "Text color Blue (0-1)", false),
                     P("a", "number", "Text color Alpha (0-1)", false),
-                    P("overflow", "string", "Text overflow: Overflow, Ellipsis, Truncate", false)
+                    P("overflow", "string", "Text overflow: Overflow, Ellipsis, Truncate", false),
+                    P("fontAssetPath", "string", "Asset path of the font to use (TMP_FontAsset for TMP, Font for legacy Text). Use this to match the mockup's typeface instead of the default font.", false),
+                    P("outlineWidth", "number", "TMP outline thickness 0-1 (a material outline; use this for the outlined title/label style common in game UI)", false),
+                    P("outlineR", "number", "TMP outline color Red (0-1)", false),
+                    P("outlineG", "number", "TMP outline color Green (0-1)", false),
+                    P("outlineB", "number", "TMP outline color Blue (0-1)", false),
+                    P("outlineA", "number", "TMP outline color Alpha (0-1)", false),
+                    P("characterSpacing", "number", "TMP character spacing", false),
+                    P("lineSpacing", "number", "Line spacing", false),
+                    P("enableAutoSizing", "boolean", "TMP auto-size the font to fit the rect", false),
+                    P("fontSizeMin", "number", "TMP minimum font size when auto-sizing", false),
+                    P("fontSizeMax", "number", "TMP maximum font size when auto-sizing", false),
+                    P("enableWordWrapping", "boolean", "Whether the text wraps. Set false for single-line labels that must not break.", false)
                 )),
 
             Def("set_text",
@@ -358,12 +410,59 @@ namespace Indey.UIPrefabBuilder.Skills
                 )),
 
             Def("configure_selectable",
-                "Configure Button/Toggle/Slider transition and navigation. Sets color tint transition by default.",
+                "Configure Button/Toggle/Slider transition and navigation. Fails when the target has no Selectable. To give a tab or option a real selected/highlighted LOOK, use configure_selectable_states instead.",
                 Props(
                     P("target", "string", "Name of the target GameObject with Selectable", true),
                     P("transition", "string", "Transition: ColorTint, SpriteSwap, Animation, None", false, "ColorTint"),
                     P("navigationMode", "string", "Navigation: None, Horizontal, Vertical, Automatic, Explicit", false, "Automatic"),
                     P("interactable", "boolean", "Is interactable", false, true)
+                )),
+
+            Def("configure_selectable_states",
+                "Set the per-state LOOK of a Button/Toggle/Tab: normal/highlighted/pressed/selected/disabled tint colors and/or state sprites. This is the only way to reproduce a mockup's selected-vs-unselected tab or highlighted option — plain colors on the base Image cannot. Providing any state sprite switches transition to SpriteSwap automatically.",
+                Props(
+                    P("target", "string", "Name of the target GameObject with a Selectable component", true),
+                    P("transition", "string", "Transition: ColorTint, SpriteSwap, Animation, None. Leave empty to let the tool pick based on what you supplied.", false),
+                    P("targetGraphic", "string", "Which graphic the states apply to: 'self' or a child path like 'Background'. Defaults to the object's own Image.", false),
+                    P("normalR", "number", "Normal tint Red (0-1)", false),
+                    P("normalG", "number", "Normal tint Green (0-1)", false),
+                    P("normalB", "number", "Normal tint Blue (0-1)", false),
+                    P("normalA", "number", "Normal tint Alpha (0-1)", false),
+                    P("highlightedR", "number", "Highlighted tint Red (0-1)", false),
+                    P("highlightedG", "number", "Highlighted tint Green (0-1)", false),
+                    P("highlightedB", "number", "Highlighted tint Blue (0-1)", false),
+                    P("highlightedA", "number", "Highlighted tint Alpha (0-1)", false),
+                    P("pressedR", "number", "Pressed tint Red (0-1)", false),
+                    P("pressedG", "number", "Pressed tint Green (0-1)", false),
+                    P("pressedB", "number", "Pressed tint Blue (0-1)", false),
+                    P("pressedA", "number", "Pressed tint Alpha (0-1)", false),
+                    P("selectedR", "number", "Selected tint Red (0-1)", false),
+                    P("selectedG", "number", "Selected tint Green (0-1)", false),
+                    P("selectedB", "number", "Selected tint Blue (0-1)", false),
+                    P("selectedA", "number", "Selected tint Alpha (0-1)", false),
+                    P("disabledR", "number", "Disabled tint Red (0-1)", false),
+                    P("disabledG", "number", "Disabled tint Green (0-1)", false),
+                    P("disabledB", "number", "Disabled tint Blue (0-1)", false),
+                    P("disabledA", "number", "Disabled tint Alpha (0-1)", false),
+                    P("colorMultiplier", "number", "Color multiplier (1-5)", false),
+                    P("fadeDuration", "number", "State fade duration in seconds", false),
+                    P("highlightedSpritePath", "string", "Asset path of the highlighted-state sprite", false),
+                    P("pressedSpritePath", "string", "Asset path of the pressed-state sprite", false),
+                    P("selectedSpritePath", "string", "Asset path of the selected-state sprite (the mockup's active tab / chosen option artwork)", false),
+                    P("disabledSpritePath", "string", "Asset path of the disabled-state sprite", false),
+                    P("interactable", "boolean", "Is interactable", false)
+                )),
+
+            Def("configure_selectable_states_batch",
+                "Set per-state colors/sprites on multiple Selectables in one call. ALWAYS use this when styling 2+ tabs or selectable options. Each item accepts every field of configure_selectable_states, plus the required 'target'.",
+                Props(P("items", "string", "JSON array string of selectable state configs", true))),
+
+            Def("wire_toggle_graphics",
+                "Point an existing Toggle at its background and selected-state graphics. Use this when a selection highlight already exists as a child Image but does not follow the selected state (a static overlay instead of a real highlight).",
+                Props(
+                    P("target", "string", "Name of the GameObject with the Toggle component", true),
+                    P("backgroundTarget", "string", "Child path (or 'self') of the normal background Graphic → Toggle.targetGraphic", false),
+                    P("selectedGraphicTarget", "string", "Child path of the highlight Graphic shown while selected → Toggle.graphic", false)
                 )),
 
             // ── Generic Component ──
@@ -519,7 +618,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 )),
 
             Def("report_visual_verdict",
-                "Record the structured outcome of comparing a screenshot against the design mockup. Call this right after you have looked at the images returned by analyze_screenshot. Every entry in visibleElements must carry the bounding box where you SEE it; the tool samples those pixels and rejects claims about regions that are indistinguishable from their surroundings. An element you created but cannot see is `missing`, not `visible`. matches=true is also rejected while icon-sized Images still have no sprite (flat colour placeholders). The task cannot be finished until the latest screenshot has an accepted verdict.",
+                "Record the structured outcome of comparing a screenshot against the design mockup. Call this right after you have looked at the images returned by analyze_screenshot. Every entry in visibleElements must carry the bounding box where you SEE it; the tool samples those pixels and rejects claims about regions that are indistinguishable from their surroundings. An element you created but cannot see is `missing`, not `visible`. matches=true is additionally rejected while the scene still shows factory defaults: icon-sized Images without a sprite, empty text, a single font size across every label, untextured button backgrounds, unwired InputFields, or tabs/options with no selected-state difference. Re-compare the WHOLE image each round, not only the items from your previous verdict. A verdict is also rejected when the scene was edited after the screenshot was taken — every fix requires a fresh take_screenshot before analyzing and reporting again. The task cannot be finished until the latest screenshot has an accepted verdict.",
                 Props(
                     P("screenshotPath", "string", "Asset path of the screenshot you just analyzed", true),
                     P("matches", "boolean", "true only when the build has no significant visual difference from the mockup", true),
@@ -569,7 +668,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 Props(
                     P("imageBase64", "string", "Base64-encoded PNG/JPG image bytes of the cropped region from the design mockup", true),
                     P("topK", "integer", "Number of top matches to return", false, 5),
-                    P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out.", false, 0.65)
+                    P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out. Matches above the filter but below ~0.72 come back flagged lowConfidence.", false, 0.55)
                 )),
 
             Def("crop_design_image",
@@ -619,7 +718,7 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("width", "number", "Width of the bounding box, normalized 0-1", true),
                     P("height", "number", "Height of the bounding box, normalized 0-1", true),
                     P("topK", "integer", "Number of top matches to return", false, 5),
-                    P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out.", false, 0.65)
+                    P("minConfidence", "number", "Minimum confidence threshold (0-1). Results below this score are filtered out. Matches above the filter but below ~0.72 come back flagged lowConfidence.", false, 0.55)
                 )),
 
             Def("match_sprite_by_region_batch",
@@ -640,7 +739,7 @@ namespace Indey.UIPrefabBuilder.Skills
                             },
                             ["required"] = new JArray("x", "y", "width", "height")
                         }),
-                    P("minConfidence", "number", "Minimum confidence threshold (0-1) applied to all regions. Results below this score are filtered out.", false, 0.65)
+                    P("minConfidence", "number", "Minimum confidence threshold (0-1) applied to all regions. Results below this score are filtered out. Matches above the filter but below ~0.72 come back flagged lowConfidence.", false, 0.55)
                 )),
 
             Def("search_sprites_by_text",

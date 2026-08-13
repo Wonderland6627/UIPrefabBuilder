@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0] - 2026-08-13
+
+### Added
+- **`create_tab_bar`**：按 ToggleGroup + 每 Tab 未选中底图 / Selected 高亮 / Label 创建真实页签栏，替代用普通 Button 冒充选中态
+- **`configure_selectable_states` / `configure_selectable_states_batch`**：配置 Button/Toggle/Tab 的 normal/highlighted/pressed/selected/disabled tint 与 SpriteSwap
+- **`wire_toggle_graphics`**：把已有 Toggle 的 `targetGraphic` / `graphic` 接到背景与选中高亮子节点
+- **完整接线的 `create_inputfield` / `create_toggle`**：InputField 自动建 Text Area → Placeholder / Text；Toggle 自动建 Background + Checkmark 选中高亮
+- **TMP 文字样式扩展**：`set_text_properties(_batch)` 支持 `fontAssetPath`、outline、字距/行距、自动字号、换行等
+
+### Fixed
+- **Project Config 面板 Rules/Notes 换行高度**：按面板宽度 `CalcHeight` 自适应，避免 Layout/Repaint 高度不一致裁切光标
+- **`set_text_properties` 静默成功**：目标无文本组件时返回失败；仅在回落到唯一文本子节点时给出 warning
+- **错误 Sprite 无法靠 tint 清除**：`set_image(_batch)` 支持 `spritePath=""` 显式清空贴图，避免错误美术被染色后仍残留
+
+### Improved
+- **结构优先 Prompt**：强制 Tab→`create_tab_bar`、可选项→`create_toggle`、编辑框→`create_inputfield`；设计稿须先完整盘点再测量
+- **测量闸门**：有设计稿时 `create_batch` 在完成 `map_design_rect(_batch)` 前会被拒绝
+- **视觉裁定加强**：拒绝工厂默认（空文案、统一字号、未贴图按钮、未接线 InputField、无选中态差异）；场景变更会使截图链失效并强制重截
+- **PROJECT RULES 优先级**：Rules 覆盖 `map_design_rect` 尺寸与后续视觉抛光；任务开始写入会话日志，终裁前须复核
+- **定点修复护栏**：verdict 拒绝后只改点名节点，禁止回退已修好的改动或重刷已匹配元素
+
 ## [0.4.0] - 2026-08-12
 
 ### Added

@@ -127,12 +127,14 @@ namespace Indey.UIPrefabBuilder.Core
 
             _pendingMessage = msg;
             ResetStepCounters();
+            DesignImageContext.BeginTextTask();
             RebuildSystemPrompt();
 
             var effectiveMax = EffectiveMaxSteps;
             ConsoleLogger.Log($"=== NEW TASK ===");
             ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
             ConsoleLogger.Log($"[Config] tools={_toolRegistry.Definitions.Count}");
+            LogProjectRulesForTask();
             ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
             ConsoleLogger.LogBlock("USER_REQUEST", msg);
 
@@ -168,6 +170,7 @@ namespace Indey.UIPrefabBuilder.Core
             ConsoleLogger.Log($"=== NEW TASK (with {imagePaths.Count} image(s)) ===");
             ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
             ConsoleLogger.Log($"[Config] tools={_toolRegistry.Definitions.Count}");
+            LogProjectRulesForTask();
             ConsoleLogger.LogBlock("USER_REQUEST", textContent + $"\n[Attached: {imagePaths.Count} image(s)]");
 
             _cts?.Cancel();
@@ -204,6 +207,7 @@ namespace Indey.UIPrefabBuilder.Core
             _designImagePath = imagePaths.Count > 0 ? imagePaths[0] : null;
             _designImageAssetPath = EnsureDesignImageAssetPath(_designImagePath);
             DesignImageContext.CurrentAssetPath = _designImageAssetPath;
+            DesignImageContext.BeginImageTask();
             TryFillDesignImageSize(_designImagePath, _designImageAssetPath);
             RebuildSystemPrompt(); // refresh with design-mockup-aware Verify / Analysis sections
             ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
@@ -382,12 +386,22 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine("- `add_horizontal_layout` / `add_vertical_layout` for automatic child arrangement");
                 sb.AppendLine("- Call multiple independent tools in the same step (parallel)");
                 sb.AppendLine();
+                sb.AppendLine("#### USE THE RIGHT COMPONENT (structure, not just pixels)");
+                sb.AppendLine("- TABS: build a tab strip with `create_tab_bar` (ToggleGroup + per-tab unselected background, a `Selected` overlay wired to Toggle.graphic, and a `Label`). Two plain buttons CANNOT express the selected-vs-unselected difference a mockup shows. Give `selectedSpritePath` and `unselectedSpritePath` different artwork whenever the design has it.");
+                sb.AppendLine("- SELECTABLE OPTIONS / GRID CELLS: when a cell can be chosen (icon grids, difficulty options, the 'currently in use' item), create it with `create_toggle` — Background is the normal look, Background/Checkmark is the selected highlight. Do NOT fake a highlight with a static extra Image; use `wire_toggle_graphics` if the highlight already exists as a plain child.");
+                sb.AppendLine("- SELECTED/HIGHLIGHT STATES: `configure_selectable_states(_batch)` sets the normal/highlighted/pressed/selected/disabled tint colors and state sprites. `configure_selectable` only sets the transition TYPE and cannot make anything look selected.");
+                sb.AppendLine("- INPUT/NAME FIELDS: use `create_inputfield`, which builds and wires the full Unity hierarchy (Text Area → Placeholder / Text) and takes `placeholder`, `text`, `fontSize` and `backgroundSpritePath`. An Image with a text child on top is NOT an input field.");
+                sb.AppendLine("- INPUT FIELD CONTENT: the field's own `text` is what renders — it overwrites its label child. Pass the mockup's string to `create_inputfield`, or `set_text_properties` on the field itself (targeting the Text child also works, the content is routed to the component). A field with an empty text AND an empty placeholder draws nothing and is rejected at verdict time.");
+                sb.AppendLine();
                 sb.AppendLine("#### MANDATORY STYLING RULES (do NOT rely on defaults)");
-                sb.AppendLine("- TEXT ALIGNMENT: newly created text defaults to left/top-left. For EVERY visible text you MUST set `alignment` explicitly via `set_text_properties(_batch)` — titles and button labels are almost always `Center`. Never leave a heading or button label unaligned.");
-                sb.AppendLine("- FONT HIERARCHY: set `fontSize` per role (title > body > caption) and use `fontStyle=Bold` for titles/labels. Do not leave everything at the default size.");
-                sb.AppendLine("- BUTTON/PANEL BACKGROUNDS: a freshly created button is a flat solid-color rectangle. You MUST assign a real background sprite via `set_image(_batch)` and set `type=Sliced` for 9-slice frames so corners are not stretched. If no sprite exists, tint the color to match the mockup — never ship the default blue.");
+                sb.AppendLine("- TEXT ALIGNMENT: newly created text defaults to left/middle-left. For EVERY visible text you MUST set `alignment` explicitly via `set_text_properties(_batch)` — titles and button labels are almost always `Center`. Never leave a heading or button label unaligned.");
+                sb.AppendLine("- FONT HIERARCHY: set `fontSize` per role (title > section label > body > caption) and use `fontStyle=Bold` for titles/labels. Measure the text height on the mockup with `map_design_rect_batch` instead of guessing — a verdict is rejected when every label shares one font size.");
+                sb.AppendLine("- FONT & TEXT EFFECTS: `set_text_properties(_batch)` also takes `fontAssetPath`, `outlineWidth` + `outlineR/G/B/A`, `characterSpacing`, `lineSpacing` and `enableWordWrapping`. Game-UI titles in a mockup usually have a coloured outline — reproduce it there (TMP material outline) rather than with `add_outline`, which is only for Legacy Text/graphics.");
+                sb.AppendLine("- TARGET THE TEXT NODE: a Button/Tab keeps its label in a `Text`/`Label` CHILD. `set_text_properties` on the root FAILS (or warns that it was redirected) — it no longer silently reports success, so read every result.");
+                sb.AppendLine("- BUTTON/PANEL BACKGROUNDS: a freshly created button is an untextured white rectangle. You MUST assign a real background sprite via `set_image(_batch)` with `type=Sliced` for 9-slice frames, or tint it to the mockup's colour.");
                 sb.AppendLine("- SPRITE FAILURES ARE NOT SILENT: if `create_image`/`set_image`/`set_image_sprite` returns a `warning`/`error` about the sprite (path wrong, or asset not imported as Sprite), the element is now a blank/white box. Fix the path or pick another sprite and retry — do NOT proceed as if it succeeded.");
-                sb.AppendLine("- TEXT EFFECTS: for titles and button labels over colored backgrounds, add Outline/Shadow via `add_outline(_batch)` when the mockup shows an outline or drop shadow.");
+                sb.AppendLine("- REPLACING A WRONG SPRITE: a colour tint MULTIPLIES the existing artwork, it does not remove it — a brush-stroke banner tinted blue is still a brush stroke. To make an element a flat colour you must pass `spritePath=\"\"` (empty string) in the same `set_image(_batch)` item; the result then says the sprite was CLEARED. To swap artwork, pass the new path.");
+                sb.AppendLine("- VERIFY STYLES STRUCTURALLY: `inspect_components(_batch)` prints colour, alignment, fontSize, font, outline, sprite, Selectable state colours/sprites and InputField wiring. Use it to confirm a style actually landed — a small screenshot cannot show that.");
                 sb.AppendLine();
                 sb.AppendLine("### Phase 3: Verify (MANDATORY)");
                 if (_settings.SupportsVision)
@@ -400,7 +414,12 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine("- `analyze_screenshot` returning success=true only means the image was delivered. It is NOT a passing verdict — the task cannot finish until `report_visual_verdict` covers your latest capture.");
                         sb.AppendLine("- `report_visual_verdict` must describe what the image ACTUALLY shows, and every `visibleElements` entry needs the bounding box where you see it. Those pixels are sampled: a claim about a region that looks like plain background is rejected. An element you created but cannot see is `missingElements`, never `visibleElements`.");
                         sb.AppendLine("- matches=true is also rejected while icon-sized Images still have no sprite. A flat green/pink/blue square is a PLACEHOLDER, not the mockup's check mark or gender icon — say so instead of counting it as done.");
-                        sb.AppendLine("- If the verdict is matches=false, fix ONLY the listed items and repeat the chain. Do NOT delete and rebuild the UI: every rebuild so far has lost artwork and made the result worse. Missing icons almost always mean a failed sprite assignment, a zero-size RectTransform, or an element covered by a later sibling — inspect before re-styling.");
+                        sb.AppendLine("- matches=true is rejected as well while the scene still carries factory defaults: empty text, one font size for every label, untextured button backgrounds, an unwired InputField, an input field showing neither text nor placeholder, or a tab/option with no selected-state difference. Those are read from the scene, not the pixels, so they cannot be talked around.");
+                        sb.AppendLine("- Before reporting matches=true, re-check the PROJECT RULES section: if a rule mandates exact sizes or font sizes, the scene must still have those values — a later layout polish that drifted away from them is a mismatch you must fix, not report as done.");
+                        sb.AppendLine("- EVERY verdict round must re-compare the WHOLE image against the mockup — tab shape, font sizes, text colour and outline, input field, icon spacing, button size, overall proportions — not just the items you listed last round. Your first verdict's mismatch list is a starting point, never the full set.");
+                        sb.AppendLine("- Fix issues in place and repeat the chain. Do NOT delete and rebuild the UI: every rebuild so far has lost artwork and made the result worse. Missing icons almost always mean a failed sprite assignment, a zero-size RectTransform, or an element covered by a later sibling — inspect before re-styling.");
+                        sb.AppendLine("- ANY scene edit invalidates the current capture: `analyze_screenshot` and `report_visual_verdict` are REJECTED for a screenshot taken before your last edit. Take a new one after every fix.");
+                        sb.AppendLine("- When a verdict is rejected, change ONLY the nodes it names. Do not revert your own earlier fix (a sprite you cleared on purpose is not a defect) and do not restyle elements that already matched — that is how a build that was nearly right becomes worse.");
                         sb.AppendLine("- If `take_screenshot` returns success=false / validCapture=false, the capture FAILED — do NOT call analyze on any old file at that path. Retake until success=true.");
                         sb.AppendLine("- Your final summary must match the last verified screenshot. Never list an element as delivered when your own verdict marked it missing; state remaining problems openly instead.");
                     }
@@ -445,6 +464,7 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine("5. Styling 1 Image → `set_image` (NOT set_image_sprite)");
                 sb.AppendLine("6. Styling 2+ Texts → `set_text_properties_batch` (text, fontSize, color in one call. ALWAYS pass `text` content)");
                 sb.AppendLine("7. Styling 1 Text → `set_text_properties` (ALWAYS pass `text` content)");
+                sb.AppendLine("7b. Styling 2+ selected/highlight states → `configure_selectable_states_batch`");
                 sb.AppendLine("8. Adding 2+ Outline/Shadow → `add_outline_batch`");
                 sb.AppendLine("9. Configuring 2+ LayoutElements → `add_layout_element_batch`");
                 sb.AppendLine("10. Setting 2+ component properties → `set_component_property_batch`");
@@ -495,15 +515,22 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine("- Use `rebuild_asset_index` to build the visual index before using `match_sprite_by_image` or `search_sprites_by_text`.");
                     }
                 }
+                else if (_settings.SupportsVision)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("## VISUAL ASSET INDEX (DISABLED)");
+                    sb.AppendLine("- Visual sprite matching is OFF, so you can only find sprites by FILENAME. Filenames often lie about how a sprite looks.");
+                    sb.AppendLine("- Therefore: pick a sprite only when the filename clearly matches the role, keep to the project's Sprite Mapping, and for anything uncertain use a colour-tinted Image and SAY in your final summary which elements need a hand-picked sprite. Do NOT keep guessing new keywords — that burns the search budget without improving fidelity.");
+                }
                 // ── Design Mockup Analysis ──
                 if (_settings.SupportsVision)
                 {
                     sb.AppendLine();
                     sb.AppendLine("## DESIGN MOCKUP ANALYSIS");
                     sb.AppendLine("When the user provides a design mockup image:");
-                    sb.AppendLine("1. **Analyze Structure**: Identify the UI hierarchy — panels, buttons, text labels, icons, backgrounds, decorations.");
-                    sb.AppendLine("2. **Measure Elements**: For each UI element, determine its normalized bbox (0-1, top-left origin) on the mockup. Do NOT use vague 'approximate' positions.");
-                    sb.AppendLine("3. **Convert Coordinates**: Call `map_design_rect_batch` (or `map_design_rect`) to convert normalized bboxes into Canvas `anchoredPosition` + `sizeDelta` using the design resolution. Prefer center-anchor values returned by the tool.");
+                    sb.AppendLine("1. **Inventory EVERY visual part first**: before any tool call, list the complete set of distinct visual elements — each background layer, the tab strip and each tab state, decorative frame corners, the input/name field and its edit button, every icon cell and its cell background, the selection highlight, each text run, and the confirm button. The failure mode to avoid is analysing only the page skeleton (panel, title, grid, button) and inventing the rest while building.");
+                    sb.AppendLine("2. **Measure Elements**: For each element in that inventory, determine its normalized bbox (0-1, top-left origin) on the mockup. Do NOT use vague 'approximate' positions. For every text, also note its pixel height, colour and whether it has an outline, so you can derive fontSize instead of guessing.");
+                    sb.AppendLine("3. **Convert Coordinates**: Call `map_design_rect_batch` (or `map_design_rect`) to convert normalized bboxes into Canvas `anchoredPosition` + `sizeDelta` using the design resolution. Prefer center-anchor values returned by the tool. `create_batch` is BLOCKED until you have mapped at least one region — measure the whole inventory in one batch call.");
                     sb.AppendLine("4. **Match Assets**: Use the visual asset index to find matching local sprites:");
                     if (_settings.EnableAssetIndexing)
                     {
@@ -533,8 +560,9 @@ namespace Indey.UIPrefabBuilder.Core
                     sb.AppendLine("When reproducing a design mockup, carefully observe the design and verify the following before delivery:");
                     sb.AppendLine("1. **Background layers**: Observe whether the design has distinct background layers (popup frame, header banner, tab bar, list area). If so, each must be a separate Image with the correct sprite — do NOT skip any visible background.");
                     sb.AppendLine("2. **Title/Header bar**: If the design shows a colored banner or decorative bar behind the title text, create a separate Image element for it — do not render it as plain text only.");
-                    sb.AppendLine("3. **Tab/Button states**: If the design has tabs or toggle buttons, observe the visual difference between selected and unselected states (color, shape, brightness) and reproduce them with DIFFERENT sprites or tint colors.");
-                    sb.AppendLine("4. **Text styling**: Observe the design's text effects (outline, shadow, glow) and reproduce them using TMPro settings. Match font colors from the mockup. ALWAYS pass exact `text` content.");
+                    sb.AppendLine("3. **Tab/Button states**: If the design has tabs or toggle buttons, observe how the selected one differs (colour, shape, whether it merges into the content area below) and build the strip with `create_tab_bar`, giving the selected and unselected states different sprites or tints via `configure_selectable_states_batch`.");
+                    sb.AppendLine("4. **Text styling**: Reproduce each text's size, colour, weight and outline with `set_text_properties_batch` (fontSize, fontStyle, r/g/b/a, outlineWidth + outlineR/G/B/A, fontAssetPath). Derive fontSize from the measured text height — do not leave labels at the creation default. ALWAYS pass exact `text` content.");
+                    sb.AppendLine("4b. **Interactive structure**: an editable/name row is `create_inputfield`, a choosable cell is `create_toggle`. Reproducing them as a plain Image plus a text child looks approximately right in a screenshot but is the wrong component, and the user will see it immediately.");
                     sb.AppendLine("5. **Spacing & proportions**: Use `map_design_rect` sizes — do NOT estimate relative sizes by eye alone. Verify padding, margins, and gaps against the mapped values.");
                     sb.AppendLine("6. **Icon sizes**: If the design shows a list with icons, ensure uniform icon size and vertical centering with labels.");
                     sb.AppendLine("7. **Close button**: Place the close button in the same relative position as the design (inside/outside/below the popup).");
@@ -605,6 +633,22 @@ namespace Indey.UIPrefabBuilder.Core
             }
 
             _history.SetSystemPrompt(sb.ToString());
+        }
+
+        private static void LogProjectRulesForTask()
+        {
+            var cfg = ProjectConfig.Current;
+            if (cfg == null)
+            {
+                ConsoleLogger.Log("[PROJECT_RULES] (no project config)");
+                return;
+            }
+
+            var text = cfg.BuildRulesLogText();
+            if (text == "(none)")
+                ConsoleLogger.Log("[PROJECT_RULES] (none)");
+            else
+                ConsoleLogger.LogBlock("PROJECT_RULES", text);
         }
 
         private void ResetStepCounters()
@@ -702,6 +746,9 @@ namespace Indey.UIPrefabBuilder.Core
                 || name == "set_component_property" || name == "set_component_property_batch"
                 || name == "add_outline" || name == "add_outline_batch"
                 || name == "add_layout_element" || name == "add_layout_element_batch"
+                || name == "create_tab_bar" || name == "create_toggle" || name == "create_inputfield"
+                || name == "configure_selectable_states" || name == "configure_selectable_states_batch"
+                || name == "wire_toggle_graphics"
                 || name == "execute_code" || name == "save_as_prefab";
         }
 
@@ -888,8 +935,12 @@ namespace Indey.UIPrefabBuilder.Core
                     return BuildHonestSummaryDemand("you stopped again without re-running the verification chain after the fix instructions");
 
                 return "Your own verdict says the build does NOT match the design yet: " + (_verdictIssues ?? "see previous verdict") + ". " +
-                    "Fix ONLY those items with set_image_batch / set_rect_transform_batch / set_text_properties_batch — " +
+                    "Fix those items in place with set_image_batch / set_rect_transform_batch / set_text_properties_batch / configure_selectable_states_batch — " +
                     "do NOT rebuild the UI from scratch, earlier rebuilds made the result worse. " +
+                    "Touch ONLY the nodes named in the issue list: reverting a change you made deliberately (e.g. re-assigning a sprite you had cleared) " +
+                    "or restyling elements that already matched is how a good intermediate build gets ruined. " +
+                    "Then re-examine the WHOLE mockup once more, not just this list: tab structure and selected state, font sizes and colours, " +
+                    "text outline, the input field, icon spacing, button size and overall proportions. " +
                     "Missing icons usually mean the sprite failed to load, the element has zero size, or it is behind another element. " +
                     "Then `take_screenshot` → `analyze_screenshot` → `report_visual_verdict` again.";
             }
@@ -1133,6 +1184,19 @@ namespace Indey.UIPrefabBuilder.Core
                 {
                     var cacheKey = $"{call.Name}:{call.Arguments}";
                     _searchCache[cacheKey] = result;
+                }
+
+                // Editing the scene invalidates the whole capture → analyze → verdict chain: the
+                // existing screenshot no longer shows what was just changed. Batch calls can edit
+                // even when they report failure, so this does not depend on success.
+                if (ToolExecutor.IsSceneMutatingTool(call.Name))
+                {
+                    _latestScreenshotPath = null;
+                    _latestCaptureId = null;
+                    _didAnalyzeScreenshot = false;
+                    _lastAnalyzedScreenshotPath = null;
+                    _verdictScreenshotPath = null;
+                    _verdictMatches = false;
                 }
 
                 try

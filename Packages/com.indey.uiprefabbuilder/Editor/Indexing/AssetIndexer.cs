@@ -113,7 +113,10 @@ namespace Indey.UIPrefabBuilder.Indexing
 
             var config = ProjectConfig.Current?.indexingConfig ?? new IndexingConfig();
             var root = ProjectRoot;
-            var dirsCopy = new List<string>(config.indexDirectories ?? new List<string> { "Assets" });
+            // An empty list means "not configured", not "index nothing" — without this fallback a
+            // rebuild silently scans zero files and every visual sprite match comes back empty.
+            var dirsCopy = new List<string>(config.indexDirectories ?? new List<string>());
+            if (dirsCopy.Count == 0) dirsCopy.Add("Assets");
             var ignoresCopy = new List<string>(config.ignorePatterns ?? new List<string>());
 
             BackgroundWorker.Run(

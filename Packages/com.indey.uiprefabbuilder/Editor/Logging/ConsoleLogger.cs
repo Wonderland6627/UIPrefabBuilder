@@ -74,16 +74,18 @@ namespace Indey.UIPrefabBuilder.Logging
 
         /// <summary>
         /// Compact log for tool calls: single line with name + truncated args/result.
+        /// The limits are generous on purpose — a batch payload cut at 150 chars hides which
+        /// sprite/text actually went in, which is exactly what post-mortems need.
         /// </summary>
         public static void LogToolCall(string toolName, string args, string result)
         {
-            var argPreview = TruncateForLog(args, 150);
+            var argPreview = TruncateForLog(args, 2000);
             var line = $"[Tool] {toolName}({argPreview})";
             AddEntry(LogLevel.Info, line);
 
             if (!string.IsNullOrEmpty(result))
             {
-                var resultPreview = TruncateForLog(result, 200);
+                var resultPreview = TruncateForLog(result, 800);
                 AddEntry(LogLevel.Info, $"[Tool] {toolName} => {resultPreview}");
             }
         }

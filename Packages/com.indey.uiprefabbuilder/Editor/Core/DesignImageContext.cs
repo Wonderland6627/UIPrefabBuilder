@@ -12,6 +12,35 @@ namespace Indey.UIPrefabBuilder.Core
         /// design mockup attached to the current task, or null if none.</summary>
         public static string CurrentAssetPath { get; set; }
 
+        /// <summary>
+        /// How many mockup regions have been converted to Canvas rects for the current task.
+        /// Zero means nothing has been measured yet, so any build would be based on eyeballed sizes.
+        /// </summary>
+        public static int MappedRegionCount { get; private set; }
+
+        /// <summary>
+        /// True while the current task is "reproduce this freshly attached mockup", which is when
+        /// building before measuring is a real mistake. A follow-up text-only turn keeps the image
+        /// available to the tools but must not be blocked again.
+        /// </summary>
+        public static bool RequiresMeasurement { get; private set; }
+
+        public static void BeginImageTask()
+        {
+            MappedRegionCount = 0;
+            RequiresMeasurement = true;
+        }
+
+        public static void BeginTextTask()
+        {
+            RequiresMeasurement = false;
+        }
+
+        public static void RegisterMappedRegions(int count)
+        {
+            if (count > 0) MappedRegionCount += count;
+        }
+
         /// <summary>Pixel width of the design mockup, or 0 if unknown.</summary>
         public static int Width { get; set; }
 
@@ -25,6 +54,8 @@ namespace Indey.UIPrefabBuilder.Core
             CurrentAssetPath = null;
             Width = 0;
             Height = 0;
+            MappedRegionCount = 0;
+            RequiresMeasurement = false;
         }
 
         public static void SetFromTexture(string assetPath, UnityEngine.Texture2D tex)

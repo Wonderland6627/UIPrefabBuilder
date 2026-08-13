@@ -211,10 +211,13 @@ namespace Indey.UIPrefabBuilder.Config
             }
 
             // Rules
-            var activeRules = rules.FindAll(r => !string.IsNullOrWhiteSpace(r));
+            var activeRules = GetActiveRules();
             if (activeRules.Count > 0)
             {
                 sb.AppendLine("### PROJECT RULES (MUST FOLLOW — these are user-defined conventions for this project)");
+                sb.AppendLine("PRIORITY: these rules OVERRIDE `map_design_rect` sizes and any later visual polish.");
+                sb.AppendLine("If a rule specifies an exact width / height / font size, create the element with those values and do NOT change them in a later `set_rect_transform(_batch)` / `set_text_properties(_batch)` call to 'match the screenshot' — only reposition.");
+                sb.AppendLine("Before your final verdict, re-read these rules and confirm every value they mandate is still what the scene has.");
                 for (int i = 0; i < activeRules.Count; i++)
                 {
                     sb.AppendLine($"- {activeRules[i]}");
@@ -222,6 +225,23 @@ namespace Indey.UIPrefabBuilder.Config
                 sb.AppendLine();
             }
 
+            return sb.ToString();
+        }
+
+        public List<string> GetActiveRules()
+            => rules.FindAll(r => !string.IsNullOrWhiteSpace(r));
+
+        /// <summary>Plain text of active rules for session logs / post-mortems.</summary>
+        public string BuildRulesLogText()
+        {
+            var active = GetActiveRules();
+            if (active.Count == 0) return "(none)";
+            var sb = new StringBuilder();
+            for (int i = 0; i < active.Count; i++)
+            {
+                if (i > 0) sb.AppendLine().AppendLine();
+                sb.Append(active[i].Trim());
+            }
             return sb.ToString();
         }
 

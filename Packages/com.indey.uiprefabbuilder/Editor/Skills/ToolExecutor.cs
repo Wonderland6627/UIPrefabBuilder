@@ -19,6 +19,12 @@ namespace Indey.UIPrefabBuilder.Skills
     {
         private readonly DynamicCompiler _compiler = new DynamicCompiler();
 
+        // Every scene edit bumps the revision; each capture remembers the revision it was taken at.
+        // Without this a verdict can be recorded against a screenshot that predates the last edit —
+        // the pixel claims come from the stale image while the scene checks read the new scene.
+        private static int _sceneRevision;
+        private static readonly Dictionary<string, int> _captureRevisions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
         public string Execute(string toolName, string argumentsJson)
         {
             try
@@ -26,12 +32,76 @@ namespace Indey.UIPrefabBuilder.Skills
                 var args = string.IsNullOrWhiteSpace(argumentsJson)
                     ? new JObject()
                     : JObject.Parse(argumentsJson);
+                NormalizeArgumentKeys(args);
+                if (IsSceneMutatingTool(toolName)) _sceneRevision++;
                 return ExecuteInternal(toolName, args);
             }
             catch (Exception e)
             {
                 ConsoleLogger.Error($"Tool '{toolName}' error: {e.Message}");
                 return Error($"Tool execution failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// True for tools that can change what the UI looks like. Inspect/search/screenshot tools are
+        /// read-only, so they never invalidate a capture.
+        /// </summary>
+        public static bool IsSceneMutatingTool(string toolName)
+        {
+            if (string.IsNullOrEmpty(toolName)) return false;
+            if (toolName == "execute_code" || toolName == "instantiate_prefab") return true;
+
+            return toolName.StartsWith("create_", StringComparison.Ordinal)
+                || toolName.StartsWith("set_", StringComparison.Ordinal)
+                || toolName.StartsWith("add_", StringComparison.Ordinal)
+                || toolName.StartsWith("configure_", StringComparison.Ordinal)
+                || toolName.StartsWith("wire_", StringComparison.Ordinal)
+                || toolName.StartsWith("destroy_", StringComparison.Ordinal)
+                || toolName.StartsWith("remove_", StringComparison.Ordinal)
+                || toolName.StartsWith("rename_", StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Rejects reasoning about a capture that no longer shows the current scene. Captures we have
+        /// no record of (e.g. a user-supplied image) are left alone.
+        /// </summary>
+        private static string CheckCaptureFreshness(string screenshotPath, string action)
+        {
+            if (string.IsNullOrEmpty(screenshotPath)) return null;
+            if (!_captureRevisions.TryGetValue(screenshotPath, out var captureRevision)) return null;
+            if (captureRevision >= _sceneRevision) return null;
+
+            var edits = _sceneRevision - captureRevision;
+            return $"The scene has been modified {edits} time(s) since '{screenshotPath}' was captured, so that image no longer shows the current UI. " +
+                $"Call `take_screenshot` again and {action} the NEW file. " +
+                "Never judge the build from a capture taken before your last edit.";
+        }
+
+        /// <summary>
+        /// Models occasionally emit an over-escaped payload where the key itself carries quotes
+        /// (`{"\"target\"": "Foo"}`). Every lookup then misses and the tool answers
+        /// "GameObject '' not found", which reads as a scene problem and gets retried verbatim.
+        /// Stripping the stray quotes recovers the intended call instead.
+        /// </summary>
+        private static void NormalizeArgumentKeys(JObject args)
+        {
+            if (args == null) return;
+
+            var renames = new List<KeyValuePair<string, string>>();
+            foreach (var prop in args.Properties())
+            {
+                var cleaned = prop.Name.Trim().Trim('"', '\'').Trim();
+                if (cleaned.Length == 0 || cleaned == prop.Name) continue;
+                if (args[cleaned] != null) continue;
+                renames.Add(new KeyValuePair<string, string>(prop.Name, cleaned));
+            }
+
+            foreach (var rename in renames)
+            {
+                var value = args[rename.Key];
+                args.Remove(rename.Key);
+                args[rename.Value] = value;
             }
         }
 
@@ -55,6 +125,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 case "create_toggle": return DoCreateToggle(args);
                 case "create_scrollview": return DoCreateScrollView(args);
                 case "create_dropdown": return DoCreateDropdown(args);
+                case "create_tab_bar": return DoCreateTabBar(args);
                 // Create batch
                 case "create_batch": return DoCreateBatch(args);
                 // RectTransform combined
@@ -85,6 +156,9 @@ namespace Indey.UIPrefabBuilder.Skills
                 case "add_outline": return DoAddOutline(args);
                 case "add_outline_batch": return DoAddOutlineBatch(args);
                 case "configure_selectable": return DoConfigureSelectable(args);
+                case "configure_selectable_states": return DoConfigureSelectableStates(args);
+                case "configure_selectable_states_batch": return DoConfigureSelectableStatesBatch(args);
+                case "wire_toggle_graphics": return DoWireToggleGraphics(args);
                 // Generic component
                 case "add_component": return DoAddComponent(args);
                 case "set_component_property": return DoSetComponentProperty(args);
@@ -242,8 +316,32 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var parent = FindGO(Str(args, "parent"));
             if (parent == null) return TargetNotFound(Str(args, "parent"));
-            return Created(UICreator.CreateInputField(Str(args, "name"), parent.transform, Str(args, "placeholder", "Enter text..."),
-                new Vector2(Float(args, "width", 200), Float(args, "height", 30))));
+
+            Color? textColor = null;
+            if (args["r"] != null || args["g"] != null || args["b"] != null)
+                textColor = new Color(Float(args, "r", 0.2f), Float(args, "g", 0.2f), Float(args, "b", 0.2f), Float(args, "a", 1));
+
+            var spriteErrors = new List<string>();
+            var go = UICreator.CreateInputField(Str(args, "name"), parent.transform,
+                Str(args, "placeholder", "Enter text..."),
+                new Vector2(Float(args, "width", 200), Float(args, "height", 30)),
+                Str(args, "text", ""),
+                Int(args, "fontSize", 24),
+                textColor, null,
+                Str(args, "backgroundSpritePath", null),
+                spriteErrors);
+            if (go == null) return Error("Failed to create.");
+
+            var result = new JObject
+            {
+                ["success"] = true,
+                ["name"] = go.name,
+                ["path"] = GetHierarchyPath(go),
+                ["structure"] = "Standard InputField hierarchy created and wired (Text Area → Placeholder / Text). " +
+                    "Style the visible label via set_text_properties on the 'Text' child and the hint on 'Placeholder'."
+            };
+            AttachSpriteWarnings(result, spriteErrors);
+            return result.ToString();
         }
 
         private string DoCreateSlider(JObject args)
@@ -257,7 +355,31 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var parent = FindGO(Str(args, "parent"));
             if (parent == null) return TargetNotFound(Str(args, "parent"));
-            return Created(UICreator.CreateToggle(Str(args, "name"), parent.transform, Str(args, "label", "Toggle"), Bool(args, "isOn", true)));
+
+            Color? labelColor = null;
+            if (args["r"] != null || args["g"] != null || args["b"] != null)
+                labelColor = new Color(Float(args, "r", 1), Float(args, "g", 1), Float(args, "b", 1), Float(args, "a", 1));
+
+            var spriteErrors = new List<string>();
+            var go = UICreator.CreateToggle(Str(args, "name"), parent.transform, Str(args, "label", null),
+                Bool(args, "isOn", true),
+                new Vector2(Float(args, "width", 160), Float(args, "height", 160)),
+                Str(args, "backgroundSpritePath", null),
+                Str(args, "checkmarkSpritePath", null),
+                Int(args, "fontSize", 20),
+                labelColor, spriteErrors);
+            if (go == null) return Error("Failed to create.");
+
+            var result = new JObject
+            {
+                ["success"] = true,
+                ["name"] = go.name,
+                ["path"] = GetHierarchyPath(go),
+                ["structure"] = "Toggle hierarchy created and wired: 'Background' is targetGraphic, 'Background/Checkmark' is " +
+                    "Toggle.graphic (the selected-state highlight). Assign real sprites to both with set_image_batch."
+            };
+            AttachSpriteWarnings(result, spriteErrors);
+            return result.ToString();
         }
 
         private string DoCreateScrollView(JObject args)
@@ -289,6 +411,9 @@ namespace Indey.UIPrefabBuilder.Skills
             try { itemsArr = JArray.Parse(itemsJson); }
             catch { return Error("Invalid JSON in 'items' parameter."); }
 
+            var measurementGate = CheckDesignMeasurementGate();
+            if (measurementGate != null) return measurementGate;
+
             int total = itemsArr.Count, success = 0, fail = 0;
             var results = new JArray();
 
@@ -312,9 +437,14 @@ namespace Indey.UIPrefabBuilder.Skills
                     var text = item["text"]?.ToString();
                     var spritePath = item["spritePath"]?.ToString() ?? "";
                     var fontSize = item["fontSize"] != null ? (int)item["fontSize"] : 18;
+                    var alignment = ParseCreateAlignment(item["alignment"]?.ToString());
+                    var isOn = item["isOn"] == null || (bool)item["isOn"];
+                    var placeholder = item["placeholder"]?.ToString();
+                    var checkmarkSpritePath = item["checkmarkSpritePath"]?.ToString();
 
                     GameObject go = null;
                     string itemSpriteError = null;
+                    var itemSpriteErrors = new List<string>();
                     switch (type)
                     {
                         case "canvas": go = UICreator.CreateCanvas(name); break;
@@ -326,19 +456,21 @@ namespace Indey.UIPrefabBuilder.Skills
                             go = UICreator.CreateButton(name, parentT, text ?? "Button", new Vector2(w, h)); break;
                         case "text":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
-                            go = UICreator.CreateText(name, parentT, text ?? "", fontSize, color); break;
+                            go = UICreator.CreateText(name, parentT, text ?? "", fontSize, color, alignment); break;
                         case "image":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
                             go = UICreator.CreateImage(name, parentT, spritePath, new Vector2(w, h), out itemSpriteError); break;
                         case "inputfield":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
-                            go = UICreator.CreateInputField(name, parentT, text ?? "Enter text...", new Vector2(w, h)); break;
+                            go = UICreator.CreateInputField(name, parentT, placeholder ?? "Enter text...", new Vector2(w, h),
+                                text ?? "", fontSize, null, null, spritePath, itemSpriteErrors); break;
                         case "slider":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
                             go = UICreator.CreateSlider(name, parentT, 0, 1, 0.5f); break;
                         case "toggle":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
-                            go = UICreator.CreateToggle(name, parentT, text ?? "Toggle", true); break;
+                            go = UICreator.CreateToggle(name, parentT, text, isOn, new Vector2(w, h),
+                                spritePath, checkmarkSpritePath, fontSize, color, itemSpriteErrors); break;
                         case "dropdown":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
                             go = UICreator.CreateDropdown(name, parentT, text ?? "Option A,Option B", new Vector2(w, h)); break;
@@ -352,11 +484,12 @@ namespace Indey.UIPrefabBuilder.Skills
                     // 对于 text 类型，创建后立即验证 text 内容是否写入成功
                     if (type == "text" && go != null && !string.IsNullOrEmpty(text))
                     {
-                        ComponentHelper.SetText(go, text);
+                        ComponentHelper.TrySetText(go, text, out _);
                     }
 
                     var itemResult = new JObject { ["success"] = true, ["name"] = go.name, ["path"] = GetHierarchyPath(go) };
-                    if (!string.IsNullOrEmpty(itemSpriteError)) itemResult["warning"] = itemSpriteError;
+                    if (!string.IsNullOrEmpty(itemSpriteError)) itemSpriteErrors.Insert(0, itemSpriteError);
+                    AttachSpriteWarnings(itemResult, itemSpriteErrors);
                     results.Add(itemResult);
                     success++;
                 }
@@ -368,6 +501,36 @@ namespace Indey.UIPrefabBuilder.Skills
             }
 
             return new JObject { ["success"] = fail == 0, ["totalItems"] = total, ["successCount"] = success, ["failCount"] = fail, ["results"] = results }.ToString();
+        }
+
+        private static TextAnchor ParseCreateAlignment(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return TextAnchor.MiddleLeft;
+            switch (value.ToLowerInvariant())
+            {
+                case "center": return TextAnchor.MiddleCenter;
+                case "left": return TextAnchor.MiddleLeft;
+                case "right": return TextAnchor.MiddleRight;
+                case "top": return TextAnchor.UpperCenter;
+                case "bottom": return TextAnchor.LowerCenter;
+                default: return Enum.TryParse<TextAnchor>(value, true, out var anchor) ? anchor : TextAnchor.MiddleLeft;
+            }
+        }
+
+        /// <summary>
+        /// 有设计稿时，禁止在未做任何区域测量的情况下开始搭建。凭肉眼估算的尺寸是比例失真的根源，
+        /// 而 map_design_rect 已经能把归一化 bbox 换算成 Canvas 数值。
+        /// </summary>
+        private static string CheckDesignMeasurementGate()
+        {
+            if (!DesignImageContext.RequiresMeasurement) return null;
+            if (string.IsNullOrEmpty(DesignImageContext.CurrentAssetPath)) return null;
+            if (DesignImageContext.MappedRegionCount > 0) return null;
+
+            return Error("A design mockup is attached but you have not measured a single region yet. " +
+                "Call `map_design_rect_batch` first with the normalized bbox (0-1, top-left origin) of EVERY element you are about to create " +
+                "— including each background layer, tab, input box, icon cell and label — then build with the returned " +
+                "anchoredPosition/sizeDelta values. Eyeballed sizes are the main cause of wrong proportions and font scale.");
         }
 
         #endregion
@@ -497,13 +660,16 @@ namespace Indey.UIPrefabBuilder.Skills
             Color? color = null;
             if (args["r"] != null || args["g"] != null || args["b"] != null)
                 color = new Color(Float(args, "r", 1), Float(args, "g", 1), Float(args, "b", 1), Float(args, "a", 1));
-            var spriteError = ComponentHelper.SetImageProperties(go, Str(args, "spritePath", null), Str(args, "type", null),
+            var spriteError = ComponentHelper.SetImageProperties(go, ReadSpritePathArg(args["spritePath"]), Str(args, "type", null),
                 Str(args, "fillMethod", null), NullFloat(args, "fillAmount"), NullBool(args, "preserveAspect"), color,
-                out var missingImage);
-            if (missingImage) return Error($"'{go.name}' has no Image component. Add one with add_component, or target the child that renders the graphic.");
+                out var missingImage, out var spriteCleared);
+            if (missingImage) return Error(NoImageComponentError(go));
+            var message = spriteCleared
+                ? $"Image properties updated on '{go.name}'. The previous sprite was CLEARED (empty spritePath) — it now renders as a flat colour."
+                : $"Image properties updated on '{go.name}'.";
             if (!string.IsNullOrEmpty(spriteError))
-                return new JObject { ["success"] = true, ["message"] = $"Image properties updated on '{go.name}'.", ["warning"] = spriteError }.ToString();
-            return Ok($"Image properties updated on '{go.name}'.");
+                return new JObject { ["success"] = true, ["message"] = message, ["warning"] = spriteError }.ToString();
+            return Ok(message);
         }
 
         private string DoSetImageBatch(JObject args)
@@ -532,20 +698,21 @@ namespace Indey.UIPrefabBuilder.Skills
                             item["g"] != null ? (float)item["g"] : 1f,
                             item["b"] != null ? (float)item["b"] : 1f,
                             item["a"] != null ? (float)item["a"] : 1f);
-                    var spritePath = item["spritePath"]?.ToString();
+                    var spritePath = ReadSpritePathArg(item["spritePath"]);
                     var type = item["type"]?.ToString();
                     var fillMethod = item["fillMethod"]?.ToString();
                     float? fillAmount = item["fillAmount"] != null ? (float?)item["fillAmount"] : null;
                     bool? preserveAspect = item["preserveAspect"] != null ? (bool?)item["preserveAspect"] : null;
                     var spriteError = ComponentHelper.SetImageProperties(go, spritePath, type, fillMethod, fillAmount,
-                        preserveAspect, color, out var missingImage);
+                        preserveAspect, color, out var missingImage, out var spriteCleared);
                     if (missingImage)
                     {
-                        results.Add(ItemFail(target ?? go.name, $"'{go.name}' has no Image component."));
+                        results.Add(ItemFail(target ?? go.name, NoImageComponentError(go)));
                         fail++;
                         continue;
                     }
                     var imgResult = new JObject { ["success"] = true, ["name"] = go.name };
+                    if (spriteCleared) imgResult["message"] = "Previous sprite CLEARED (empty spritePath) — renders as a flat colour now.";
                     if (!string.IsNullOrEmpty(spriteError)) imgResult["warning"] = spriteError;
                     results.Add(imgResult);
                     success++;
@@ -558,6 +725,38 @@ namespace Indey.UIPrefabBuilder.Skills
             }
 
             return new JObject { ["success"] = fail == 0, ["totalItems"] = total, ["successCount"] = success, ["failCount"] = fail, ["results"] = results }.ToString();
+        }
+
+        /// <summary>
+        /// null 与 JSON null 都表示"不改动 sprite"，只有真正传入的空字符串才表示清除。
+        /// </summary>
+        private static string ReadSpritePathArg(JToken token)
+            => token == null || token.Type == JTokenType.Null ? null : token.ToString();
+
+        /// <summary>
+        /// Toggle/Button 这类容器自身常常没有 Image（图形在 Background 子节点上）。只回一句
+        /// "has no Image component" 会让模型靠 inspect_hierarchy 猜路径，所以这里直接把候选节点报出来。
+        /// </summary>
+        private static string NoImageComponentError(GameObject go)
+        {
+            var hint = $"'{go.name}' has no Image component, so NOTHING was changed.";
+
+            var selectable = go.GetComponent<Selectable>();
+            var targetGraphic = selectable != null ? selectable.targetGraphic : null;
+            if (targetGraphic != null && targetGraphic.gameObject != go)
+                return hint + $" This is a {selectable.GetType().Name} whose graphic lives on '{GetHierarchyPath(targetGraphic.gameObject)}' — retarget that path.";
+
+            var children = new List<string>();
+            foreach (var image in go.GetComponentsInChildren<Image>(true))
+            {
+                if (image == null || image.gameObject == go) continue;
+                children.Add(GetHierarchyPath(image.gameObject));
+                if (children.Count >= 6) break;
+            }
+            if (children.Count > 0)
+                return hint + $" Image children you can target instead: {string.Join(", ", children)}.";
+
+            return hint + " Add one with add_component, or target the child that renders the graphic.";
         }
 
         private string DoSetImageSprite(JObject args)
@@ -573,7 +772,8 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
-            ComponentHelper.SetImageColor(go, new Color(Float(args, "r"), Float(args, "g"), Float(args, "b"), Float(args, "a", 1)));
+            var colorError = ComponentHelper.SetImageColor(go, new Color(Float(args, "r"), Float(args, "g"), Float(args, "b"), Float(args, "a", 1)));
+            if (colorError != null) return Error(colorError);
             return Ok($"Image color set on '{go.name}'.");
         }
 
@@ -581,13 +781,44 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
+
+            var style = ReadTextStyle(args);
+            if (!ComponentHelper.TryApplyTextStyle(go, style, out var message))
+                return Error(message);
+
+            if (!string.IsNullOrEmpty(message))
+                return new JObject { ["success"] = true, ["message"] = $"Text properties updated on '{go.name}'.", ["warning"] = message }.ToString();
+            return Ok($"Text properties updated on '{go.name}'.");
+        }
+
+        private static ComponentHelper.TextStyleArgs ReadTextStyle(JObject args)
+        {
             Color? color = null;
             if (args["r"] != null || args["g"] != null || args["b"] != null)
                 color = new Color(Float(args, "r", 1), Float(args, "g", 1), Float(args, "b", 1), Float(args, "a", 1));
-            int? fontSize = args["fontSize"] != null ? (int?)Int(args, "fontSize") : null;
-            ComponentHelper.SetTextProperties(go, args["text"]?.ToString(), fontSize,
-                args["alignment"]?.ToString(), args["fontStyle"]?.ToString(), color, args["overflow"]?.ToString());
-            return Ok($"Text properties updated on '{go.name}'.");
+
+            Color? outlineColor = null;
+            if (args["outlineR"] != null || args["outlineG"] != null || args["outlineB"] != null)
+                outlineColor = new Color(Float(args, "outlineR", 0), Float(args, "outlineG", 0), Float(args, "outlineB", 0), Float(args, "outlineA", 1));
+
+            return new ComponentHelper.TextStyleArgs
+            {
+                Text = args["text"]?.ToString(),
+                FontSize = NullFloat(args, "fontSize"),
+                Alignment = args["alignment"]?.ToString(),
+                FontStyle = args["fontStyle"]?.ToString(),
+                Color = color,
+                Overflow = args["overflow"]?.ToString(),
+                FontAssetPath = args["fontAssetPath"]?.ToString(),
+                OutlineWidth = NullFloat(args, "outlineWidth"),
+                OutlineColor = outlineColor,
+                CharacterSpacing = NullFloat(args, "characterSpacing"),
+                LineSpacing = NullFloat(args, "lineSpacing"),
+                EnableAutoSizing = NullBool(args, "enableAutoSizing"),
+                FontSizeMin = NullFloat(args, "fontSizeMin"),
+                FontSizeMax = NullFloat(args, "fontSizeMax"),
+                EnableWordWrapping = NullBool(args, "enableWordWrapping")
+            };
         }
 
         private string DoSetTextPropertiesBatch(JObject args)
@@ -609,17 +840,15 @@ namespace Indey.UIPrefabBuilder.Skills
                 if (go == null) { results.Add(ItemFail(target ?? "?", "Not found")); fail++; continue; }
                 try
                 {
-                    Color? color = null;
-                    if (item["r"] != null || item["g"] != null || item["b"] != null)
-                        color = new Color(
-                            item["r"] != null ? (float)item["r"] : 1f,
-                            item["g"] != null ? (float)item["g"] : 1f,
-                            item["b"] != null ? (float)item["b"] : 1f,
-                            item["a"] != null ? (float)item["a"] : 1f);
-                    int? fontSize = item["fontSize"] != null ? (int?)(int)item["fontSize"] : null;
-                    ComponentHelper.SetTextProperties(go, item["text"]?.ToString(), fontSize,
-                        item["alignment"]?.ToString(), item["fontStyle"]?.ToString(), color, item["overflow"]?.ToString());
-                    results.Add(new JObject { ["success"] = true, ["name"] = go.name });
+                    if (!ComponentHelper.TryApplyTextStyle(go, ReadTextStyle(item), out var message))
+                    {
+                        results.Add(ItemFail(target ?? go.name, message));
+                        fail++;
+                        continue;
+                    }
+                    var textResult = new JObject { ["success"] = true, ["name"] = go.name };
+                    if (!string.IsNullOrEmpty(message)) textResult["warning"] = message;
+                    results.Add(textResult);
                     success++;
                 }
                 catch (Exception e)
@@ -636,7 +865,10 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
-            ComponentHelper.SetText(go, Str(args, "text"));
+            if (!ComponentHelper.TrySetText(go, Str(args, "text"), out var message))
+                return Error(message);
+            if (!string.IsNullOrEmpty(message))
+                return new JObject { ["success"] = true, ["message"] = $"Text set on '{go.name}'.", ["warning"] = message }.ToString();
             return Ok($"Text set on '{go.name}'.");
         }
 
@@ -798,9 +1030,168 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
-            ComponentHelper.ConfigureSelectable(go, Str(args, "transition", "ColorTint"),
+            var error = ComponentHelper.ConfigureSelectable(go, Str(args, "transition", "ColorTint"),
                 Str(args, "navigationMode", "Automatic"), Bool(args, "interactable", true));
+            if (error != null) return Error(error);
             return Ok($"Selectable configured on '{go.name}'.");
+        }
+
+        private string DoConfigureSelectableStates(JObject args)
+        {
+            var go = FindGO(Str(args, "target"));
+            if (go == null) return TargetNotFound(Str(args, "target"));
+
+            if (!ComponentHelper.TryConfigureSelectableStates(go, ReadSelectableStates(args), out var message))
+                return Error(message);
+
+            if (!string.IsNullOrEmpty(message))
+                return new JObject { ["success"] = true, ["message"] = $"Selectable states configured on '{go.name}'.", ["warning"] = message }.ToString();
+            return Ok($"Selectable states configured on '{go.name}'.");
+        }
+
+        private string DoConfigureSelectableStatesBatch(JObject args)
+        {
+            var itemsJson = Str(args, "items");
+            if (string.IsNullOrWhiteSpace(itemsJson)) return Error("Missing 'items' parameter.");
+
+            JArray items;
+            try { items = JArray.Parse(itemsJson); }
+            catch { return Error("Invalid JSON in 'items' parameter."); }
+
+            int total = items.Count, success = 0, fail = 0;
+            var results = new JArray();
+
+            foreach (JObject item in items)
+            {
+                var target = item["target"]?.ToString();
+                var go = FindGO(target);
+                if (go == null) { results.Add(ItemFail(target ?? "?", "Not found")); fail++; continue; }
+
+                if (!ComponentHelper.TryConfigureSelectableStates(go, ReadSelectableStates(item), out var message))
+                {
+                    results.Add(ItemFail(target ?? go.name, message));
+                    fail++;
+                    continue;
+                }
+
+                var itemResult = new JObject { ["success"] = true, ["name"] = go.name };
+                if (!string.IsNullOrEmpty(message)) itemResult["warning"] = message;
+                results.Add(itemResult);
+                success++;
+            }
+
+            return new JObject { ["success"] = fail == 0, ["totalItems"] = total, ["successCount"] = success, ["failCount"] = fail, ["results"] = results }.ToString();
+        }
+
+        private static ComponentHelper.SelectableStateArgs ReadSelectableStates(JObject args)
+        {
+            return new ComponentHelper.SelectableStateArgs
+            {
+                Transition = args["transition"]?.ToString(),
+                NormalColor = ReadPrefixedColor(args, "normal"),
+                HighlightedColor = ReadPrefixedColor(args, "highlighted"),
+                PressedColor = ReadPrefixedColor(args, "pressed"),
+                SelectedColor = ReadPrefixedColor(args, "selected"),
+                DisabledColor = ReadPrefixedColor(args, "disabled"),
+                ColorMultiplier = NullFloat(args, "colorMultiplier"),
+                FadeDuration = NullFloat(args, "fadeDuration"),
+                HighlightedSpritePath = args["highlightedSpritePath"]?.ToString(),
+                PressedSpritePath = args["pressedSpritePath"]?.ToString(),
+                SelectedSpritePath = args["selectedSpritePath"]?.ToString(),
+                DisabledSpritePath = args["disabledSpritePath"]?.ToString(),
+                TargetGraphicTarget = args["targetGraphic"]?.ToString(),
+                Interactable = NullBool(args, "interactable")
+            };
+        }
+
+        /// <summary>Reads e.g. selectedR/selectedG/selectedB/selectedA into a Color, or null when unset.</summary>
+        private static Color? ReadPrefixedColor(JObject args, string prefix)
+        {
+            var r = args[prefix + "R"];
+            var g = args[prefix + "G"];
+            var b = args[prefix + "B"];
+            var a = args[prefix + "A"];
+            if (r == null && g == null && b == null && a == null) return null;
+            return new Color(
+                r != null ? (float)r : 1f,
+                g != null ? (float)g : 1f,
+                b != null ? (float)b : 1f,
+                a != null ? (float)a : 1f);
+        }
+
+        private string DoWireToggleGraphics(JObject args)
+        {
+            var go = FindGO(Str(args, "target"));
+            if (go == null) return TargetNotFound(Str(args, "target"));
+            if (!ComponentHelper.TryWireToggleGraphics(go, Str(args, "backgroundTarget", null), Str(args, "selectedGraphicTarget", null), out var message))
+                return Error(message);
+            if (!string.IsNullOrEmpty(message))
+                return new JObject { ["success"] = true, ["message"] = $"Toggle graphics wired on '{go.name}'.", ["warning"] = message }.ToString();
+            return Ok($"Toggle graphics wired on '{go.name}'.");
+        }
+
+        private string DoCreateTabBar(JObject args)
+        {
+            var parent = FindGO(Str(args, "parent"));
+            if (parent == null) return TargetNotFound(Str(args, "parent"));
+
+            var labels = StringList(args, "labels");
+            if (labels.Count == 0) return Error("Missing 'labels' — give one label per tab, e.g. [\"Bookmark\", \"Alliance\"].");
+
+            var selectedTextColor = new Color(Float(args, "selectedTextR", 0.35f), Float(args, "selectedTextG", 0.2f),
+                Float(args, "selectedTextB", 0.15f), Float(args, "selectedTextA", 1f));
+            var unselectedTextColor = new Color(Float(args, "unselectedTextR", 0.55f), Float(args, "unselectedTextG", 0.42f),
+                Float(args, "unselectedTextB", 0.38f), Float(args, "unselectedTextA", 1f));
+
+            var spriteErrors = new List<string>();
+            var root = UICreator.CreateTabBar(
+                Str(args, "name", "TabBar"), parent.transform, labels,
+                Int(args, "selectedIndex", 0),
+                new Vector2(Float(args, "tabWidth", 240), Float(args, "tabHeight", 80)),
+                Float(args, "spacing", 0),
+                Str(args, "unselectedSpritePath", null),
+                Str(args, "selectedSpritePath", null),
+                Int(args, "fontSize", 30),
+                selectedTextColor, unselectedTextColor,
+                out var tabs, spriteErrors);
+
+            if (root == null) return Error("Failed to create the tab bar.");
+
+            var result = new JObject
+            {
+                ["success"] = true,
+                ["name"] = root.name,
+                ["path"] = GetHierarchyPath(root),
+                ["tabs"] = new JArray(tabs.Select(t => (JToken)GetHierarchyPath(t))),
+                ["structure"] = "Each tab is a Toggle in a shared ToggleGroup: the tab Image is targetGraphic (unselected look) " +
+                    "and the 'Selected' child Image is Toggle.graphic (selected look). Style them with set_image_batch, " +
+                    "and the labels via set_text_properties_batch on the 'Label' children."
+            };
+
+            var missing = new List<string>();
+            if (string.IsNullOrEmpty(Str(args, "unselectedSpritePath", null))) missing.Add("unselectedSpritePath");
+            if (string.IsNullOrEmpty(Str(args, "selectedSpritePath", null))) missing.Add("selectedSpritePath");
+
+            var warnings = new List<string>(spriteErrors);
+            if (missing.Count > 0)
+            {
+                warnings.Add("No sprite given for: " + string.Join(", ", missing)
+                    + ". Those states are flat colour placeholders until you assign real sprites — a design mockup's "
+                    + "selected/unselected tabs almost always use different artwork.");
+            }
+            AttachSpriteWarnings(result, warnings);
+
+            return result.ToString();
+        }
+
+        /// <summary>
+        /// Sprite paths that failed to load must reach the model: the element is now a blank box,
+        /// and a silent success is what makes the wrong artwork ship.
+        /// </summary>
+        private static void AttachSpriteWarnings(JObject result, List<string> warnings)
+        {
+            if (result == null || warnings == null || warnings.Count == 0) return;
+            result["warning"] = string.Join(" ", warnings);
         }
 
         #endregion
@@ -1467,7 +1858,10 @@ namespace Indey.UIPrefabBuilder.Skills
             int designW = cfg?.basicInfo?.designWidth > 0 ? cfg.basicInfo.designWidth : 1080;
             int designH = cfg?.basicInfo?.designHeight > 0 ? cfg.basicInfo.designHeight : 1920;
 
-            const int maxLong = 1080;
+            // A portrait design (1080x2340) capped at 1080 left the popup itself around 500x370 px,
+            // where a brush-stroke banner and a flat colour block are indistinguishable to the
+            // model. 1600 keeps the payload reasonable while making sprite shapes readable.
+            const int maxLong = 1600;
             float scale = 1f;
             int longSide = Math.Max(designW, designH);
             if (longSide > maxLong) scale = maxLong / (float)longSide;
@@ -1547,6 +1941,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 AssetDatabase.Refresh();
 
                 var captureId = Guid.NewGuid().ToString("N");
+                _captureRevisions[assetPath] = _sceneRevision;
                 var result = new JObject
                 {
                     ["success"] = true,
@@ -1580,6 +1975,9 @@ namespace Indey.UIPrefabBuilder.Skills
             var fullPath = Path.Combine(projectRoot, path);
             if (!File.Exists(fullPath))
                 return Error($"Screenshot not found: {path}");
+
+            var stale = CheckCaptureFreshness(path, "analyze");
+            if (stale != null) return Error(stale);
 
             var settings = BuilderSettings.Get();
             if (!settings.SupportsVision)
@@ -1696,6 +2094,9 @@ namespace Indey.UIPrefabBuilder.Skills
             if (!File.Exists(Path.Combine(projectRoot, path)))
                 return Error($"Screenshot not found: {path}. Report the verdict for a screenshot that exists on disk.");
 
+            var stale = CheckCaptureFreshness(path, "report the verdict for");
+            if (stale != null) return Error(stale);
+
             if (args["matches"] == null)
                 return Error("Missing 'matches'. State explicitly whether the build matches the design mockup.");
 
@@ -1734,7 +2135,20 @@ namespace Indey.UIPrefabBuilder.Skills
                     return Error($"matches=true is rejected: {placeholders.Count} icon-sized Image(s) still have no sprite " +
                         "and render as flat colour blocks — " + string.Join(", ", placeholders) + ". " +
                         "A colour block is not the mockup's artwork. Assign the real sprites, " +
-                        "or set matches=false and list them in `mismatches`.");
+                        "or set matches=false and list them in `mismatches`. " +
+                        "Change ONLY the nodes listed here: re-applying a sprite you previously removed on purpose, " +
+                        "or touching elements that already matched, makes the build worse. " +
+                        "After the fix you MUST take a new screenshot — the current one no longer shows the scene.");
+                }
+
+                var violations = CollectStyleViolations();
+                if (violations.Count > 0)
+                {
+                    return Error("matches=true is rejected — the scene still carries unstyled defaults that no mockup asks for:\n"
+                        + string.Join("\n", violations.Select(v => "- " + v))
+                        + "\nFix ONLY these nodes (set_text_properties_batch for text, set_image_batch for graphics, " +
+                        "configure_selectable_states for tab/selection states) and leave every element that already matched untouched, " +
+                        "then re-run take_screenshot → analyze_screenshot → report_visual_verdict.");
                 }
             }
 
@@ -1888,6 +2302,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 {
                     if (img == null || !img.isActiveAndEnabled) continue;
                     if (img.sprite != null || img.color.a <= 0.01f) continue;
+                    if (IsLegitimateFlatBackground(img)) continue;
 
                     var size = img.rectTransform.rect.size;
                     if (size.x <= 1f || size.y <= 1f) continue;
@@ -1896,6 +2311,234 @@ namespace Indey.UIPrefabBuilder.Skills
                     names.Add(GetHierarchyPath(img.gameObject));
                     if (names.Count >= 12) return names;
                 }
+            }
+            return names;
+        }
+
+        /// <summary>
+        /// A checkbox/button background drawn as a deliberate flat colour is a valid reproduction of
+        /// many mockups, unlike a missing icon. Flagging it made the agent re-apply the wrong sprite
+        /// it had just (correctly) removed, so backgrounds are judged by the button-background check
+        /// instead — that one only fires on untouched default colours.
+        /// </summary>
+        private static bool IsLegitimateFlatBackground(Image img)
+        {
+            var selectable = img.GetComponentInParent<Selectable>();
+            if (selectable != null && selectable.targetGraphic == img) return true;
+
+            var name = img.gameObject.name.ToLowerInvariant();
+            return name.Contains("background") || name.Contains("bg")
+                || name.Contains("panel") || name.Contains("frame")
+                || name.Contains("bar") || name.Contains("fill");
+        }
+
+        /// <summary>
+        /// Deterministic "the build is still at factory defaults" checks. A model looking at a small
+        /// screenshot cannot reliably judge font size or wiring, so these are read off the scene
+        /// instead of the pixels — they are exactly the differences users report after a "verified" build.
+        /// </summary>
+        private static List<string> CollectStyleViolations()
+        {
+            var violations = new List<string>();
+            var texts = CollectVisibleTexts();
+
+            var empty = texts.Where(t => string.IsNullOrWhiteSpace(t.Content)).Select(t => t.Path).Take(8).ToList();
+            if (empty.Count > 0)
+                violations.Add($"{empty.Count} visible text element(s) render nothing because their text is empty: {string.Join(", ", empty)}. Pass the exact `text` content.");
+
+            if (texts.Count >= 4)
+            {
+                var distinctSizes = texts.Select(t => Mathf.RoundToInt(t.FontSize)).Distinct().Count();
+                if (distinctSizes == 1)
+                    violations.Add($"All {texts.Count} text elements share one font size ({Mathf.RoundToInt(texts[0].FontSize)}). " +
+                        "A mockup always has a hierarchy (title > section label > body > caption) — set fontSize per role.");
+            }
+
+            var flatButtons = FindUnstyledButtonBackgrounds();
+            if (flatButtons.Count > 0)
+                violations.Add($"{flatButtons.Count} button background(s) are still a plain untextured rectangle: {string.Join(", ", flatButtons)}. Assign the real button sprite (type=Sliced) or tint them to the mockup's colour.");
+
+            var unwiredInputs = FindUnwiredInputFields();
+            if (unwiredInputs.Count > 0)
+                violations.Add($"{unwiredInputs.Count} InputField(s) are not wired: {string.Join(", ", unwiredInputs)}. " +
+                    "Without a textComponent/placeholder the field is just a white box. Recreate it with `create_inputfield`.");
+
+            var emptyInputs = FindEmptyInputFields();
+            if (emptyInputs.Count > 0)
+                violations.Add($"{emptyInputs.Count} InputField(s) render nothing — text and placeholder are both empty: {string.Join(", ", emptyInputs)}. " +
+                    "Write the mockup's content to the InputField itself (`set_text_properties` on the field, or on its Text child — the content is routed to the component), " +
+                    "or give it a placeholder string. A blank field is just a coloured box.");
+
+            var unstyledSelections = FindSelectablesWithoutStateDifference();
+            if (unstyledSelections.Count > 0)
+                violations.Add($"{unstyledSelections.Count} tab/selectable element(s) have no visual difference between states: {string.Join(", ", unstyledSelections)}. " +
+                    "Use `configure_selectable_states` (selected/highlighted sprite or colour) so the selected tab/option actually looks selected.");
+
+            return violations;
+        }
+
+        private struct TextProbe
+        {
+            public string Path;
+            public string Content;
+            public float FontSize;
+        }
+
+        private static List<TextProbe> CollectVisibleTexts()
+        {
+            var probes = new List<TextProbe>();
+            foreach (var canvas in UnityEngine.Object.FindObjectsOfType<Canvas>())
+            {
+                if (canvas == null || !canvas.isActiveAndEnabled) continue;
+                foreach (var graphic in canvas.GetComponentsInChildren<Graphic>(false))
+                {
+                    if (graphic == null || !graphic.isActiveAndEnabled) continue;
+                    var type = graphic.GetType();
+                    var textProp = type.GetProperty("text");
+                    if (textProp == null || textProp.PropertyType != typeof(string)) continue;
+
+                    // An input field's own text/placeholder nodes are legitimately empty.
+                    if (IsInsideInputField(graphic.transform)) continue;
+
+                    var fontSizeProp = type.GetProperty("fontSize");
+                    float fontSize = 0f;
+                    var raw = fontSizeProp?.GetValue(graphic);
+                    if (raw is float f) fontSize = f;
+                    else if (raw is int i) fontSize = i;
+
+                    probes.Add(new TextProbe
+                    {
+                        Path = GetHierarchyPath(graphic.gameObject),
+                        Content = textProp.GetValue(graphic) as string,
+                        FontSize = fontSize
+                    });
+                }
+            }
+            return probes;
+        }
+
+        private static List<string> FindUnstyledButtonBackgrounds()
+        {
+            var names = new List<string>();
+            foreach (var selectable in UnityEngine.Object.FindObjectsOfType<Selectable>())
+            {
+                if (selectable == null || !selectable.isActiveAndEnabled) continue;
+                var img = selectable.targetGraphic as Image;
+                if (img == null) img = selectable.GetComponent<Image>();
+                if (img == null || !img.isActiveAndEnabled) continue;
+                if (img.sprite != null) continue;
+                if (img.color.a <= 0.01f) continue;
+
+                // A deliberately tinted flat button is a legitimate choice; an untouched white or
+                // the old default blue means nobody ever styled it.
+                bool looksUntouched = IsApproximately(img.color, Color.white)
+                    || IsApproximately(img.color, new Color(0.2f, 0.45f, 0.85f));
+                if (!looksUntouched) continue;
+
+                names.Add(GetHierarchyPath(img.gameObject));
+                if (names.Count >= 8) break;
+            }
+            return names;
+        }
+
+        private static bool IsApproximately(Color a, Color b)
+            => Mathf.Abs(a.r - b.r) < 0.02f && Mathf.Abs(a.g - b.g) < 0.02f && Mathf.Abs(a.b - b.b) < 0.02f;
+
+        private static List<string> FindUnwiredInputFields()
+        {
+            var names = new List<string>();
+            foreach (var canvas in UnityEngine.Object.FindObjectsOfType<Canvas>())
+            {
+                if (canvas == null || !canvas.isActiveAndEnabled) continue;
+                foreach (var comp in canvas.GetComponentsInChildren<Component>(false))
+                {
+                    if (comp == null) continue;
+                    var type = comp.GetType();
+                    if (!IsInputFieldType(type)) continue;
+
+                    var textComponent = type.GetProperty("textComponent")?.GetValue(comp);
+                    var placeholder = type.GetProperty("placeholder")?.GetValue(comp);
+                    if (textComponent != null && placeholder != null) continue;
+
+                    names.Add(GetHierarchyPath(comp.gameObject));
+                    if (names.Count >= 8) return names;
+                }
+            }
+            return names;
+        }
+
+        /// <summary>
+        /// An InputField whose own text is empty AND whose placeholder is empty draws nothing at
+        /// all. Its label nodes are skipped by the generic empty-text check (they are legitimately
+        /// empty on their own), so the field has to be judged as a whole.
+        /// </summary>
+        private static List<string> FindEmptyInputFields()
+        {
+            var names = new List<string>();
+            foreach (var canvas in UnityEngine.Object.FindObjectsOfType<Canvas>())
+            {
+                if (canvas == null || !canvas.isActiveAndEnabled) continue;
+                foreach (var comp in canvas.GetComponentsInChildren<Component>(false))
+                {
+                    if (comp == null) continue;
+                    var type = comp.GetType();
+                    if (!IsInputFieldType(type)) continue;
+
+                    var value = type.GetProperty("text")?.GetValue(comp) as string;
+                    if (!string.IsNullOrEmpty(value)) continue;
+
+                    var placeholder = type.GetProperty("placeholder")?.GetValue(comp) as Component;
+                    var placeholderText = placeholder != null
+                        ? placeholder.GetType().GetProperty("text")?.GetValue(placeholder) as string
+                        : null;
+                    if (!string.IsNullOrEmpty(placeholderText)) continue;
+
+                    names.Add(GetHierarchyPath(comp.gameObject));
+                    if (names.Count >= 8) return names;
+                }
+            }
+            return names;
+        }
+
+        private static bool IsInsideInputField(Transform t)
+        {
+            for (var current = t; current != null; current = current.parent)
+            {
+                foreach (var comp in current.GetComponents<Component>())
+                {
+                    if (comp != null && IsInputFieldType(comp.GetType())) return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsInputFieldType(Type type) => ComponentHelper.IsInputFieldType(type);
+
+        /// <summary>
+        /// Toggles are how selected tabs / chosen options are expressed. One with no state sprite,
+        /// no state tint and no wired graphic renders identically whether or not it is selected.
+        /// </summary>
+        private static List<string> FindSelectablesWithoutStateDifference()
+        {
+            var names = new List<string>();
+            foreach (var toggle in UnityEngine.Object.FindObjectsOfType<Toggle>())
+            {
+                if (toggle == null || !toggle.isActiveAndEnabled) continue;
+
+                if (toggle.graphic != null) continue;
+
+                var state = toggle.spriteState;
+                bool hasStateSprite = state.highlightedSprite != null || state.pressedSprite != null
+                    || state.selectedSprite != null || state.disabledSprite != null;
+                if (hasStateSprite && toggle.transition == Selectable.Transition.SpriteSwap) continue;
+
+                var colors = toggle.colors;
+                bool hasColorDifference = colors.selectedColor != colors.normalColor
+                    || colors.highlightedColor != colors.normalColor;
+                if (hasColorDifference && toggle.transition == Selectable.Transition.ColorTint) continue;
+
+                names.Add(GetHierarchyPath(toggle.gameObject));
+                if (names.Count >= 8) break;
             }
             return names;
         }
@@ -2116,7 +2759,7 @@ namespace Indey.UIPrefabBuilder.Skills
             catch { return Error("Invalid base64 image data."); }
 
             var topK = Int(args, "topK", 5);
-            var minConfidence = Float(args, "minConfidence", (float)ImageMatchConfidentScore);
+            var minConfidence = Float(args, "minConfidence", (float)ImageMatchFilterDefault);
 
             var results = indexer.QueryByImage(imageBytes, topK);
             if (results == null || results.Count == 0)
@@ -2201,7 +2844,11 @@ namespace Indey.UIPrefabBuilder.Skills
         // "wrong sprite used with confidence" failure mode seen in production logs. Instead of
         // hiding this uncertainty, we surface it to the model so it can choose a plain color
         // fallback (and say so) rather than pretend a shaky guess is a solid match.
-        private const double ImageMatchConfidentScore = 0.65;
+        // The filter default must stay BELOW the confident bar: when both were 0.65 every surviving
+        // match scored >= the bar, so `lowConfidence` could never fire and shaky matches were applied
+        // as if they were solid.
+        private const double ImageMatchConfidentScore = 0.72;
+        private const double ImageMatchFilterDefault = 0.55;
         private const double TextMatchConfidentScore = 30.0;
 
         /// <summary>
@@ -2247,6 +2894,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 Str(args, "label", null),
                 out var error);
             if (mapped == null) return Error(error);
+            DesignImageContext.RegisterMappedRegions(1);
             return mapped.ToString();
         }
 
@@ -2292,6 +2940,8 @@ namespace Indey.UIPrefabBuilder.Skills
                     success++;
                 }
             }
+
+            DesignImageContext.RegisterMappedRegions(success);
 
             return new JObject
             {
@@ -2439,7 +3089,7 @@ namespace Indey.UIPrefabBuilder.Skills
             var width = Mathf.Clamp(Float(args, "width", 1f), 0.01f, 1f - x);
             var height = Mathf.Clamp(Float(args, "height", 1f), 0.01f, 1f - y);
             var topK = Int(args, "topK", 5);
-            var minConfidence = Float(args, "minConfidence", (float)ImageMatchConfidentScore);
+            var minConfidence = Float(args, "minConfidence", (float)ImageMatchFilterDefault);
 
             var tex = LoadDesignImageTexture(out var error);
             if (tex == null) return Error(error);
@@ -2489,7 +3139,7 @@ namespace Indey.UIPrefabBuilder.Skills
             if (regionsToken == null || regionsToken.Count == 0)
                 return Error("Missing or empty 'regions' array.");
 
-            var globalMinConfidence = Float(args, "minConfidence", (float)ImageMatchConfidentScore);
+            var globalMinConfidence = Float(args, "minConfidence", (float)ImageMatchFilterDefault);
 
             var tex = LoadDesignImageTexture(out var error);
             if (tex == null) return Error(error);
@@ -2774,7 +3424,10 @@ namespace Indey.UIPrefabBuilder.Skills
         private static string Error(string msg) => new JObject { ["success"] = false, ["error"] = msg }.ToString();
         private static string Created(GameObject go) => go == null ? Error("Failed to create.") :
             new JObject { ["success"] = true, ["name"] = go.name, ["path"] = GetHierarchyPath(go) }.ToString();
-        private static string TargetNotFound(string name) => Error($"GameObject '{name}' not found.");
+        private static string TargetNotFound(string name) => string.IsNullOrWhiteSpace(name)
+            ? Error("No 'target' was given (the parameter is missing or empty), so nothing was looked up. " +
+                "Send it as a plain key/value pair — {\"target\": \"Canvas/Panel/Title\"} — and do not escape the keys.")
+            : Error($"GameObject '{name}' not found.");
         private static JObject ItemFail(string target, string error) => new JObject { ["target"] = target, ["success"] = false, ["error"] = error };
 
         #endregion

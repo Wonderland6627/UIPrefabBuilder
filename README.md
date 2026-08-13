@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://unity.com/releases/editor/whats-new/2021.3.0"><img src="https://img.shields.io/badge/Unity-2021.3%2B-blue?logo=unity" alt="Unity 2021.3+"/></a>
-  <img src="https://img.shields.io/badge/version-0.4.0-green" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-0.5.0-green" alt="Version"/>
   <img src="https://img.shields.io/badge/platform-Editor%20Only-lightgrey" alt="Platform"/>
   <img src="https://img.shields.io/badge/LLM-OpenAI%20Compatible-orange?logo=openai" alt="LLM"/>
   <img src="https://img.shields.io/badge/license-MIT-purple" alt="License"/>
@@ -38,13 +38,14 @@
 | 🤖 | **自然语言驱动** | 描述需求，AI 自主规划并执行完整 UI 构建流程 |
 | 🖼️ | **设计稿还原** | 上传设计稿图片，Agent 分析结构、匹配本地资源、还原 UGUI 并对比验证 |
 | 🔍 | **CLIP 视觉索引** | 基于 CLIP embedding 的语义搜图与视觉相似度匹配，超越文件名搜索 |
-| 🔧 | **74 结构化工具** | 基于 OpenAI Function Calling，覆盖资源搜索、批量创建、属性设置、布局、特效、Prefab 全流程 |
-| 📐 | **项目级配置** | Sprite/Prefab 映射、组件类型覆盖、Rules 规则、设计分辨率，自动注入 Agent Prompt |
+| 🔧 | **78 结构化工具** | 基于 OpenAI Function Calling，覆盖资源搜索、批量创建、Tab/Toggle 交互结构、属性设置、布局、特效、Prefab 全流程 |
+| 📐 | **项目级配置** | Sprite/Prefab 映射、组件类型覆盖、Rules 规则（优先于目测尺寸）、设计分辨率，自动注入 Agent Prompt |
 | ⚡ | **Batch-First 架构** | `create_batch` 一次创建整棵 UI 树，`set_rect_transform_batch` 一次定位所有元素 |
 | 🛡️ | **Prefab 安全保护** | 禁止覆盖已有 prefab、禁止 apply 写回源、禁止销毁 Prefab 实例/已有 Canvas；优先 `instantiate_prefab` 后就地调整 |
 | 🚧 | **Agent 护栏** | 拦截摄像机调试/破坏性 `execute_code`、重复脚本与单次搜索空转；强制截图→分析→结构化裁定闭环 |
 | 🔄 | **4 阶段工作流** | Understand → Build → Verify → Finalize，Agent 自主遵循最佳实践 |
-| 📸 | **视觉验证** | `take_screenshot` → `analyze_screenshot` → `report_visual_verdict`（像素抽样校验可见声明），不匹配则定点修复（需 Vision） |
+| 🎛️ | **交互结构优先** | Tab 用 `create_tab_bar`、可选项用 `create_toggle`、编辑框用完整接线的 `create_inputfield`；禁止用纯 Image+Text 冒充 |
+| 📸 | **视觉验证** | `take_screenshot` → `analyze_screenshot` → `report_visual_verdict`（像素抽样 + 工厂默认/结构校验），改场景后强制重截；不匹配则定点修复（需 Vision） |
 | 🪞 | **通用反射引擎** | `set_component_property` 可通过反射设置任意组件的任意属性 |
 | 📡 | **流式响应** | SSE 实时流式输出，支持 Thinking/Extended Thinking 展示 |
 | 💾 | **会话管理** | 多会话保存/加载/导出，持久化于 `Library/UIPrefabBuilder/Sessions`，每会话独立日志 |
@@ -66,7 +67,7 @@ https://github.com/Wonderland6627/UIPrefabBuilder.git?path=Packages/com.indey.ui
 如需锁定版本，可追加 `#v版本号`：
 
 ```
-https://github.com/Wonderland6627/UIPrefabBuilder.git?path=Packages/com.indey.uiprefabbuilder#v0.4.0
+https://github.com/Wonderland6627/UIPrefabBuilder.git?path=Packages/com.indey.uiprefabbuilder#v0.5.0
 ```
 
 ### 方式二：手动编辑 manifest.json
@@ -192,7 +193,7 @@ flowchart TB
 | Core | `AgentEngine` | 4 阶段循环、System Prompt 构建、工具调度、视觉裁定闸门与 Agent 护栏 |
 | Core | `DesignImageContext` | 当前任务设计稿 Assets 路径，供区域裁剪与视觉匹配工具共享 |
 | Core | `LLMClient` / `MessageHistory` | SSE 流式通信、上下文压缩（含视觉搜索结果结构化裁剪）、多模态 |
-| Skills | `ToolRegistry` + `ToolExecutor` | 74 工具定义与执行 |
+| Skills | `ToolRegistry` + `ToolExecutor` | 78 工具定义与执行 |
 | Indexing | `AssetIndexer` / `EmbeddingService` | CLIP 视觉索引、语义搜图、相似度匹配 |
 | Infra | `Compiler` / `Transaction` / `Async` | 动态编译、Undo 事务、后台任务 |
 | Config | `BuilderSettings` / `ProjectConfig` | Editor 设置（Preferences）与项目规范（JSON） |
@@ -214,7 +215,7 @@ flowchart TB
 
 ## 🔧 Tool System
 
-共 **74 内置工具**，按 OpenAI Function Calling 标准定义。
+共 **78 内置工具**，按 OpenAI Function Calling 标准定义。
 
 ### 资源探索
 
@@ -250,7 +251,10 @@ flowchart TB
 | `create_batch` | **批量创建**多个 UI 元素（推荐，单次调用创建整棵 UI 树） |
 | `create_canvas` | 创建 Canvas（自动应用 ProjectConfig 设计分辨率） |
 | `create_panel` / `create_button` / `create_text` / `create_image` | 单个元素创建（尊重 Component Overrides） |
-| `create_inputfield` / `create_slider` / `create_toggle` / `create_dropdown` | 交互控件创建 |
+| `create_inputfield` | 创建完整接线的 InputField（Text Area → Placeholder / Text；支持 placeholder、text、fontSize、backgroundSpritePath；TMP 可用时用 TMP_InputField） |
+| `create_toggle` | 创建完整接线的 Toggle（Background + Checkmark 选中高亮 + 可选 Label；支持 background/checkmark Sprite） |
+| `create_tab_bar` | **Tab 栏**：ToggleGroup + 每 Tab 未选中底图 / Selected 高亮 / Label（禁止用普通 Button 冒充） |
+| `create_slider` / `create_dropdown` | 交互控件创建 |
 | `create_scrollview` | 创建完整 ScrollRect（含 Viewport + Content + ContentSizeFitter） |
 
 ### RectTransform
@@ -269,9 +273,9 @@ flowchart TB
 |------|------|
 | `set_image_batch` | **批量设置**多个 Image 属性（sprite、type、color） |
 | `set_image` | 综合 Image 属性（sprite、type=Sliced/Filled、fillAmount、preserveAspect、color） |
-| `set_text_properties_batch` | **批量设置**多个 Text 属性（内容、字号、alignment、color） |
-| `set_text_properties` | 综合 Text 属性（内容、字号、alignment、fontStyle、color、overflow），兼容 Legacy Text 和 TMP |
-| `set_image_sprite` / `set_image_color` / `set_text` | 单属性设置（兼容保留） |
+| `set_text_properties_batch` | **批量设置**多个 Text 属性（内容、字号、alignment、color、字体、描边、字距等） |
+| `set_text_properties` | 综合 Text 属性（内容、字号、alignment、fontStyle、color、overflow、`fontAssetPath`、TMP outline、字距/行距/自动字号/换行），兼容 Legacy Text 和 TMP；无文本组件时返回失败 |
+| `set_image_sprite` / `set_image_color` / `set_text` | 单属性设置（兼容保留）；`set_image` 支持 `spritePath=""` 清除错误贴图 |
 | `set_component_property_batch` | **批量反射**设置多个组件属性 |
 | `set_component_property` | **通用反射**：设置任意组件的任意属性（支持基本类型、枚举、Color、Vector、资源引用） |
 | `add_component` | 按类型名添加任意 Unity 组件 |
@@ -293,7 +297,10 @@ flowchart TB
 | `add_mask` | 添加 Mask 或 RectMask2D |
 | `add_outline_batch` | **批量添加** Outline 或 Shadow 效果 |
 | `add_outline` | 添加 Outline 或 Shadow 效果 |
-| `configure_selectable` | 配置 Button/Toggle 的 Transition 和 Navigation |
+| `configure_selectable` | 配置 Button/Toggle 的 Transition 类型和 Navigation（不负责选中态外观） |
+| `configure_selectable_states` | 配置 Selectable 各状态 tint / SpriteSwap（normal/highlighted/pressed/selected/disabled） |
+| `configure_selectable_states_batch` | **批量**版 `configure_selectable_states`（推荐用于 Tab / 选项网格） |
+| `wire_toggle_graphics` | 将已有 Toggle 的 targetGraphic / graphic 接到背景与选中高亮子节点 |
 
 ### GameObject 管理
 
@@ -335,9 +342,9 @@ flowchart TB
 |------|------|
 | `take_screenshot` | 截取 Game View（自动补齐 Camera/EventSystem；临时强制隐藏 CanvasGroup / Animator / 零 scale 可见，避免为截图改 Prefab） |
 | `analyze_screenshot` | 将截图发送给 Vision 模型分析布局问题（支持 `referenceImagePath` 与设计稿并排对比；`success=true` 仅表示已送达） |
-| `report_visual_verdict` | **结构化裁定**：对最新截图提交 matches / visibleElements(bbox) / missingElements / mismatches；像素抽样校验可见声明，图标无 Sprite 占位时拒绝 matches=true |
+| `report_visual_verdict` | **结构化裁定**：对最新截图提交 matches / visibleElements(bbox) / missingElements / mismatches；像素抽样校验可见声明；工厂默认（空文案、统一字号、未贴图按钮、未接线 InputField、无选中态 Tab）与图标无 Sprite 占位时拒绝 matches=true |
 
-> 设计稿建造任务结束前必须完成同一张截图上的 `take_screenshot` → `analyze_screenshot` → `report_visual_verdict` 闭环；不匹配时定点修复后重跑该链（最多 3 轮）。
+> 设计稿建造任务结束前必须完成同一张截图上的 `take_screenshot` → `analyze_screenshot` → `report_visual_verdict` 闭环；任意改场景会使当前截图失效，必须重截；不匹配时仅定点修复后重跑该链（最多 3 轮）。有设计稿时 `create_batch` 在完成 `map_design_rect(_batch)` 测量前会被拒绝。
 
 ### 辅助工具
 
@@ -406,7 +413,7 @@ flowchart TB
 | Sprite Mapping | 角色 → Sprite 路径 + Image Type | Agent 优先直接使用映射路径，跳过搜索 |
 | Prefab Mapping | 角色 → Prefab 路径 | Agent 优先 `instantiate_prefab` 而非从零创建 |
 | Component Overrides | Text/Button/Image/InputField + 自定义组件 | UICreator 创建时使用指定组件（如 TMP） |
-| Rules | 项目级约定规则列表 | 注入 Prompt，Agent 必须遵循 |
+| Rules | 项目级约定规则列表 | 注入 Prompt 且**优先于** `map_design_rect` 尺寸与后续视觉抛光；终裁前须复核 |
 
 配置示例：
 
@@ -529,9 +536,10 @@ ProjectConfig 贯穿 Agent 全流程：
 - `match_sprite_by_region_batch` 用设计稿归一化 bbox 做 CLIP 图对图匹配（优先于纯文字），低置信度回退纯色占位
 - `crop_design_image` 预览裁剪区域确认坐标准确
 - `create_batch` + `set_rect_transform_batch` 批量构建；Sprite 加载失败会返回可诊断错误
-- `take_screenshot` → `analyze_screenshot` → `report_visual_verdict` 闭环验证（像素抽样 + 占位色块拒绝）
-- Visual Fidelity Checklist 检查背景层、Tab 状态、文字样式等
-- 纯分析请求不会被强行拉入建造流程，但仍会调用搜索工具做真实素材匹配
+- Tab / Toggle / InputField 必须用专用创建工具还原真实交互结构，禁止 Image+Text 冒充
+- `take_screenshot` → `analyze_screenshot` → `report_visual_verdict` 闭环验证（像素抽样 + 工厂默认/结构校验 + 占位色块拒绝）；改场景后强制重截
+- Visual Fidelity Checklist 检查背景层、Tab 选中态、文字描边/字号、InputField 接线等
+- PROJECT RULES 覆盖目测尺寸；纯分析请求不会被强行拉入建造流程，但仍会调用搜索工具做真实素材匹配
 
 </td>
 </tr>
@@ -570,8 +578,9 @@ Agent 遵循"批量优先"策略最小化工具调用轮次：
 支持 Vision 的模型可以"看见"自己的作品：
 - `take_screenshot` 截取 Game View（自动补齐 Camera/EventSystem，临时强制隐藏 UI 可见）
 - `analyze_screenshot` 多模态分析（仅表示截图已送达）
-- `report_visual_verdict` 结构化裁定 + 像素抽样校验可见声明
-- 不匹配 → 定点修复（禁止删掉重建）→ 重跑验证链（最多 3 轮）
+- `report_visual_verdict` 结构化裁定 + 像素抽样 + 工厂默认/交互结构校验
+- 场景变更会使截图失效，分析/裁定会拒绝过期 capture
+- 不匹配 → 仅定点修复（禁止删掉重建、禁止回退已修好的节点）→ 重跑验证链（最多 3 轮）
 
 </td>
 <td>

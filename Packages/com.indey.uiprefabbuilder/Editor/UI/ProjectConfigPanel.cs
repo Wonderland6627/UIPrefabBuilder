@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System.IO;
 using Indey.UIPrefabBuilder.Config;
 using Indey.UIPrefabBuilder.Logging;
@@ -17,12 +16,13 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _foldPrefabs = true;
         private bool _foldComponents;
         private bool _foldRules;
-        private Vector2 _notesScroll;
-        private readonly List<Vector2> _ruleScrolls = new List<Vector2>();
+        private float _panelWidth = 300f;
+        private GUIStyle _wrapTextArea;
 
         public void Draw(Rect rect)
         {
             var config = ProjectConfig.Current;
+            _panelWidth = rect.width;
 
             GUILayout.BeginArea(rect);
             DrawToolbar(config);
@@ -115,23 +115,7 @@ namespace Indey.UIPrefabBuilder.UI
                 config.basicInfo.canvasMatchMode = EditorGUILayout.Slider("Match W/H", config.basicInfo.canvasMatchMode, 0f, 1f);
 
             GUILayout.Label("Notes", EditorStyles.miniLabel);
-            var noteStyle = new GUIStyle(EditorStyles.textArea) { wordWrap = true };
-            var notes = config.basicInfo.projectNotes ?? "";
-            var noteLines = notes.Split('\n').Length;
-            var noteContentHeight = noteLines * 16f + 8f;
-            var noteVisibleHeight = Mathf.Clamp(noteContentHeight, 48f, 150f);
-
-            if (noteContentHeight > noteVisibleHeight)
-            {
-                _notesScroll = EditorGUILayout.BeginScrollView(
-                    _notesScroll, GUILayout.Height(noteVisibleHeight), GUILayout.ExpandWidth(true));
-                config.basicInfo.projectNotes = EditorGUILayout.TextArea(notes, noteStyle, GUILayout.Height(noteContentHeight), GUILayout.ExpandWidth(true));
-                EditorGUILayout.EndScrollView();
-            }
-            else
-            {
-                config.basicInfo.projectNotes = EditorGUILayout.TextArea(notes, noteStyle, GUILayout.Height(noteVisibleHeight), GUILayout.ExpandWidth(true));
-            }
+            config.basicInfo.projectNotes = DrawWrappedTextArea(config.basicInfo.projectNotes, 48f);
 
             if (EditorGUI.EndChangeCheck()) _dirty = true;
             EditorGUILayout.EndVertical();
@@ -339,34 +323,14 @@ namespace Indey.UIPrefabBuilder.UI
                 MessageType.Info);
             GUILayout.Space(2);
 
-            var style = new GUIStyle(EditorStyles.textArea) { wordWrap = true };
             int removeIndex = -1;
-
-            // Ensure scroll list stays in sync
-            while (_ruleScrolls.Count < config.rules.Count) _ruleScrolls.Add(Vector2.zero);
-            while (_ruleScrolls.Count > config.rules.Count) _ruleScrolls.RemoveAt(_ruleScrolls.Count - 1);
 
             for (int i = 0; i < config.rules.Count; i++)
             {
                 EditorGUILayout.BeginVertical(EditorStyles.helpBox);
                 EditorGUI.BeginChangeCheck();
 
-                var text = config.rules[i] ?? "";
-                var lines = text.Split('\n').Length;
-                var contentHeight = lines * 16f + 8f;
-                var visibleHeight = Mathf.Clamp(contentHeight, 48f, 200f);
-
-                if (contentHeight > visibleHeight)
-                {
-                    _ruleScrolls[i] = EditorGUILayout.BeginScrollView(
-                        _ruleScrolls[i], GUILayout.Height(visibleHeight), GUILayout.ExpandWidth(true));
-                    config.rules[i] = EditorGUILayout.TextArea(text, style, GUILayout.Height(contentHeight), GUILayout.ExpandWidth(true));
-                    EditorGUILayout.EndScrollView();
-                }
-                else
-                {
-                    config.rules[i] = EditorGUILayout.TextArea(text, style, GUILayout.Height(visibleHeight), GUILayout.ExpandWidth(true));
-                }
+                config.rules[i] = DrawWrappedTextArea(config.rules[i], 48f);
 
                 EditorGUILayout.BeginHorizontal();
                 GUILayout.FlexibleSpace();
@@ -381,11 +345,33 @@ namespace Indey.UIPrefabBuilder.UI
             if (removeIndex >= 0)
             {
                 config.rules.RemoveAt(removeIndex);
-                if (removeIndex < _ruleScrolls.Count) _ruleScrolls.RemoveAt(removeIndex);
                 _dirty = true;
             }
         }
 
         #endregion
+
+        /// <summary>
+        /// Text area that grows to fit its wrapped content. The height must come out identical in the
+        /// Layout and Repaint passes, so it is derived from the panel rect rather than from a measured
+        /// control rect (which is unreliable during Layout).
+        /// </summary>
+        private string DrawWrappedTextArea(string text, float minHeight)
+        {
+            if (_wrapTextArea == null)
+                _wrapTextArea = new GUIStyle(EditorStyles.textArea) { wordWrap = true };
+
+            var value = text ?? "";
+            // Panel width minus the scroll bar, the enclosing helpBox padding and the text area's own inset.
+            var wrapWidth = Mathf.Max(80f, _panelWidth - 40f);
+            var height = _wrapTextArea.CalcHeight(new GUIContent(value), wrapWidth);
+
+            // CalcHeight ignores a trailing blank line, which would clip the caret while typing.
+            if (value.EndsWith("\n"))
+                height += _wrapTextArea.lineHeight;
+
+            height = Mathf.Max(minHeight, height + 4f);
+            return EditorGUILayout.TextArea(value, _wrapTextArea, GUILayout.Height(height), GUILayout.ExpandWidth(true));
+        }
     }
 }

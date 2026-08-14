@@ -288,8 +288,22 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var parent = FindGO(Str(args, "parent"));
             if (parent == null) return TargetNotFound(Str(args, "parent"));
-            return Created(UICreator.CreateButton(Str(args, "name"), parent.transform, Str(args, "text", "Button"),
-                new Vector2(Float(args, "width", 160), Float(args, "height", 40))));
+
+            var height = Float(args, "height", 40);
+            var spriteErrors = new List<string>();
+            var go = UICreator.CreateButton(Str(args, "name"), parent.transform, Str(args, "text", "Button"),
+                new Vector2(Float(args, "width", 160), height),
+                Str(args, "backgroundSpritePath", null),
+                Str(args, "iconSpritePath", null),
+                new Vector2(Float(args, "iconWidth", height * 0.5f), Float(args, "iconHeight", height * 0.5f)),
+                Str(args, "iconPosition", "Left"),
+                Int(args, "fontSize", 18),
+                spriteErrors);
+            if (go == null) return Error("Failed to create.");
+
+            var result = new JObject { ["success"] = true, ["name"] = go.name, ["path"] = GetHierarchyPath(go) };
+            AttachSpriteWarnings(result, spriteErrors);
+            return result.ToString();
         }
 
         private string DoCreateText(JObject args)
@@ -348,7 +362,47 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var parent = FindGO(Str(args, "parent"));
             if (parent == null) return TargetNotFound(Str(args, "parent"));
-            return Created(UICreator.CreateSlider(Str(args, "name"), parent.transform, Float(args, "min", 0), Float(args, "max", 1), Float(args, "value", 0.5f)));
+
+            var spriteErrors = new List<string>();
+            var go = UICreator.CreateSlider(Str(args, "name"), parent.transform,
+                Float(args, "min", 0), Float(args, "max", 1), Float(args, "value", 0.5f),
+                new Vector2(Float(args, "width", 320), Float(args, "height", 40)),
+                Str(args, "backgroundSpritePath", null),
+                Str(args, "fillSpritePath", null),
+                Str(args, "handleSpritePath", null),
+                ReadOptionalColor(args, "background"),
+                ReadOptionalColor(args, "fill"),
+                ReadOptionalColor(args, "handle"),
+                Float(args, "handleWidth", 0),
+                Bool(args, "vertical", false),
+                spriteErrors);
+            if (go == null) return Error("Failed to create.");
+
+            var result = new JObject
+            {
+                ["success"] = true,
+                ["name"] = go.name,
+                ["path"] = GetHierarchyPath(go),
+                ["structure"] = "Slider hierarchy created and wired: 'Background' is the track, 'Fill Area/Fill' is Slider.fillRect " +
+                    "(the filled portion) and 'Handle Slide Area/Handle' is Slider.handleRect (the knob). " +
+                    "Give all three real sprites or tints — a slider whose parts are untextured white reads as empty space."
+            };
+            AttachSpriteWarnings(result, spriteErrors);
+            return result.ToString();
+        }
+
+        /// <summary>
+        /// Reads a "&lt;role&gt;R/G/B/A" colour group, returning null when the caller did not specify it
+        /// so the creator can keep its own default instead of silently tinting to white.
+        /// </summary>
+        private static Color? ReadOptionalColor(JObject args, string role)
+        {
+            var r = role + "R";
+            var g = role + "G";
+            var b = role + "B";
+            var a = role + "A";
+            if (args[r] == null && args[g] == null && args[b] == null && args[a] == null) return null;
+            return new Color(Float(args, r, 1), Float(args, g, 1), Float(args, b, 1), Float(args, a, 1));
         }
 
         private string DoCreateToggle(JObject args)
@@ -441,6 +495,12 @@ namespace Indey.UIPrefabBuilder.Skills
                     var isOn = item["isOn"] == null || (bool)item["isOn"];
                     var placeholder = item["placeholder"]?.ToString();
                     var checkmarkSpritePath = item["checkmarkSpritePath"]?.ToString();
+                    var iconSpritePath = item["iconSpritePath"]?.ToString();
+                    var fillSpritePath = item["fillSpritePath"]?.ToString();
+                    var handleSpritePath = item["handleSpritePath"]?.ToString();
+                    // A colour is only meaningful when the caller actually asked for one: the white
+                    // default would otherwise overwrite each creator's own sensible tint.
+                    var hasColor = item["r"] != null || item["g"] != null || item["b"] != null || item["a"] != null;
 
                     GameObject go = null;
                     string itemSpriteError = null;
@@ -453,7 +513,11 @@ namespace Indey.UIPrefabBuilder.Skills
                             go = UICreator.CreatePanel(name, parentT, color); break;
                         case "button":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
-                            go = UICreator.CreateButton(name, parentT, text ?? "Button", new Vector2(w, h)); break;
+                            go = UICreator.CreateButton(name, parentT, text ?? "Button", new Vector2(w, h),
+                                spritePath, iconSpritePath,
+                                new Vector2(item["iconWidth"] != null ? (float)item["iconWidth"] : h * 0.5f,
+                                    item["iconHeight"] != null ? (float)item["iconHeight"] : h * 0.5f),
+                                item["iconPosition"]?.ToString() ?? "Left", fontSize, itemSpriteErrors); break;
                         case "text":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
                             go = UICreator.CreateText(name, parentT, text ?? "", fontSize, color, alignment); break;
@@ -463,10 +527,17 @@ namespace Indey.UIPrefabBuilder.Skills
                         case "inputfield":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
                             go = UICreator.CreateInputField(name, parentT, placeholder ?? "Enter text...", new Vector2(w, h),
-                                text ?? "", fontSize, null, null, spritePath, itemSpriteErrors); break;
+                                text ?? "", fontSize, hasColor ? color : (Color?)null, null, spritePath, itemSpriteErrors); break;
                         case "slider":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
-                            go = UICreator.CreateSlider(name, parentT, 0, 1, 0.5f); break;
+                            go = UICreator.CreateSlider(name, parentT,
+                                item["min"] != null ? (float)item["min"] : 0f,
+                                item["max"] != null ? (float)item["max"] : 1f,
+                                item["value"] != null ? (float)item["value"] : 0.5f,
+                                new Vector2(w, h), spritePath, fillSpritePath, handleSpritePath,
+                                null, null, null,
+                                item["handleWidth"] != null ? (float)item["handleWidth"] : 0f,
+                                item["vertical"] != null && (bool)item["vertical"], itemSpriteErrors); break;
                         case "toggle":
                             if (parentT == null) { results.Add(ItemFail(name, $"Parent '{parentName}' not found")); fail++; continue; }
                             go = UICreator.CreateToggle(name, parentT, text, isOn, new Vector2(w, h),
@@ -2342,9 +2413,19 @@ namespace Indey.UIPrefabBuilder.Skills
             var violations = new List<string>();
             var texts = CollectVisibleTexts();
 
-            var empty = texts.Where(t => string.IsNullOrWhiteSpace(t.Content)).Select(t => t.Path).Take(8).ToList();
+            var empty = texts.Where(t => string.IsNullOrWhiteSpace(t.Content) && !t.OnTexturedSelectable)
+                .Select(t => t.Path).Take(8).ToList();
             if (empty.Count > 0)
                 violations.Add($"{empty.Count} visible text element(s) render nothing because their text is empty: {string.Join(", ", empty)}. Pass the exact `text` content.");
+
+            // An empty label on a button whose artwork already draws the glyph (+ / - / arrow) must not be
+            // "fixed" by writing text into it — that stamps a second glyph over the sprite.
+            var emptyOnArtwork = texts.Where(t => string.IsNullOrWhiteSpace(t.Content) && t.OnTexturedSelectable)
+                .Select(t => t.Path).Take(8).ToList();
+            if (emptyOnArtwork.Count > 0)
+                violations.Add($"{emptyOnArtwork.Count} button label(s) are empty while the button already has a sprite: {string.Join(", ", emptyOnArtwork)}. " +
+                    "If the sprite itself shows the glyph (a plus/minus/arrow icon button), DELETE the empty label with `destroy_object` — " +
+                    "do NOT write text on top of the artwork. Only set `text` when the mockup really shows a word there.");
 
             if (texts.Count >= 4)
             {
@@ -2374,6 +2455,19 @@ namespace Indey.UIPrefabBuilder.Skills
                 violations.Add($"{unstyledSelections.Count} tab/selectable element(s) have no visual difference between states: {string.Join(", ", unstyledSelections)}. " +
                     "Use `configure_selectable_states` (selected/highlighted sprite or colour) so the selected tab/option actually looks selected.");
 
+            var brokenSliders = FindIncompleteSliders();
+            if (brokenSliders.Count > 0)
+                violations.Add($"{brokenSliders.Count} Slider(s) do not read as a bar: {string.Join(", ", brokenSliders)}. " +
+                    "A Slider with no Fill/Handle graphics is invisible — the mockup's bar is simply absent where the hierarchy says it exists. " +
+                    "Recreate it with `create_slider` (backgroundSpritePath / fillSpritePath / handleSpritePath build and wire Background, Fill and Handle), " +
+                    "or give the existing Background/Fill/Handle real sprites or tints with `set_image_batch`.");
+
+            var collisions = FindOverlappingButtonContent();
+            if (collisions.Count > 0)
+                violations.Add($"{collisions.Count} button icon(s) are drawn on top of the button's own label text: {string.Join(", ", collisions)}. " +
+                    "Move the icon out of the glyphs — give the label an explicit rect beside the icon, or recreate the button with " +
+                    "`create_button` (`iconSpritePath` + `iconPosition`), which reserves separate areas for icon and label.");
+
             return violations;
         }
 
@@ -2382,6 +2476,8 @@ namespace Indey.UIPrefabBuilder.Skills
             public string Path;
             public string Content;
             public float FontSize;
+            /// <summary>Label of a Selectable whose background already carries artwork (an icon button).</summary>
+            public bool OnTexturedSelectable;
         }
 
         private static List<TextProbe> CollectVisibleTexts()
@@ -2410,11 +2506,156 @@ namespace Indey.UIPrefabBuilder.Skills
                     {
                         Path = GetHierarchyPath(graphic.gameObject),
                         Content = textProp.GetValue(graphic) as string,
-                        FontSize = fontSize
+                        FontSize = fontSize,
+                        OnTexturedSelectable = IsLabelOfTexturedSelectable(graphic.transform)
                     });
                 }
             }
             return probes;
+        }
+
+        private static bool IsLabelOfTexturedSelectable(Transform t)
+        {
+            var selectable = t.GetComponentInParent<Selectable>();
+            if (selectable == null || selectable.gameObject == t.gameObject) return false;
+            var img = selectable.targetGraphic as Image ?? selectable.GetComponent<Image>();
+            return img != null && img.sprite != null;
+        }
+
+        /// <summary>
+        /// A Slider that was created as a bare component has no Background / Fill / Handle, so the
+        /// mockup's bar is missing from the capture while the hierarchy still lists the node — the
+        /// exact combination that gets reported as "slider row delivered".
+        /// </summary>
+        private static List<string> FindIncompleteSliders()
+        {
+            var names = new List<string>();
+            foreach (var slider in UnityEngine.Object.FindObjectsOfType<Slider>())
+            {
+                if (slider == null || !slider.isActiveAndEnabled) continue;
+                var defect = DescribeSliderDefect(slider);
+                if (defect == null) continue;
+
+                names.Add($"{GetHierarchyPath(slider.gameObject)} ({defect})");
+                if (names.Count >= 8) break;
+            }
+            return names;
+        }
+
+        private static string DescribeSliderDefect(Slider slider)
+        {
+            if (slider.fillRect == null && slider.handleRect == null)
+                return "no fillRect and no handleRect";
+
+            bool hasVisiblePart = slider.GetComponentsInChildren<Graphic>(false)
+                .Any(g => g != null && g.isActiveAndEnabled && g.color.a > 0.01f);
+            if (!hasVisiblePart) return "no visible Image underneath";
+
+            if (slider.fillRect != null && slider.fillRect.GetComponent<Graphic>() == null)
+                return "fillRect has no Image";
+            if (slider.handleRect != null && slider.handleRect.GetComponent<Graphic>() == null)
+                return "handleRect has no Image";
+
+            var untextured = new List<string>();
+            if (IsUntexturedWhite(slider.fillRect)) untextured.Add("Fill");
+            if (IsUntexturedWhite(slider.handleRect)) untextured.Add("Handle");
+            if (untextured.Count > 0)
+                return string.Join(" and ", untextured) + " still untextured white";
+
+            return null;
+        }
+
+        private static bool IsUntexturedWhite(RectTransform rt)
+        {
+            var img = rt != null ? rt.GetComponent<Image>() : null;
+            return img != null && img.isActiveAndEnabled && img.sprite == null && IsApproximately(img.color, Color.white);
+        }
+
+        /// <summary>
+        /// An icon dropped into a button whose label stretches across the whole face lands on the
+        /// glyphs: the price text ends up half-hidden behind the coin. Compared against the text's
+        /// PREFERRED size (where the glyphs actually are), not the label rect, so a normal
+        /// icon-left/label-centre button is not flagged.
+        /// </summary>
+        private static List<string> FindOverlappingButtonContent()
+        {
+            var names = new List<string>();
+            foreach (var selectable in UnityEngine.Object.FindObjectsOfType<Selectable>())
+            {
+                if (selectable == null || !selectable.isActiveAndEnabled) continue;
+
+                var faceArea = RectArea(GetWorldRect(selectable.transform as RectTransform));
+                foreach (var label in selectable.GetComponentsInChildren<Graphic>(false))
+                {
+                    if (label == null || !label.isActiveAndEnabled) continue;
+                    if (!TryGetRenderedTextBox(label, out var textBox)) continue;
+
+                    foreach (var icon in selectable.GetComponentsInChildren<Image>(false))
+                    {
+                        if (icon == null || !icon.isActiveAndEnabled || icon.sprite == null) continue;
+                        if (icon == selectable.targetGraphic) continue;
+                        if (icon.transform == selectable.transform) continue;
+                        if (icon.transform.IsChildOf(label.transform)) continue;
+
+                        var iconRect = GetWorldRect(icon.rectTransform);
+                        var iconArea = RectArea(iconRect);
+                        if (iconArea <= 0.01f) continue;
+                        // A full-face image is a background layer, not an icon sitting on the text.
+                        if (faceArea > 0.01f && iconArea > faceArea * 0.6f) continue;
+
+                        if (IntersectionArea(iconRect, textBox) < iconArea * 0.3f) continue;
+
+                        names.Add($"{GetHierarchyPath(icon.gameObject)} over {GetHierarchyPath(label.gameObject)}");
+                        if (names.Count >= 8) return names;
+                    }
+                }
+            }
+            return names;
+        }
+
+        private static bool TryGetRenderedTextBox(Graphic graphic, out Rect box)
+        {
+            box = default;
+            var layout = graphic as ILayoutElement;
+            if (layout == null) return false;
+
+            var textProp = graphic.GetType().GetProperty("text");
+            if (textProp == null || textProp.PropertyType != typeof(string)) return false;
+            if (string.IsNullOrWhiteSpace(textProp.GetValue(graphic) as string)) return false;
+
+            var rect = graphic.rectTransform.rect;
+            if (rect.width <= 0.01f || rect.height <= 0.01f) return false;
+
+            var world = GetWorldRect(graphic.rectTransform);
+            var glyphWidth = Mathf.Clamp(layout.preferredWidth, 0f, rect.width);
+            var glyphHeight = Mathf.Clamp(layout.preferredHeight, 0f, rect.height);
+            if (glyphWidth <= 0.01f || glyphHeight <= 0.01f) { box = world; return true; }
+
+            // The glyph block is assumed centred in its rect — a left/right aligned label can only make
+            // this narrower than reality, which costs a detection but never invents one.
+            var width = world.width * (glyphWidth / rect.width);
+            var height = world.height * (glyphHeight / rect.height);
+            box = new Rect(world.center.x - width * 0.5f, world.center.y - height * 0.5f, width, height);
+            return true;
+        }
+
+        private static Rect GetWorldRect(RectTransform rt)
+        {
+            if (rt == null) return default;
+            var corners = new Vector3[4];
+            rt.GetWorldCorners(corners);
+            var min = new Vector2(Mathf.Min(corners[0].x, corners[2].x), Mathf.Min(corners[0].y, corners[2].y));
+            var max = new Vector2(Mathf.Max(corners[0].x, corners[2].x), Mathf.Max(corners[0].y, corners[2].y));
+            return new Rect(min, max - min);
+        }
+
+        private static float RectArea(Rect r) => Mathf.Max(0f, r.width) * Mathf.Max(0f, r.height);
+
+        private static float IntersectionArea(Rect a, Rect b)
+        {
+            var width = Mathf.Min(a.xMax, b.xMax) - Mathf.Max(a.xMin, b.xMin);
+            var height = Mathf.Min(a.yMax, b.yMax) - Mathf.Max(a.yMin, b.yMin);
+            return width <= 0f || height <= 0f ? 0f : width * height;
         }
 
         private static List<string> FindUnstyledButtonBackgrounds()
@@ -2423,6 +2664,8 @@ namespace Indey.UIPrefabBuilder.Skills
             foreach (var selectable in UnityEngine.Object.FindObjectsOfType<Selectable>())
             {
                 if (selectable == null || !selectable.isActiveAndEnabled) continue;
+                // A Slider's targetGraphic is its handle, not a button face — it is judged by the slider check.
+                if (selectable is Slider) continue;
                 var img = selectable.targetGraphic as Image;
                 if (img == null) img = selectable.GetComponent<Image>();
                 if (img == null || !img.isActiveAndEnabled) continue;

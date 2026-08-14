@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.1] - 2026-08-14
+
+### Fixed
+- **Slider 创建后完全不可见**：`create_slider` 此前只挂一个空的 `Slider` 组件，节点在层级里但一个像素都不画（设计稿里的数量条/进度条整段消失）。现在创建完整的 Background / Fill Area→Fill / Handle Slide Area→Handle 并接线 `fillRect`、`handleRect`、`targetGraphic`，同时按 `value` 摆好 Fill 与 Handle，编辑器截图即所见
+- **图标钮被逼着叠字**：`create_button` 传空文案时不再生成 Text 子节点；裁定环节对「已有 sprite 的按钮上的空标签」改为提示删除空标签，而不是要求写文案——后者会在 `+`/`-`/箭头图形上再压一层文字
+- **按钮内图标压住自身文案**：`create_button` 新增 `iconSpritePath` / `iconPosition` / `iconWidth` / `iconHeight`，图标与标签分占互不相交的区域（此前把图标丢进铺满按钮的标签上，价格数字会被图标遮掉半个）
+- **`create_batch` 丢参数**：button 的 `spritePath`（背景图）、`fontSize` 与 inputfield 的文字颜色此前被忽略，必须事后再补一轮 `set_image_batch` / `set_text_properties_batch`
+
+### Added
+- **`create_slider` 完整参数**：`backgroundSpritePath` / `fillSpritePath` / `handleSpritePath`、`handleWidth`、`vertical`、宽高与 background/fill/handle 三组 tint
+- **`create_batch` 支持新字段**：`iconSpritePath`、`iconPosition`、`iconWidth/Height`、`fillSpritePath`、`handleSpritePath`、`handleWidth`、`min/max/value`、`vertical`
+
+### Improved
+- **视觉裁定新增两类硬检查**：Slider 无 Fill/Handle 图形（或 Fill/Handle 仍是未贴图纯白）时拒绝 `matches=true`；按钮内图标压在自身文案字形上时拒绝 `matches=true`（按文本 preferred 尺寸而非标签矩形判定，正常的「图标居左 + 文字居中」不会误报）
+- **Prompt 结构指引**：新增进度条/数量条必须用 `create_slider` 并同时传三张图、图标钮用空文案、图标+文字同框用 `create_button` 的图标参数
+
 ## [0.5.0] - 2026-08-13
 
 ### Added

@@ -50,21 +50,93 @@ namespace Indey.UIPrefabBuilder.Skills
             return go;
         }
 
-        public static GameObject CreateButton(string name, Transform parent, string text, Vector2 size)
+        /// <summary>
+        /// 创建按钮。可直接带上背景图与一个图标子节点：图标与标签会被排成互不重叠的两块区域，
+        /// 因为把图标丢在铺满整个按钮的标签上，文字与图标必然叠在一起。
+        /// text 为空时不再生成 Text 子节点——图标钮的字形本来就画在 sprite 里。
+        /// </summary>
+        public static GameObject CreateButton(string name, Transform parent, string text, Vector2 size,
+            string backgroundSpritePath = null, string iconSpritePath = null, Vector2? iconSize = null,
+            string iconPosition = "Left", int fontSize = 18, List<string> spriteErrors = null)
         {
             var go = CreateUI(name, parent);
             var img = AddImageComponent(go);
             // White, not a blue tint: Image.color multiplies the sprite, so a coloured default turns
             // every later sprite assignment into the wrong hue.
             img.color = Color.white;
+            var bgSprite = LoadSpriteTracked(backgroundSpritePath, "backgroundSpritePath", spriteErrors);
+            if (bgSprite != null) { img.sprite = bgSprite; img.type = Image.Type.Sliced; }
+
             var btnComp = AddButtonComponent(go);
             var selectable = btnComp as UnityEngine.UI.Selectable;
             if (selectable != null) selectable.targetGraphic = img;
             SetSize(go, size);
-            var label = CreateUI("Text", go.transform);
-            Stretch(label.GetComponent<RectTransform>());
-            AddText(label, text, 18, Color.white, TextAnchor.MiddleCenter);
+
+            GameObject icon = null;
+            var iconRect = iconSize ?? new Vector2(size.y * 0.5f, size.y * 0.5f);
+            var iconSprite = LoadSpriteTracked(iconSpritePath, "iconSpritePath", spriteErrors);
+            if (iconSprite != null)
+            {
+                icon = CreateUI("Icon", go.transform);
+                icon.GetComponent<RectTransform>().sizeDelta = iconRect;
+                var iconImage = icon.AddComponent<Image>();
+                iconImage.color = Color.white;
+                iconImage.sprite = iconSprite;
+                iconImage.preserveAspect = true;
+            }
+
+            GameObject label = null;
+            if (!string.IsNullOrEmpty(text))
+            {
+                label = CreateUI("Text", go.transform);
+                Stretch(label.GetComponent<RectTransform>());
+                AddText(label, text, fontSize, Color.white, TextAnchor.MiddleCenter);
+            }
+
+            LayoutButtonContent(icon, label, iconRect, iconPosition);
             return go;
+        }
+
+        /// <summary>
+        /// 把图标推到按钮的一侧，并把（铺满的）标签从这一侧缩进同样的宽度，让两者各占一块互不相交的区域。
+        /// </summary>
+        private static void LayoutButtonContent(GameObject icon, GameObject label, Vector2 iconSize, string position)
+        {
+            if (icon == null) return;
+
+            const float padding = 12f;
+            var iconRT = icon.GetComponent<RectTransform>();
+            var labelRT = label != null ? label.GetComponent<RectTransform>() : null;
+            var reserveX = iconSize.x + padding * 2f;
+            var reserveY = iconSize.y + padding * 2f;
+
+            switch ((position ?? "Left").ToLowerInvariant())
+            {
+                case "right":
+                    iconRT.anchorMin = iconRT.anchorMax = new Vector2(1f, 0.5f);
+                    iconRT.anchoredPosition = new Vector2(-(padding + iconSize.x * 0.5f), 0f);
+                    if (labelRT != null) labelRT.offsetMax = new Vector2(-reserveX, labelRT.offsetMax.y);
+                    break;
+                case "top":
+                    iconRT.anchorMin = iconRT.anchorMax = new Vector2(0.5f, 1f);
+                    iconRT.anchoredPosition = new Vector2(0f, -(padding + iconSize.y * 0.5f));
+                    if (labelRT != null) labelRT.offsetMax = new Vector2(labelRT.offsetMax.x, -reserveY);
+                    break;
+                case "bottom":
+                    iconRT.anchorMin = iconRT.anchorMax = new Vector2(0.5f, 0f);
+                    iconRT.anchoredPosition = new Vector2(0f, padding + iconSize.y * 0.5f);
+                    if (labelRT != null) labelRT.offsetMin = new Vector2(labelRT.offsetMin.x, reserveY);
+                    break;
+                case "center":
+                    iconRT.anchorMin = iconRT.anchorMax = new Vector2(0.5f, 0.5f);
+                    iconRT.anchoredPosition = Vector2.zero;
+                    break;
+                default:
+                    iconRT.anchorMin = iconRT.anchorMax = new Vector2(0f, 0.5f);
+                    iconRT.anchoredPosition = new Vector2(padding + iconSize.x * 0.5f, 0f);
+                    if (labelRT != null) labelRT.offsetMin = new Vector2(reserveX, labelRT.offsetMin.y);
+                    break;
+            }
         }
 
         public static GameObject CreateText(string name, Transform parent, string content, int fontSize = 18, Color? color = null,
@@ -274,11 +346,97 @@ namespace Indey.UIPrefabBuilder.Skills
             return root;
         }
 
-        public static GameObject CreateSlider(string name, Transform parent, float min, float max, float val)
+        /// <summary>
+        /// 创建 Unity 标准 Slider 层级：Root(Slider) → Background / Fill Area → Fill / Handle Slide Area → Handle，
+        /// 并接线 fillRect、handleRect、targetGraphic。只挂一个空的 Slider 组件不会画出任何像素——
+        /// 设计稿里的数量条/进度条会整段消失，而工具却报告创建成功。
+        /// </summary>
+        public static GameObject CreateSlider(string name, Transform parent, float min, float max, float val,
+            Vector2? size = null, string backgroundSpritePath = null, string fillSpritePath = null,
+            string handleSpritePath = null, Color? backgroundColor = null, Color? fillColor = null,
+            Color? handleColor = null, float handleWidth = 0f, bool vertical = false,
+            List<string> spriteErrors = null)
         {
             var go = CreateUI(name, parent);
-            var s = go.AddComponent<Slider>(); s.minValue = min; s.maxValue = max; s.value = val;
+            var barSize = size ?? new Vector2(320f, 40f);
+            SetSize(go, barSize);
+
+            var slider = go.AddComponent<Slider>();
+            slider.direction = vertical ? Slider.Direction.BottomToTop : Slider.Direction.LeftToRight;
+
+            if (handleWidth <= 0f) handleWidth = vertical ? barSize.x : barSize.y;
+            var halfHandle = handleWidth * 0.5f;
+
+            var background = CreateUI("Background", go.transform);
+            Stretch(background.GetComponent<RectTransform>());
+            var bgImage = background.AddComponent<Image>();
+            bgImage.color = backgroundColor ?? Color.white;
+            var bgSprite = LoadSpriteTracked(backgroundSpritePath, "backgroundSpritePath", spriteErrors);
+            if (bgSprite != null) { bgImage.sprite = bgSprite; bgImage.type = Image.Type.Sliced; }
+
+            var fillArea = CreateUI("Fill Area", go.transform);
+            InsetTrack(fillArea.GetComponent<RectTransform>(), halfHandle, vertical);
+            var fill = CreateUI("Fill", fillArea.transform);
+            var fillRT = fill.GetComponent<RectTransform>();
+            Stretch(fillRT);
+            var fillImage = fill.AddComponent<Image>();
+            fillImage.color = fillColor ?? Color.white;
+            var fillSprite = LoadSpriteTracked(fillSpritePath, "fillSpritePath", spriteErrors);
+            if (fillSprite != null) { fillImage.sprite = fillSprite; fillImage.type = Image.Type.Sliced; }
+
+            var handleArea = CreateUI("Handle Slide Area", go.transform);
+            InsetTrack(handleArea.GetComponent<RectTransform>(), halfHandle, vertical);
+            var handle = CreateUI("Handle", handleArea.transform);
+            var handleRT = handle.GetComponent<RectTransform>();
+            handleRT.sizeDelta = vertical ? new Vector2(0f, handleWidth) : new Vector2(handleWidth, 0f);
+            var handleImage = handle.AddComponent<Image>();
+            handleImage.color = handleColor ?? Color.white;
+            var handleSprite = LoadSpriteTracked(handleSpritePath, "handleSpritePath", spriteErrors);
+            if (handleSprite != null) { handleImage.sprite = handleSprite; handleImage.type = Image.Type.Sliced; }
+
+            slider.fillRect = fillRT;
+            slider.handleRect = handleRT;
+            slider.targetGraphic = handleImage;
+            slider.minValue = min;
+            slider.maxValue = max;
+            slider.value = Mathf.Clamp(val, Mathf.Min(min, max), Mathf.Max(min, max));
+
+            ApplySliderVisuals(slider, fillRT, handleRT, vertical);
             return go;
+        }
+
+        private static void InsetTrack(RectTransform rt, float halfHandle, bool vertical)
+        {
+            Stretch(rt);
+            // 轨道两端各留半个滑块，滑到端点时滑块不会越出条外。
+            rt.offsetMin = vertical ? new Vector2(0f, halfHandle) : new Vector2(halfHandle, 0f);
+            rt.offsetMax = vertical ? new Vector2(0f, -halfHandle) : new Vector2(-halfHandle, 0f);
+        }
+
+        /// <summary>
+        /// Slider 在运行时才会根据 value 重排 Fill / Handle 的锚点，而设计稿验收看的是编辑器截图，
+        /// 所以这里直接按当前值把两者摆到位。
+        /// </summary>
+        private static void ApplySliderVisuals(Slider slider, RectTransform fill, RectTransform handle, bool vertical)
+        {
+            var range = slider.maxValue - slider.minValue;
+            var normalized = Mathf.Approximately(range, 0f)
+                ? 0f
+                : Mathf.Clamp01((slider.value - slider.minValue) / range);
+
+            if (fill != null)
+            {
+                fill.anchorMin = Vector2.zero;
+                fill.anchorMax = vertical ? new Vector2(1f, normalized) : new Vector2(normalized, 1f);
+                fill.offsetMin = fill.offsetMax = Vector2.zero;
+            }
+
+            if (handle != null)
+            {
+                handle.anchorMin = vertical ? new Vector2(0f, normalized) : new Vector2(normalized, 0f);
+                handle.anchorMax = vertical ? new Vector2(1f, normalized) : new Vector2(normalized, 1f);
+                handle.anchoredPosition = Vector2.zero;
+            }
         }
 
         /// <summary>

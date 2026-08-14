@@ -66,13 +66,19 @@ namespace Indey.UIPrefabBuilder.Skills
                 )),
 
             Def("create_button",
-                "Create a Button with a child Text label.",
+                "Create a Button with its background sprite, an optional icon child and a Text label. Icon and label get separate, non-overlapping areas — never drop a loose icon Image on top of a label that fills the button, the glyphs will collide. Pass text=\"\" for an icon-only button (no label child is created, so nothing later demands text on artwork that already shows the glyph).",
                 Props(
                     P("name", "string", "Name of the Button", true),
                     P("parent", "string", "Name of the parent GameObject", true),
-                    P("text", "string", "Button label text", false, "Button"),
+                    P("text", "string", "Button label text. Empty string = icon-only button with no label child.", false, "Button"),
                     P("width", "number", "Width in pixels", false, 160),
-                    P("height", "number", "Height in pixels", false, 40)
+                    P("height", "number", "Height in pixels", false, 40),
+                    P("fontSize", "integer", "Label font size", false, 18),
+                    P("backgroundSpritePath", "string", "Asset path of the button background sprite (applied as Sliced)", false),
+                    P("iconSpritePath", "string", "Asset path of an icon drawn inside the button (e.g. the coin next to a price)", false),
+                    P("iconWidth", "number", "Icon width (defaults to half the button height)", false),
+                    P("iconHeight", "number", "Icon height (defaults to half the button height)", false),
+                    P("iconPosition", "string", "Where the icon sits and which side the label is inset from: Left, Right, Top, Bottom, Center", false, "Left")
                 )),
 
             Def("create_text",
@@ -116,13 +122,32 @@ namespace Indey.UIPrefabBuilder.Skills
                 )),
 
             Def("create_slider",
-                "Create a Slider element.",
+                "Create a complete, wired Slider: Background (track) + Fill Area/Fill (Slider.fillRect) + Handle Slide Area/Handle (Slider.handleRect). Use this for every bar/quantity slider in a mockup and pass the three sprites here — a Slider without Fill and Handle renders as empty space, which is how a slider row goes missing while the hierarchy still shows the node.",
                 Props(
                     P("name", "string", "Name of the Slider", true),
                     P("parent", "string", "Name of the parent GameObject", true),
                     P("min", "number", "Minimum value", false, 0),
                     P("max", "number", "Maximum value", false, 1),
-                    P("value", "number", "Current value", false, 0.5)
+                    P("value", "number", "Current value (decides where Fill ends and the Handle sits)", false, 0.5),
+                    P("width", "number", "Width in pixels", false, 320),
+                    P("height", "number", "Height in pixels", false, 40),
+                    P("backgroundSpritePath", "string", "Sprite of the unfilled track (applied as Sliced)", false),
+                    P("fillSpritePath", "string", "Sprite of the filled portion (applied as Sliced)", false),
+                    P("handleSpritePath", "string", "Sprite of the draggable knob", false),
+                    P("handleWidth", "number", "Knob width (defaults to the bar's cross-axis size)", false),
+                    P("vertical", "boolean", "Bottom-to-top slider instead of left-to-right", false, false),
+                    P("backgroundR", "number", "Track tint Red (0-1)", false),
+                    P("backgroundG", "number", "Track tint Green (0-1)", false),
+                    P("backgroundB", "number", "Track tint Blue (0-1)", false),
+                    P("backgroundA", "number", "Track tint Alpha (0-1)", false),
+                    P("fillR", "number", "Fill tint Red (0-1)", false),
+                    P("fillG", "number", "Fill tint Green (0-1)", false),
+                    P("fillB", "number", "Fill tint Blue (0-1)", false),
+                    P("fillA", "number", "Fill tint Alpha (0-1)", false),
+                    P("handleR", "number", "Knob tint Red (0-1)", false),
+                    P("handleG", "number", "Knob tint Green (0-1)", false),
+                    P("handleB", "number", "Knob tint Blue (0-1)", false),
+                    P("handleA", "number", "Knob tint Alpha (0-1)", false)
                 )),
 
             Def("create_toggle",
@@ -188,7 +213,7 @@ namespace Indey.UIPrefabBuilder.Skills
 
             // ── Batch Creation ──
             Def("create_batch",
-                "Create multiple UI elements in a single call. PREFERRED over individual create calls when creating 2+ elements. The 'items' parameter is a JSON string array. Each item: {type, name, parent, text?, placeholder?, spritePath?, checkmarkSpritePath?, width?, height?, fontSize?, alignment?, isOn?, r?, g?, b?, a?}. Supported types: canvas, panel, button, text, image, inputfield, slider, toggle, dropdown, scrollview. `alignment` (Left/Center/Right/Top/Bottom) applies to text, `isOn`/`checkmarkSpritePath` to toggles, `placeholder` to inputfields. When a design mockup is attached this call is REJECTED until you have measured regions with map_design_rect_batch.",
+                "Create multiple UI elements in a single call. PREFERRED over individual create calls when creating 2+ elements. The 'items' parameter is a JSON string array. Each item: {type, name, parent, text?, placeholder?, spritePath?, checkmarkSpritePath?, iconSpritePath?, iconWidth?, iconHeight?, iconPosition?, fillSpritePath?, handleSpritePath?, handleWidth?, min?, max?, value?, vertical?, width?, height?, fontSize?, alignment?, isOn?, r?, g?, b?, a?}. Supported types: canvas, panel, button, text, image, inputfield, slider, toggle, dropdown, scrollview. `spritePath` is the background for button/inputfield/toggle/slider, `alignment` (Left/Center/Right/Top/Bottom) applies to text, `isOn`/`checkmarkSpritePath` to toggles, `placeholder`/`r,g,b,a` (text colour) to inputfields, `iconSpritePath`/`iconPosition` to buttons, `fillSpritePath`/`handleSpritePath`/`value` to sliders. Pass the sprites HERE instead of creating bare elements and styling them afterwards. When a design mockup is attached this call is REJECTED until you have measured regions with map_design_rect_batch.",
                 Props(P("items", "string", "JSON array string of UI element descriptors", true))),
 
             // ── RectTransform (combined) ──

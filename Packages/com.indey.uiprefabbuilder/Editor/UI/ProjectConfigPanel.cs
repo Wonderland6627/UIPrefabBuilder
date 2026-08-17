@@ -1,6 +1,4 @@
-using System.IO;
 using Indey.UIPrefabBuilder.Config;
-using Indey.UIPrefabBuilder.Logging;
 using UnityEditor;
 using UnityEngine;
 
@@ -17,86 +15,80 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _foldComponents;
         private bool _foldRules;
         private float _panelWidth = 300f;
-        private GUIStyle _wrapTextArea;
 
         public void Draw(Rect rect)
         {
             var config = ProjectConfig.Current;
             _panelWidth = rect.width;
+            BuilderStyles.EnsureStyles();
 
             GUILayout.BeginArea(rect);
-            DrawToolbar(config);
+            DrawToolbar();
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
 
             DrawBasicInfo(config);
-            GUILayout.Space(2);
+            GUILayout.Space(BuilderStyles.SectionGap);
             DrawSpriteMapping(config);
-            GUILayout.Space(2);
+            GUILayout.Space(BuilderStyles.SectionGap);
             DrawPrefabMapping(config);
-            GUILayout.Space(2);
+            GUILayout.Space(BuilderStyles.SectionGap);
             DrawComponentOverrides(config);
-            GUILayout.Space(2);
+            GUILayout.Space(BuilderStyles.SectionGap);
             DrawRules(config);
 
             EditorGUILayout.EndScrollView();
             GUILayout.EndArea();
         }
 
-        private void DrawToolbar(ProjectConfig config)
+        private void DrawToolbar()
         {
-            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-            GUILayout.Label("Project Config", EditorStyles.miniBoldLabel, GUILayout.Width(85));
+            BuilderStyles.DrawPanelToolbar("Project Config", () =>
+            {
+                if (_dirty)
+                    BuilderStyles.ColoredLabel("*", BuilderStyles.Dirty, BuilderStyles.PanelTitle, GUILayout.Width(8));
 
-            if (_dirty)
-            {
-                var prev = GUI.color;
-                GUI.color = new Color(1f, 0.8f, 0.3f);
-                GUILayout.Label("*", EditorStyles.miniBoldLabel, GUILayout.Width(8));
-                GUI.color = prev;
-            }
+                GUILayout.FlexibleSpace();
 
-            GUILayout.FlexibleSpace();
-
-            if (GUILayout.Button("Save", EditorStyles.toolbarButton, GUILayout.Width(38)))
-            {
-                ProjectConfig.Save();
-                _dirty = false;
-            }
-            if (GUILayout.Button("Export", EditorStyles.toolbarButton, GUILayout.Width(45)))
-            {
-                var path = EditorUtility.SaveFilePanel("Export Project Config", "", "UIPrefabBuilderConfig.json", "json");
-                if (!string.IsNullOrEmpty(path))
+                if (GUILayout.Button("Save", EditorStyles.toolbarButton, GUILayout.Width(38)))
                 {
-                    ProjectConfig.Export(path);
-                    EditorUtility.RevealInFinder(path);
+                    ProjectConfig.Save();
+                    _dirty = false;
                 }
-            }
-            if (GUILayout.Button("Import", EditorStyles.toolbarButton, GUILayout.Width(48)))
-            {
-                var path = EditorUtility.OpenFilePanel("Import Project Config", "", "json");
-                if (!string.IsNullOrEmpty(path))
+                if (GUILayout.Button("Export", EditorStyles.toolbarButton, GUILayout.Width(45)))
                 {
-                    ProjectConfig.Import(path);
-                    _dirty = true;
+                    var path = EditorUtility.SaveFilePanel("Export Project Config", "", "UIPrefabBuilderConfig.json", "json");
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        ProjectConfig.Export(path);
+                        EditorUtility.RevealInFinder(path);
+                    }
                 }
-            }
-            if (GUILayout.Button("Reset", EditorStyles.toolbarButton, GUILayout.Width(40)))
-            {
-                if (EditorUtility.DisplayDialog("Reset Project Config", "Reset all project configuration to defaults?", "Reset", "Cancel"))
+                if (GUILayout.Button("Import", EditorStyles.toolbarButton, GUILayout.Width(48)))
                 {
-                    ProjectConfig.Reset();
-                    _dirty = true;
+                    var path = EditorUtility.OpenFilePanel("Import Project Config", "", "json");
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        ProjectConfig.Import(path);
+                        _dirty = true;
+                    }
                 }
-            }
-            EditorGUILayout.EndHorizontal();
+                if (GUILayout.Button("Reset", EditorStyles.toolbarButton, GUILayout.Width(40)))
+                {
+                    if (EditorUtility.DisplayDialog("Reset Project Config", "Reset all project configuration to defaults?", "Reset", "Cancel"))
+                    {
+                        ProjectConfig.Reset();
+                        _dirty = true;
+                    }
+                }
+            }, 85f);
         }
 
         #region Basic Info
 
         private void DrawBasicInfo(ProjectConfig config)
         {
-            _foldBasic = EditorGUILayout.Foldout(_foldBasic, "Basic Info", true, EditorStyles.foldoutHeader);
-            if (!_foldBasic) return;
+            if (!BuilderStyles.BeginSectionFoldout(ref _foldBasic, "Basic Info"))
+                return;
 
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
             EditorGUI.BeginChangeCheck();
@@ -127,17 +119,17 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawSpriteMapping(ProjectConfig config)
         {
-            EditorGUILayout.BeginHorizontal();
-            _foldSprites = EditorGUILayout.Foldout(_foldSprites, $"Sprite Mapping ({config.spriteMapping.Count})", true, EditorStyles.foldoutHeader);
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(20)))
-            {
-                config.spriteMapping.Add(new SpriteEntry());
-                _dirty = true;
-            }
-            EditorGUILayout.EndHorizontal();
-
-            if (!_foldSprites) return;
+            if (!BuilderStyles.BeginSectionFoldout(ref _foldSprites,
+                    $"Sprite Mapping ({config.spriteMapping.Count})",
+                    () =>
+                    {
+                        if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.AddIconWidth)))
+                        {
+                            config.spriteMapping.Add(new SpriteEntry());
+                            _dirty = true;
+                        }
+                    }))
+                return;
 
             int removeIndex = -1;
             for (int i = 0; i < config.spriteMapping.Count; i++)
@@ -194,17 +186,17 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawPrefabMapping(ProjectConfig config)
         {
-            EditorGUILayout.BeginHorizontal();
-            _foldPrefabs = EditorGUILayout.Foldout(_foldPrefabs, $"Prefab Mapping ({config.prefabMapping.Count})", true, EditorStyles.foldoutHeader);
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(20)))
-            {
-                config.prefabMapping.Add(new PrefabEntry());
-                _dirty = true;
-            }
-            EditorGUILayout.EndHorizontal();
-
-            if (!_foldPrefabs) return;
+            if (!BuilderStyles.BeginSectionFoldout(ref _foldPrefabs,
+                    $"Prefab Mapping ({config.prefabMapping.Count})",
+                    () =>
+                    {
+                        if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.AddIconWidth)))
+                        {
+                            config.prefabMapping.Add(new PrefabEntry());
+                            _dirty = true;
+                        }
+                    }))
+                return;
 
             int removeIndex = -1;
             for (int i = 0; i < config.prefabMapping.Count; i++)
@@ -249,8 +241,8 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawComponentOverrides(ProjectConfig config)
         {
-            _foldComponents = EditorGUILayout.Foldout(_foldComponents, "Component Overrides", true, EditorStyles.foldoutHeader);
-            if (!_foldComponents) return;
+            if (!BuilderStyles.BeginSectionFoldout(ref _foldComponents, "Component Overrides"))
+                return;
 
             var ov = config.componentOverrides;
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
@@ -263,11 +255,11 @@ namespace Indey.UIPrefabBuilder.UI
 
             if (EditorGUI.EndChangeCheck()) _dirty = true;
 
-            GUILayout.Space(4);
+            GUILayout.Space(BuilderStyles.SubGap);
             EditorGUILayout.BeginHorizontal();
-            GUILayout.Label("Custom Components", EditorStyles.miniBoldLabel);
+            GUILayout.Label("Custom Components", BuilderStyles.SectionLabel);
             GUILayout.FlexibleSpace();
-            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(20)))
+            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.AddIconWidth)))
             {
                 ov.customComponents.Add(new CustomComponentEntry());
                 _dirty = true;
@@ -305,17 +297,17 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawRules(ProjectConfig config)
         {
-            EditorGUILayout.BeginHorizontal();
-            _foldRules = EditorGUILayout.Foldout(_foldRules, $"Rules ({config.rules.Count})", true, EditorStyles.foldoutHeader);
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(20)))
-            {
-                config.rules.Add("");
-                _dirty = true;
-            }
-            EditorGUILayout.EndHorizontal();
-
-            if (!_foldRules) return;
+            if (!BuilderStyles.BeginSectionFoldout(ref _foldRules,
+                    $"Rules ({config.rules.Count})",
+                    () =>
+                    {
+                        if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.AddIconWidth)))
+                        {
+                            config.rules.Add("");
+                            _dirty = true;
+                        }
+                    }))
+                return;
 
             EditorGUILayout.HelpBox(
                 "Each rule is injected into the AI Agent's system prompt.\n" +
@@ -358,20 +350,16 @@ namespace Indey.UIPrefabBuilder.UI
         /// </summary>
         private string DrawWrappedTextArea(string text, float minHeight)
         {
-            if (_wrapTextArea == null)
-                _wrapTextArea = new GUIStyle(EditorStyles.textArea) { wordWrap = true };
-
+            var style = BuilderStyles.WrappedTextArea;
             var value = text ?? "";
-            // Panel width minus the scroll bar, the enclosing helpBox padding and the text area's own inset.
             var wrapWidth = Mathf.Max(80f, _panelWidth - 40f);
-            var height = _wrapTextArea.CalcHeight(new GUIContent(value), wrapWidth);
+            var height = style.CalcHeight(new GUIContent(value), wrapWidth);
 
-            // CalcHeight ignores a trailing blank line, which would clip the caret while typing.
             if (value.EndsWith("\n"))
-                height += _wrapTextArea.lineHeight;
+                height += style.lineHeight;
 
             height = Mathf.Max(minHeight, height + 4f);
-            return EditorGUILayout.TextArea(value, _wrapTextArea, GUILayout.Height(height), GUILayout.ExpandWidth(true));
+            return EditorGUILayout.TextArea(value, style, GUILayout.Height(height), GUILayout.ExpandWidth(true));
         }
     }
 }

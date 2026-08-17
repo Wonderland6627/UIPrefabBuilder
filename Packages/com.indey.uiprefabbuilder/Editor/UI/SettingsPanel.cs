@@ -13,6 +13,9 @@ namespace Indey.UIPrefabBuilder.UI
         private string _apiKeyDisplay = "";
         private bool _showKey;
         private bool _keyLoaded;
+        private bool _foldLlm = true;
+        private bool _foldAgent = true;
+        private bool _foldIndexing = true;
         private bool _foldIndexDirs = true;
         private bool _foldIgnorePatterns;
         private Vector2 _scroll;
@@ -49,9 +52,11 @@ namespace Indey.UIPrefabBuilder.UI
         {
             EnsureKeyLoaded();
 
+            if (!BuilderStyles.BeginSectionFoldout(ref _foldLlm, "LLM Configuration"))
+                return;
+
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-            GUILayout.Label("LLM Configuration", EditorStyles.miniBoldLabel);
-            GUILayout.Space(4);
+            GUILayout.Space(BuilderStyles.SubGap);
 
             var settings = BuilderSettings.Get();
 
@@ -113,7 +118,6 @@ namespace Indey.UIPrefabBuilder.UI
         {
             if (_visionProbeInProgress) return;
 
-            // Persist API key before probing
             SecureKeyStore.SaveApiKey(_apiKeyDisplay ?? "");
             settings.Save();
 
@@ -160,9 +164,11 @@ namespace Indey.UIPrefabBuilder.UI
 
         public void DrawAgentSettings()
         {
+            if (!BuilderStyles.BeginSectionFoldout(ref _foldAgent, "Agent Configuration"))
+                return;
+
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-            GUILayout.Label("Agent Configuration", EditorStyles.miniBoldLabel);
-            GUILayout.Space(4);
+            GUILayout.Space(BuilderStyles.SubGap);
 
             var settings = BuilderSettings.Get();
 
@@ -172,14 +178,14 @@ namespace Indey.UIPrefabBuilder.UI
             settings.ExecuteTimeoutSeconds = EditorGUILayout.IntField("Exec Timeout (s)", settings.ExecuteTimeoutSeconds);
             settings.AutoExecute = EditorGUILayout.Toggle("Auto Execute", settings.AutoExecute);
 
-            GUILayout.Space(4);
-            GUILayout.Label("Thinking", EditorStyles.miniBoldLabel);
+            GUILayout.Space(BuilderStyles.SubGap);
+            GUILayout.Label("Thinking", BuilderStyles.SectionLabel);
             settings.EnableExtendedThinking = EditorGUILayout.Toggle("Extended Thinking (Claude)", settings.EnableExtendedThinking);
             if (settings.EnableExtendedThinking)
                 settings.ThinkingBudgetTokens = EditorGUILayout.IntField("Thinking Budget", settings.ThinkingBudgetTokens);
 
-            GUILayout.Space(4);
-            GUILayout.Label("Vision", EditorStyles.miniBoldLabel);
+            GUILayout.Space(BuilderStyles.SubGap);
+            GUILayout.Label("Vision", BuilderStyles.SectionLabel);
             EditorGUI.BeginDisabledGroup(!settings.SupportsVision);
             var currentVer = settings.EnableVisualVerification && settings.SupportsVision;
             var ver = EditorGUILayout.Toggle("Visual Verification", currentVer);
@@ -202,9 +208,11 @@ namespace Indey.UIPrefabBuilder.UI
         {
             EnsureRepaintOnDownload();
 
+            if (!BuilderStyles.BeginSectionFoldout(ref _foldIndexing, "Asset Indexing"))
+                return;
+
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-            GUILayout.Label("Asset Indexing", EditorStyles.miniBoldLabel);
-            GUILayout.Space(4);
+            GUILayout.Space(BuilderStyles.SubGap);
 
             var settings = BuilderSettings.Get();
             settings.EnableAssetIndexing = EditorGUILayout.Toggle("Enable Asset Indexing", settings.EnableAssetIndexing);
@@ -215,15 +223,15 @@ namespace Indey.UIPrefabBuilder.UI
                 return;
             }
 
-            GUILayout.Space(4);
+            GUILayout.Space(BuilderStyles.SubGap);
             DrawDependencies(settings);
-            GUILayout.Space(4);
+            GUILayout.Space(BuilderStyles.SubGap);
             DrawIndexDirectories();
-            GUILayout.Space(4);
+            GUILayout.Space(BuilderStyles.SubGap);
             DrawIgnorePatterns();
-            GUILayout.Space(4);
+            GUILayout.Space(BuilderStyles.SubGap);
             DrawSearchParameters();
-            GUILayout.Space(4);
+            GUILayout.Space(BuilderStyles.SubGap);
             DrawIndexActions();
 
             EditorGUILayout.EndVertical();
@@ -231,19 +239,15 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawDependencies(BuilderSettings settings)
         {
-            GUILayout.Label("Dependencies", EditorStyles.miniBoldLabel);
+            GUILayout.Label("Dependencies", BuilderStyles.SectionLabel);
 
             var dm = ModelDownloadManager.Instance;
             var sentisOk = IndexingSetupWizard.IsSentisInstalled();
             var visionOk = ModelDownloadManager.IsVisionModelPresent();
             var textOk = ModelDownloadManager.IsTextModelPresent();
-            var prevColor = GUI.color;
 
-            // ── Sentis ──
             EditorGUILayout.BeginHorizontal();
-            GUI.color = sentisOk ? new Color(0.4f, 0.9f, 0.4f) : new Color(1f, 0.5f, 0.4f);
-            GUILayout.Label(sentisOk ? "\u2713" : "\u2717", GUILayout.Width(16));
-            GUI.color = prevColor;
+            BuilderStyles.StatusIcon(sentisOk);
             GUILayout.Label("Unity Sentis", EditorStyles.miniLabel, GUILayout.Width(90));
             GUILayout.Label(sentisOk ? "Installed" : "Not installed", EditorStyles.miniLabel);
             GUILayout.FlexibleSpace();
@@ -259,7 +263,6 @@ namespace Indey.UIPrefabBuilder.UI
             }
             EditorGUILayout.EndHorizontal();
 
-            // ── Vision Model ──
             DrawModelRow(
                 "CLIP Vision",
                 visionOk,
@@ -269,7 +272,6 @@ namespace Indey.UIPrefabBuilder.UI
                 () => dm.CancelCurrent(),
                 () => IndexingSetupWizard.RemoveVisionModel());
 
-            // ── Text Model ──
             DrawModelRow(
                 "CLIP Text",
                 textOk,
@@ -279,7 +281,6 @@ namespace Indey.UIPrefabBuilder.UI
                 () => dm.CancelCurrent(),
                 () => IndexingSetupWizard.RemoveTextModel());
 
-            // ── Download Progress Bar (shared) ──
             if (dm.IsDownloading)
             {
                 GUILayout.Space(2);
@@ -300,17 +301,14 @@ namespace Indey.UIPrefabBuilder.UI
                 }
             }
 
-            // ── Status Messages ──
             if (dm.State == DownloadState.Failed && !string.IsNullOrEmpty(dm.LastError))
             {
                 EditorGUILayout.BeginHorizontal();
                 GUILayout.Space(16);
-                var style = new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = new Color(1f, 0.4f, 0.3f) } };
-                GUILayout.Label($"Last error: {dm.LastError}", style);
+                GUILayout.Label($"Last error: {dm.LastError}", BuilderStyles.ErrorLabel);
                 EditorGUILayout.EndHorizontal();
             }
 
-            // ── Model path (editable) ──
             EditorGUILayout.BeginHorizontal();
             GUILayout.Space(16);
             GUILayout.Label("Path:", EditorStyles.miniLabel, GUILayout.Width(30));
@@ -321,33 +319,17 @@ namespace Indey.UIPrefabBuilder.UI
         private void DrawModelRow(string label, bool isReady, bool isDownloading, long fileSize,
             Action onDownload, Action onCancel, Action onRemove)
         {
-            var prevColor = GUI.color;
             var dm = ModelDownloadManager.Instance;
 
             EditorGUILayout.BeginHorizontal();
 
-            // Status icon
             if (isDownloading)
-            {
-                GUI.color = new Color(0.5f, 0.8f, 1f);
-                GUILayout.Label("\u21bb", GUILayout.Width(16));
-            }
-            else if (isReady)
-            {
-                GUI.color = new Color(0.4f, 0.9f, 0.4f);
-                GUILayout.Label("\u2713", GUILayout.Width(16));
-            }
+                BuilderStyles.ColoredLabel("\u21bb", BuilderStyles.InfoBlue, EditorStyles.label, GUILayout.Width(16));
             else
-            {
-                GUI.color = new Color(1f, 0.5f, 0.4f);
-                GUILayout.Label("\u2717", GUILayout.Width(16));
-            }
-            GUI.color = prevColor;
+                BuilderStyles.StatusIcon(isReady);
 
-            // Label
             GUILayout.Label(label, EditorStyles.miniLabel, GUILayout.Width(90));
 
-            // Status text
             if (isDownloading)
                 GUILayout.Label("Downloading...", EditorStyles.miniLabel);
             else if (isReady)
@@ -357,7 +339,6 @@ namespace Indey.UIPrefabBuilder.UI
 
             GUILayout.FlexibleSpace();
 
-            // Action buttons
             if (isDownloading)
             {
                 if (GUILayout.Button("Cancel", EditorStyles.miniButton, GUILayout.Width(55)))
@@ -394,9 +375,9 @@ namespace Indey.UIPrefabBuilder.UI
             var ic = GetOrCreateIndexingConfig();
             if (ic == null) return;
 
-            _foldIndexDirs = EditorGUILayout.Foldout(_foldIndexDirs,
-                $"Index Directories ({ic.indexDirectories.Count})", true, EditorStyles.foldoutHeader);
-            if (!_foldIndexDirs) return;
+            if (!BuilderStyles.BeginSectionFoldout(ref _foldIndexDirs,
+                    $"Index Directories ({ic.indexDirectories.Count})"))
+                return;
 
             EditorGUI.indentLevel++;
 
@@ -414,7 +395,7 @@ namespace Indey.UIPrefabBuilder.UI
                         ProjectConfig.Save();
                     }
                 }
-                if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(20)))
+                if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.RemoveIconWidth)))
                     removeIdx = i;
                 EditorGUILayout.EndHorizontal();
             }
@@ -427,7 +408,7 @@ namespace Indey.UIPrefabBuilder.UI
 
             EditorGUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
-            if (GUILayout.Button("+ Add Directory", EditorStyles.miniButton, GUILayout.Width(100)))
+            if (GUILayout.Button("+ Add Directory", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.AddLabeledWidth)))
             {
                 var selected = EditorUtility.OpenFolderPanel("Select Index Directory", "Assets", "");
                 if (!string.IsNullOrEmpty(selected))
@@ -450,9 +431,9 @@ namespace Indey.UIPrefabBuilder.UI
             var ic = GetOrCreateIndexingConfig();
             if (ic == null) return;
 
-            _foldIgnorePatterns = EditorGUILayout.Foldout(_foldIgnorePatterns,
-                $"Ignore Patterns ({ic.ignorePatterns.Count})", true, EditorStyles.foldoutHeader);
-            if (!_foldIgnorePatterns) return;
+            if (!BuilderStyles.BeginSectionFoldout(ref _foldIgnorePatterns,
+                    $"Ignore Patterns ({ic.ignorePatterns.Count})"))
+                return;
 
             EditorGUI.indentLevel++;
 
@@ -461,7 +442,7 @@ namespace Indey.UIPrefabBuilder.UI
             {
                 EditorGUILayout.BeginHorizontal();
                 ic.ignorePatterns[i] = EditorGUILayout.TextField(ic.ignorePatterns[i]);
-                if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(20)))
+                if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.RemoveIconWidth)))
                     removeIdx = i;
                 EditorGUILayout.EndHorizontal();
             }
@@ -474,7 +455,7 @@ namespace Indey.UIPrefabBuilder.UI
 
             EditorGUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
-            if (GUILayout.Button("+ Add Pattern", EditorStyles.miniButton, GUILayout.Width(100)))
+            if (GUILayout.Button("+ Add Pattern", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.AddLabeledWidth)))
             {
                 ic.ignorePatterns.Add("*.png");
                 ProjectConfig.Save();
@@ -489,7 +470,7 @@ namespace Indey.UIPrefabBuilder.UI
             var ic = GetOrCreateIndexingConfig();
             if (ic == null) return;
 
-            GUILayout.Label("Search Parameters", EditorStyles.miniBoldLabel);
+            GUILayout.Label("Search Parameters", BuilderStyles.SectionLabel);
 
             EditorGUI.BeginChangeCheck();
             ic.topKDefault = EditorGUILayout.IntField("Top K Results", ic.topKDefault);
@@ -500,7 +481,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawIndexActions()
         {
-            GUILayout.Label("Index Status", EditorStyles.miniBoldLabel);
+            GUILayout.Label("Index Status", BuilderStyles.SectionLabel);
 
             var indexer = AssetIndexer.Instance;
             var indexDir = System.IO.Path.Combine(
@@ -510,19 +491,14 @@ namespace Indey.UIPrefabBuilder.UI
             var vecFile = System.IO.Path.Combine(indexDir, "AssetVectors.bytes");
 
             EditorGUILayout.BeginHorizontal();
-            var prevColor = GUI.color;
             if (indexer.IsReady)
             {
-                GUI.color = new Color(0.4f, 0.9f, 0.4f);
-                GUILayout.Label("\u2713", GUILayout.Width(16));
-                GUI.color = prevColor;
+                BuilderStyles.StatusIcon(true);
                 GUILayout.Label($"Indexed: {indexer.IndexedCount} assets", EditorStyles.miniLabel);
             }
             else
             {
-                GUI.color = new Color(1f, 0.7f, 0.3f);
-                GUILayout.Label("\u2717", GUILayout.Width(16));
-                GUI.color = prevColor;
+                BuilderStyles.StatusIcon(false, warning: true);
                 GUILayout.Label("Not initialized", EditorStyles.miniLabel);
             }
             EditorGUILayout.EndHorizontal();
@@ -547,7 +523,7 @@ namespace Indey.UIPrefabBuilder.UI
                 EditorGUILayout.EndHorizontal();
             }
 
-            GUILayout.Space(4);
+            GUILayout.Space(BuilderStyles.SubGap);
 
             EditorGUILayout.BeginHorizontal();
 
@@ -609,17 +585,15 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawSettingsToolbar()
         {
-            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+            BuilderStyles.DrawPanelToolbar("Settings", () =>
+            {
+                GUILayout.FlexibleSpace();
 
-            if (GUILayout.Button("Open Config Folder", EditorStyles.toolbarButton, GUILayout.Width(120)))
-                OpenBuilderSettingsFolder();
-
-            GUILayout.FlexibleSpace();
-
-            if (GUILayout.Button("Save Settings", EditorStyles.toolbarButton, GUILayout.Width(90)))
-                SaveAllSettings();
-
-            EditorGUILayout.EndHorizontal();
+                if (GUILayout.Button("Open Config Folder", EditorStyles.toolbarButton, GUILayout.Width(120)))
+                    OpenBuilderSettingsFolder();
+                if (GUILayout.Button("Save Settings", EditorStyles.toolbarButton, GUILayout.Width(90)))
+                    SaveAllSettings();
+            }, 55f);
         }
 
         private void SaveAllSettings()
@@ -669,37 +643,19 @@ namespace Indey.UIPrefabBuilder.UI
 
         public void Draw(Rect rect)
         {
+            BuilderStyles.EnsureStyles();
             GUILayout.BeginArea(rect);
             DrawSettingsToolbar();
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
 
             DrawLLMSettings();
-            GUILayout.Space(6);
+            GUILayout.Space(BuilderStyles.SectionGap);
             DrawAgentSettings();
-            GUILayout.Space(6);
+            GUILayout.Space(BuilderStyles.SectionGap);
             DrawAssetIndexing();
 
             EditorGUILayout.EndScrollView();
             GUILayout.EndArea();
-        }
-
-        public void Draw()
-        {
-            DrawSettingsToolbar();
-            DrawLLMSettings();
-            GUILayout.Space(6);
-            DrawAgentSettings();
-            GUILayout.Space(6);
-            DrawAssetIndexing();
-        }
-
-        public void DrawIndexingProgress(AssetIndexer indexer)
-        {
-            if (indexer == null || !indexer.IsIndexing) return;
-
-            EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
-            GUILayout.Label("\u26a1 Indexing in progress...", EditorStyles.miniLabel);
-            EditorGUILayout.EndHorizontal();
         }
 
         #endregion

@@ -30,7 +30,7 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _showHistory;
 
         // Styles
-        private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble, _toolCallBubble;
+        private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble, _errorBubble, _toolCallBubble;
         private GUIStyle _toolCallLabel;
         private GUIStyle _inputStyle, _statusLabel;
         private bool _stylesInit;
@@ -118,10 +118,10 @@ namespace Indey.UIPrefabBuilder.UI
             var leftPanelRect = _hSplitLeft.BeginSplit(leftAndCenterRect);
             var centerPanelRect = _hSplitLeft.EndSplit(leftAndCenterRect);
 
-            // Right splitter handle (between center and right)
+            // Right splitter handle (between center and right) — reverse resize from right edge
             var rightSplitterRect = new Rect(rightPanelRect.x - 4f, bodyRect.y, 4f, bodyRect.height);
-            HandleRightSplitter(rightSplitterRect, bodyRect);
-            EditorGUI.DrawRect(rightSplitterRect, new Color(0.15f, 0.15f, 0.15f, 1f));
+            _hSplitRight.HandleReverseHorizontalSplitter(
+                rightSplitterRect, bodyRect, _hSplitLeft.SplitPosition + 200f);
 
             DrawLeftPanel(leftPanelRect);
             DrawCenterPanel(centerPanelRect);
@@ -129,37 +129,6 @@ namespace Indey.UIPrefabBuilder.UI
 
             HandleKeyboard();
         }
-
-        #region Right Splitter (custom, drags from right)
-        private bool _rightSplitterDragging;
-
-        private void HandleRightSplitter(Rect splitterRect, Rect bodyRect)
-        {
-            var hitRect = new Rect(splitterRect.x - 2, splitterRect.y, splitterRect.width + 4, splitterRect.height);
-            EditorGUIUtility.AddCursorRect(hitRect, MouseCursor.ResizeHorizontal);
-            var e = Event.current;
-            switch (e.type)
-            {
-                case EventType.MouseDown:
-                    if (hitRect.Contains(e.mousePosition)) { _rightSplitterDragging = true; e.Use(); }
-                    break;
-                case EventType.MouseDrag:
-                    if (_rightSplitterDragging)
-                    {
-                        var newWidth = bodyRect.xMax - e.mousePosition.x;
-                        newWidth = Mathf.Clamp(newWidth, 150f, Mathf.Min(400f, bodyRect.width - _hSplitLeft.SplitPosition - 200f));
-                        // Store via EditorPrefs since SplitView doesn't expose setter
-                        EditorPrefs.SetFloat("UIPrefabBuilder_HSplitRight", newWidth);
-                        _hSplitRight = new SplitView("UIPrefabBuilder_HSplitRight", SplitDirection.Horizontal, newWidth, 150f, 400f);
-                        e.Use();
-                    }
-                    break;
-                case EventType.MouseUp:
-                    if (_rightSplitterDragging) { _rightSplitterDragging = false; e.Use(); }
-                    break;
-            }
-        }
-        #endregion
 
         #region Header
         private bool IsAgentRunning()
@@ -244,7 +213,7 @@ namespace Indey.UIPrefabBuilder.UI
         private void DrawHistoryOverlay()
         {
             EditorGUILayout.BeginVertical(EditorStyles.helpBox, GUILayout.ExpandHeight(true));
-            GUILayout.Label("Chat History", EditorStyles.boldLabel);
+            GUILayout.Label("Chat History", BuilderStyles.SectionLabel);
             GUILayout.Space(4);
 
             _historyScroll = EditorGUILayout.BeginScrollView(_historyScroll);
@@ -256,12 +225,13 @@ namespace Indey.UIPrefabBuilder.UI
                 GUILayout.Label(s.Title, EditorStyles.boldLabel);
                 GUILayout.Label(s.UpdatedAt.ToString("g"), EditorStyles.miniLabel);
                 EditorGUILayout.EndVertical();
-                if (GUILayout.Button("Load", GUILayout.Width(50)))
+                if (GUILayout.Button("Load", EditorStyles.miniButton, GUILayout.Width(50)))
                 {
                     _sessions.LoadSession(s.SessionId, _agent.History, _bubbles);
                     _showHistory = false;
                 }
-                if (GUILayout.Button("\u00d7", GUILayout.Width(24))) _sessions.DeleteSession(s.SessionId);
+                if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.RemoveIconWidth)))
+                    _sessions.DeleteSession(s.SessionId);
                 EditorGUILayout.EndHorizontal();
             }
             EditorGUILayout.EndScrollView();
@@ -279,7 +249,7 @@ namespace Indey.UIPrefabBuilder.UI
                 case BubbleType.Thinking: style = _thinkBubble; break;
                 case BubbleType.Code: style = _codeBubble; break;
                 case BubbleType.Result: style = _resultBubble; break;
-                case BubbleType.Error: style = _resultBubble; break;
+                case BubbleType.Error: style = _errorBubble; break;
                 case BubbleType.ToolCall: style = _toolCallBubble; break;
                 default: style = _aiBubble; break;
             }
@@ -310,7 +280,8 @@ namespace Indey.UIPrefabBuilder.UI
                 GUILayout.Label("Generated Code:", EditorStyles.boldLabel);
                 EditorGUILayout.SelectableLabel(b.Content, EditorStyles.textArea, GUILayout.MinHeight(60));
                 EditorGUILayout.BeginHorizontal();
-                if (GUILayout.Button("Copy", GUILayout.Width(50))) EditorGUIUtility.systemCopyBuffer = b.Content;
+                if (GUILayout.Button("Copy", EditorStyles.miniButton, GUILayout.Width(50)))
+                    EditorGUIUtility.systemCopyBuffer = b.Content;
                 EditorGUILayout.EndHorizontal();
             }
             else if (b.Type == BubbleType.ToolCall)
@@ -364,20 +335,20 @@ namespace Indey.UIPrefabBuilder.UI
             bool isRunning = IsAgentRunning();
             if (isRunning)
             {
-                if (GUILayout.Button("Stop", GUILayout.Width(55))) _agent?.Cancel();
+                if (GUILayout.Button("Stop", EditorStyles.miniButton, GUILayout.Width(55))) _agent?.Cancel();
             }
             else
             {
                 bool hasContent = !string.IsNullOrWhiteSpace(_input) || _attachedFiles.Count > 0;
                 GUI.enabled = hasContent;
-                if (GUILayout.Button("Send", GUILayout.Width(55))) Send();
+                if (GUILayout.Button("Send", EditorStyles.miniButton, GUILayout.Width(55))) Send();
                 GUI.enabled = true;
             }
 
             if (state == AgentState.WaitingConfirmation)
             {
-                if (GUILayout.Button("Confirm", GUILayout.Width(60))) _agent?.Confirm();
-                if (GUILayout.Button("Undo", GUILayout.Width(45))) _agent?.Rollback();
+                if (GUILayout.Button("Confirm", EditorStyles.miniButton, GUILayout.Width(60))) _agent?.Confirm();
+                if (GUILayout.Button("Undo", EditorStyles.miniButton, GUILayout.Width(45))) _agent?.Rollback();
             }
             EditorGUILayout.EndHorizontal();
             EditorGUILayout.EndVertical();
@@ -395,7 +366,7 @@ namespace Indey.UIPrefabBuilder.UI
 
             EditorGUILayout.BeginHorizontal();
             EditorGUI.BeginDisabledGroup(!supportsVision || _visionSendPending);
-            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(22)))
+            if (GUILayout.Button("+", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.AddIconWidth)))
             {
                 var path = EditorUtility.OpenFilePanelWithFilters(
                     "Select Design Mockup", "",
@@ -421,7 +392,7 @@ namespace Indey.UIPrefabBuilder.UI
                 GUILayout.Space(8);
                 GUILayout.Label("\u2022 " + Path.GetFileName(_attachedFiles[i]),
                     EditorStyles.miniLabel, GUILayout.ExpandWidth(true));
-                if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(18)))
+                if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.RemoveIconWidth)))
                     removeIdx = i;
                 EditorGUILayout.EndHorizontal();
             }
@@ -461,10 +432,7 @@ namespace Indey.UIPrefabBuilder.UI
             var (label, color) = GetStateInfo(state);
 
             EditorGUILayout.BeginHorizontal();
-            var prev = GUI.color;
-            GUI.color = color;
-            GUILayout.Label("\u25cf", GUILayout.Width(12));
-            GUI.color = prev;
+            BuilderStyles.ColoredLabel("\u25cf", color, EditorStyles.label, GUILayout.Width(12));
             GUILayout.Label(label, _statusLabel, GUILayout.Width(90));
             GUILayout.FlexibleSpace();
             GUILayout.Label($"Msgs: {_agent?.History?.Count ?? 0}", _statusLabel);
@@ -484,19 +452,19 @@ namespace Indey.UIPrefabBuilder.UI
         #region State Info
         private (string, Color) GetStateInfo(AgentState s) => s switch
         {
-            AgentState.Idle => ("Idle", Color.gray),
-            AgentState.Thinking => ("Thinking...", new Color(0.3f, 0.6f, 1f)),
-            AgentState.CallingTool => ("Calling tool...", new Color(1f, 0.7f, 0.2f)),
-            AgentState.WaitingConfirmation => ("Confirm?", new Color(0.2f, 0.9f, 0.4f)),
-            AgentState.Completed => ("Done", new Color(0.2f, 0.8f, 0.2f)),
-            AgentState.Error => ("Error", Color.red),
-            AgentState.BuildingContext => ("Context...", new Color(0.4f, 0.7f, 1f)),
-            AgentState.WaitingForLLM => ("Thinking...", new Color(0.3f, 0.6f, 1f)),
-            AgentState.ExtractingCode => ("Extracting...", new Color(0.5f, 0.5f, 1f)),
-            AgentState.Compiling => ("Compiling...", new Color(1f, 0.8f, 0.2f)),
-            AgentState.Executing => ("Executing...", new Color(1f, 0.6f, 0.2f)),
-            AgentState.ObservingResult => ("Observing...", new Color(0.2f, 0.8f, 0.2f)),
-            _ => ("Unknown", Color.gray)
+            AgentState.Idle => ("Idle", BuilderStyles.StateIdle),
+            AgentState.Thinking => ("Thinking...", BuilderStyles.StateThinking),
+            AgentState.CallingTool => ("Calling tool...", BuilderStyles.StateTool),
+            AgentState.WaitingConfirmation => ("Confirm?", BuilderStyles.StateConfirm),
+            AgentState.Completed => ("Done", BuilderStyles.StateDone),
+            AgentState.Error => ("Error", BuilderStyles.StateError),
+            AgentState.BuildingContext => ("Context...", BuilderStyles.StateContext),
+            AgentState.WaitingForLLM => ("Thinking...", BuilderStyles.StateThinking),
+            AgentState.ExtractingCode => ("Extracting...", BuilderStyles.StateExtract),
+            AgentState.Compiling => ("Compiling...", BuilderStyles.StateCompile),
+            AgentState.Executing => ("Executing...", BuilderStyles.StateExecute),
+            AgentState.ObservingResult => ("Observing...", BuilderStyles.StateDone),
+            _ => ("Unknown", BuilderStyles.StateIdle)
         };
         #endregion
 
@@ -710,34 +678,22 @@ namespace Indey.UIPrefabBuilder.UI
         {
             if (_stylesInit) return;
             _stylesInit = true;
+            BuilderStyles.EnsureStyles();
             _headerStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 13, alignment = TextAnchor.MiddleLeft };
-            _userBubble = CreateBubbleStyle(new Color(0.15f, 0.38f, 0.75f, 0.35f));
-            _aiBubble = CreateBubbleStyle(new Color(0.22f, 0.22f, 0.28f, 0.35f));
-            _thinkBubble = CreateBubbleStyle(new Color(0.5f, 0.4f, 0.7f, 0.2f));
-            _codeBubble = CreateBubbleStyle(new Color(0.1f, 0.1f, 0.15f, 0.4f));
-            _resultBubble = CreateBubbleStyle(new Color(0.1f, 0.5f, 0.2f, 0.25f));
-            _toolCallBubble = CreateBubbleStyle(new Color(0.12f, 0.3f, 0.45f, 0.25f));
+            _userBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleUser);
+            _aiBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleAI);
+            _thinkBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleThink);
+            _codeBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleCode);
+            _resultBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleResult);
+            _errorBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleError);
+            _toolCallBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleToolCall);
             _toolCallLabel = new GUIStyle(EditorStyles.wordWrappedMiniLabel)
             {
                 richText = false,
-                normal = { textColor = new Color(0.6f, 0.8f, 0.9f) }
+                normal = { textColor = BuilderStyles.ToolCallText }
             };
-            _inputStyle = new GUIStyle(EditorStyles.textArea) { wordWrap = true, fontSize = 13 };
+            _inputStyle = BuilderStyles.CreateInputStyle();
             _statusLabel = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleLeft };
-        }
-
-        private static GUIStyle CreateBubbleStyle(Color bg)
-        {
-            var tex = new Texture2D(1, 1);
-            tex.SetPixel(0, 0, bg);
-            tex.Apply();
-            return new GUIStyle(EditorStyles.helpBox)
-            {
-                normal = { background = tex },
-                padding = new RectOffset(8, 8, 6, 6),
-                margin = new RectOffset(4, 4, 2, 2),
-                wordWrap = true
-            };
         }
         #endregion
     }

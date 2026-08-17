@@ -17,7 +17,17 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _isDragging;
         private Rect _splitterRect;
 
-        public float SplitPosition => _splitPosition;
+        public float SplitPosition
+        {
+            get => _splitPosition;
+            set
+            {
+                _splitPosition = value;
+                EditorPrefs.SetFloat(_prefsKey, _splitPosition);
+            }
+        }
+
+        public bool IsDragging => _isDragging;
 
         /// <param name="prefsKey">EditorPrefs key for persisting position</param>
         /// <param name="direction">Horizontal = left|right, Vertical = top|bottom</param>
@@ -76,6 +86,47 @@ namespace Indey.UIPrefabBuilder.UI
                 return new Rect(availableRect.x, availableRect.y + offset,
                     availableRect.width, availableRect.height - offset);
             }
+        }
+
+        /// <summary>
+        /// Draws a splitter that resizes from the opposite edge (e.g. right panel width).
+        /// </summary>
+        public void HandleReverseHorizontalSplitter(Rect splitterRect, Rect bodyRect, float otherPanelMin = 200f)
+        {
+            _splitterRect = splitterRect;
+            var hitRect = new Rect(splitterRect.x - 2f, splitterRect.y, splitterRect.width + 4f, splitterRect.height);
+            EditorGUIUtility.AddCursorRect(hitRect, MouseCursor.ResizeHorizontal);
+
+            var e = Event.current;
+            switch (e.type)
+            {
+                case EventType.MouseDown:
+                    if (hitRect.Contains(e.mousePosition))
+                    {
+                        _isDragging = true;
+                        e.Use();
+                    }
+                    break;
+
+                case EventType.MouseDrag:
+                    if (!_isDragging) break;
+                    var newWidth = bodyRect.xMax - e.mousePosition.x;
+                    var maxWidth = _maxSize > 0
+                        ? Mathf.Min(_maxSize, bodyRect.width - otherPanelMin)
+                        : bodyRect.width - otherPanelMin;
+                    SplitPosition = Mathf.Clamp(newWidth, _minSize, Mathf.Max(_minSize, maxWidth));
+                    e.Use();
+                    break;
+
+                case EventType.MouseUp:
+                    if (!_isDragging) break;
+                    _isDragging = false;
+                    EditorPrefs.SetFloat(_prefsKey, _splitPosition);
+                    e.Use();
+                    break;
+            }
+
+            DrawSplitter();
         }
 
         private void ClampPosition(Rect available)
@@ -137,9 +188,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawSplitter()
         {
-            var color = _isDragging
-                ? new Color(0.3f, 0.6f, 1f, 0.8f)
-                : new Color(0.15f, 0.15f, 0.15f, 1f);
+            var color = _isDragging ? BuilderStyles.SplitterActive : BuilderStyles.Splitter;
             EditorGUI.DrawRect(_splitterRect, color);
         }
     }

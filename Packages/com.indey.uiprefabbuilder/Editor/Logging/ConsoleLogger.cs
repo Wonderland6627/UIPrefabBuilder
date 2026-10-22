@@ -44,22 +44,44 @@ namespace Indey.UIPrefabBuilder.Logging
             Directory.CreateDirectory(Path.Combine(_baseDirectory, "Sessions"));
             Directory.CreateDirectory(Path.Combine(_baseDirectory, "Logs"));
 
-            Log($"Logger initialized. BaseDir: {_baseDirectory}");
+            LogVolatile($"Logger initialized. BaseDir: {_baseDirectory}");
         }
 
-        public static void SetSession(string sessionId)
+        public static void SetSession(string sessionId, string storageName = null)
         {
             if (string.IsNullOrEmpty(sessionId)) return;
-            _currentSessionId = sessionId;
+            if (string.IsNullOrEmpty(_baseDirectory))
+                Initialize();
 
+            var stem = string.IsNullOrEmpty(storageName) ? sessionId : storageName;
+            var newPath = Path.Combine(_baseDirectory, "Logs", stem + ".log");
+            bool same = string.Equals(_currentSessionId, sessionId, StringComparison.Ordinal)
+                && string.Equals(_logFilePath, newPath, StringComparison.OrdinalIgnoreCase);
+            _currentSessionId = sessionId;
+            Directory.CreateDirectory(Path.GetDirectoryName(newPath));
+            _logFilePath = newPath;
+            if (!same)
+                LogVolatile($"--- Session started: {sessionId} ({stem}) ---");
+        }
+
+        /// <summary>
+        /// Point later file writes at Logs/{storageName}.log without creating the file.
+        /// </summary>
+        public static void RetargetLog(string storageName)
+        {
+            if (string.IsNullOrEmpty(storageName) || string.IsNullOrEmpty(_baseDirectory)) return;
             var logsDir = Path.Combine(_baseDirectory, "Logs");
             Directory.CreateDirectory(logsDir);
-            _logFilePath = Path.Combine(logsDir, sessionId + ".log");
-
-            Log($"--- Session started: {sessionId} ---");
+            _logFilePath = Path.Combine(logsDir, storageName + ".log");
         }
 
         public static void Log(string message) => AddEntry(LogLevel.Info, message);
+
+        /// <summary>
+        /// Visible in the console panel, but not written to the session log file.
+        /// Window startup uses this so merely opening the window does not create a chat log.
+        /// </summary>
+        public static void LogVolatile(string message) => AddEntry(LogLevel.Info, message, false);
         public static void Warning(string message) => AddEntry(LogLevel.Warning, message);
         public static void Error(string message) => AddEntry(LogLevel.Error, message);
 
@@ -119,7 +141,7 @@ namespace Indey.UIPrefabBuilder.Logging
 #endif
         }
 
-        private static void AddEntry(LogLevel level, string message)
+        private static void AddEntry(LogLevel level, string message, bool persist = true)
         {
             if (string.IsNullOrEmpty(message)) return;
 
@@ -137,7 +159,8 @@ namespace Indey.UIPrefabBuilder.Logging
                     _entries.RemoveRange(0, _entries.Count - 1500);
             }
 
-            WriteToFile(entry);
+            if (persist)
+                WriteToFile(entry);
             OnLogAdded?.Invoke(entry);
         }
 

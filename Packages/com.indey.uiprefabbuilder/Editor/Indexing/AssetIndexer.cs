@@ -63,7 +63,7 @@ namespace Indey.UIPrefabBuilder.Indexing
             if (!settings.EnableAssetIndexing) return;
 
             var modelPath = settings.EmbeddingModelPath;
-            ConsoleLogger.Log($"[AssetIndexer] Model path from settings: {modelPath}");
+            ConsoleLogger.LogVolatile($"[AssetIndexer] Model path from settings: {modelPath}");
 
             _embedding = new EmbeddingService();
             _embedding.LoadModel(modelPath);
@@ -71,7 +71,7 @@ namespace Indey.UIPrefabBuilder.Indexing
             _store = new VectorStore();
             _store.Load(MetaPath, VectorsPath);
 
-            ConsoleLogger.Log($"[AssetIndexer] Initialized. {_store.Count} entries loaded. Model ready: {_embedding.IsLoaded}");
+            ConsoleLogger.LogVolatile($"[AssetIndexer] Initialized. {_store.Count} entries loaded. Model ready: {_embedding.IsLoaded}");
         }
 
         public void EnsureInitialized()

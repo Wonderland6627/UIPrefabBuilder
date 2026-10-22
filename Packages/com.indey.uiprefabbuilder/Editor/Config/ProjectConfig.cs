@@ -51,7 +51,7 @@ namespace Indey.UIPrefabBuilder.Config
                 {
                     var json = File.ReadAllText(path, Encoding.UTF8);
                     _current = JsonConvert.DeserializeObject<ProjectConfig>(json) ?? new ProjectConfig();
-                    ConsoleLogger.Log("[ProjectConfig] Loaded from " + path);
+                    ConsoleLogger.LogVolatile("[ProjectConfig] Loaded from " + path);
                     return;
                 }
                 catch (Exception e)

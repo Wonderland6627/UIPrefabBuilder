@@ -28,6 +28,9 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _isStreaming;
         private bool _isThinking;
         private bool _showHistory;
+        private string _titleRequestedSessionId;
+        private bool _ignoreStream;
+        private double _lastSessionPersist;
 
         // Styles
         private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble, _errorBubble, _toolCallBubble;
@@ -60,8 +63,20 @@ namespace Indey.UIPrefabBuilder.UI
                     FinalizeContentStream();
                 _needsRepaint = true;
             };
-            _agent.OnStreamToken += t => { _streamBuffer += t; _isStreaming = true; _needsRepaint = true; };
-            _agent.OnThinkingToken += t => { _thinkingStreamBuffer += t; _isThinking = true; _needsRepaint = true; };
+            _agent.OnStreamToken += t =>
+            {
+                if (_ignoreStream) return;
+                _streamBuffer += t;
+                _isStreaming = true;
+                _needsRepaint = true;
+            };
+            _agent.OnThinkingToken += t =>
+            {
+                if (_ignoreStream) return;
+                _thinkingStreamBuffer += t;
+                _isThinking = true;
+                _needsRepaint = true;
+            };
             _agent.OnThinking += t => { FinalizeThinkingStream(t); };
             _agent.OnComplete += full => { FinishStream(full); };
             _agent.OnError += e => { AddBubble(BubbleType.Error, e); _isStreaming = false; _isThinking = false; };
@@ -87,18 +102,21 @@ namespace Indey.UIPrefabBuilder.UI
             ConsoleLogger.OnLogAdded += _ => _needsRepaint = true;
 
             EditorApplication.update += Tick;
-            ConsoleLogger.Log("BuilderWindow opened");
+            ConsoleLogger.LogVolatile("BuilderWindow opened");
         }
 
         private void OnDisable()
         {
             EditorApplication.update -= Tick;
-            _sessions.SaveCurrentSession(_agent.History, _bubbles);
+            PersistSession();
             _agent?.Dispose();
         }
 
         private void Tick()
         {
+            if ((_isStreaming || _isThinking) && EditorApplication.timeSinceStartup - _lastSessionPersist >= 1.0)
+                PersistSession();
+
             if (!_needsRepaint) return;
             if (Time.realtimeSinceStartup - _lastRepaint < 0.05f) return;
             _lastRepaint = Time.realtimeSinceStartup;
@@ -217,7 +235,13 @@ namespace Indey.UIPrefabBuilder.UI
         private void DrawHistoryOverlay()
         {
             EditorGUILayout.BeginVertical(EditorStyles.helpBox, GUILayout.ExpandHeight(true));
+            EditorGUILayout.BeginHorizontal();
             GUILayout.Label("Chat History", BuilderStyles.SectionLabel);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button(new GUIContent("Open Folder", "打开 Sessions 目录。日志在旁边的 Logs 目录，两边文件名相同。"),
+                    EditorStyles.miniButton, GUILayout.Width(88)))
+                SessionManager.OpenDirectory(SessionManager.SessionDir);
+            EditorGUILayout.EndHorizontal();
             GUILayout.Space(4);
 
             _historyScroll = EditorGUILayout.BeginScrollView(_historyScroll);
@@ -226,7 +250,8 @@ namespace Indey.UIPrefabBuilder.UI
             {
                 EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
                 EditorGUILayout.BeginVertical();
-                GUILayout.Label(s.Title, EditorStyles.boldLabel);
+                var title = string.IsNullOrEmpty(s.Title) ? SessionManager.PlaceholderTitle : s.Title;
+                GUILayout.Label(title, EditorStyles.boldLabel);
                 GUILayout.Label(s.UpdatedAt.ToString("g"), EditorStyles.miniLabel);
                 EditorGUILayout.EndVertical();
                 if (GUILayout.Button("Load", EditorStyles.miniButton, GUILayout.Width(50)))
@@ -401,7 +426,7 @@ namespace Indey.UIPrefabBuilder.UI
             bool isRunning = IsAgentRunning();
             if (isRunning)
             {
-                if (GUILayout.Button("Stop", EditorStyles.miniButton, GUILayout.Width(55))) _agent?.Cancel();
+                if (GUILayout.Button("Stop", EditorStyles.miniButton, GUILayout.Width(55))) StopTask();
             }
             else
             {
@@ -610,7 +635,10 @@ namespace Indey.UIPrefabBuilder.UI
             }
 
             AddBubble(BubbleType.User, displayText, null);
+            _ignoreStream = false;
             _agent?.StartTask(text);
+            RequestAutoTitle(hasText ? text : displayText);
+            PersistSession();
             _input = "";
             _attachedFiles.Clear();
             _streamBuffer = "";
@@ -623,7 +651,10 @@ namespace Indey.UIPrefabBuilder.UI
         private void BeginImageTask(string userText, List<string> files, string bubbleText)
         {
             AddBubble(BubbleType.User, bubbleText, new List<string>(files));
+            _ignoreStream = false;
             _agent?.StartTask(userText, files);
+            RequestAutoTitle(string.IsNullOrWhiteSpace(userText) ? bubbleText : userText);
+            PersistSession();
             _input = "";
             _attachedFiles.Clear();
             _streamBuffer = "";
@@ -658,12 +689,71 @@ namespace Indey.UIPrefabBuilder.UI
             if (!string.IsNullOrWhiteSpace(full))
                 AddBubble(BubbleType.AI, full);
             _streamBuffer = "";
-            _sessions.SaveCurrentSession(_agent.History, _bubbles);
+            PersistSession();
+        }
+
+        private void StopTask()
+        {
+            _ignoreStream = true;
+            var partial = _streamBuffer;
+            _agent?.Cancel();
+            FinalizeThinkingStream(null);
+            FinalizeContentStream();
+            _isStreaming = false;
+            _isThinking = false;
+            if (!string.IsNullOrWhiteSpace(partial))
+                _agent?.History?.AddAssistant(partial);
+            PersistSession();
+        }
+
+        private void PersistSession()
+        {
+            if (_sessions == null || _agent?.History == null) return;
+            _lastSessionPersist = EditorApplication.timeSinceStartup;
+            _sessions.SaveCurrentSession(_agent.History, SnapshotBubbles());
+        }
+
+        private List<ChatBubble> SnapshotBubbles()
+        {
+            if (string.IsNullOrWhiteSpace(_thinkingStreamBuffer) && string.IsNullOrWhiteSpace(_streamBuffer))
+                return _bubbles;
+
+            var copy = new List<ChatBubble>(_bubbles);
+            if (!string.IsNullOrWhiteSpace(_thinkingStreamBuffer))
+                copy.Add(new ChatBubble { Type = BubbleType.Thinking, Content = _thinkingStreamBuffer });
+            if (!string.IsNullOrWhiteSpace(_streamBuffer))
+                copy.Add(new ChatBubble { Type = BubbleType.AIStream, Content = _streamBuffer });
+            return copy;
+        }
+
+        private void RequestAutoTitle(string userText)
+        {
+            if (_agent == null || _sessions == null) return;
+            var sessionId = _sessions.CurrentSessionId;
+            if (string.IsNullOrEmpty(sessionId) || _titleRequestedSessionId == sessionId) return;
+            if (!_sessions.NeedsAutoTitle()) return;
+
+            var text = string.IsNullOrWhiteSpace(userText) ? "根据附件实现界面" : userText.Trim();
+            if (text.Length > 2000) text = text.Substring(0, 2000);
+            PersistSession();
+            _titleRequestedSessionId = sessionId;
+
+            _agent.RequestPlainCompletion(
+                SessionManager.TitleSummarySystemPrompt,
+                "用户请求：\n" + text,
+                title =>
+                {
+                    if (this == null) return;
+                    _sessions.TryApplySummaryTitle(sessionId, title, out _);
+                    Repaint();
+                },
+                err => Debug.LogWarning("[UIPrefabBuilder] Title summary failed: " + err));
         }
 
         private void NewChat()
         {
-            _sessions.SaveCurrentSession(_agent.History, _bubbles);
+            _titleRequestedSessionId = null;
+            _sessions.SaveCurrentSession(_agent.History, SnapshotBubbles());
             _bubbles.Clear();
             _agent.History.Clear();
             _agent.Refresh();
@@ -672,7 +762,7 @@ namespace Indey.UIPrefabBuilder.UI
             _thinkingStreamBuffer = "";
             _isStreaming = false;
             _isThinking = false;
-            ConsoleLogger.Log("New chat session created");
+            ConsoleLogger.LogVolatile("New chat session created");
         }
 
         private void ClearChat()
@@ -708,6 +798,7 @@ namespace Indey.UIPrefabBuilder.UI
             _bubbles.Add(new ChatBubble { Type = type, Content = content ?? "", AttachedFilePaths = attachedFiles });
             _chatScroll.y = float.MaxValue;
             _needsRepaint = true;
+            PersistSession();
         }
 
         private static string FormatToolCall(string name, string args, string result)

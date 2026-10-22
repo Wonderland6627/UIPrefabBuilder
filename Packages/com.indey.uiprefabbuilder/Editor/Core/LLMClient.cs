@@ -302,6 +302,88 @@ namespace Indey.UIPrefabBuilder.Core
             return s.Length <= max ? s : s.Substring(0, max) + "...";
         }
 
+        /// <summary>
+        /// One-shot completion with no tools and no streaming. Used for short side requests
+        /// such as a chat title. Must be called from the main thread so settings can be snapshotted.
+        /// </summary>
+        public void CompleteTextAsync(
+            string systemPrompt,
+            string userPrompt,
+            Action<string> onComplete,
+            Action<Exception> onError)
+        {
+            RefreshApiKey();
+            var apiKey = _cachedApiKey;
+            var modelName = _settings.ModelName;
+            var baseUrl = _settings.BaseUrl;
+            var requestTimeoutSeconds = _settings.RequestTimeoutSeconds;
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(apiKey))
+                        throw new InvalidOperationException("API Key not configured. Open Settings to set it.");
+
+                    var messages = new JArray
+                    {
+                        new JObject { ["role"] = "system", ["content"] = systemPrompt ?? "" },
+                        new JObject { ["role"] = "user", ["content"] = userPrompt ?? "" }
+                    };
+                    var bodyObj = new JObject
+                    {
+                        ["model"] = modelName,
+                        ["stream"] = false,
+                        ["max_tokens"] = 512,
+                        ["messages"] = messages
+                    };
+
+                    var url = NormalizeUrl(baseUrl);
+                    using var req = new HttpRequestMessage(HttpMethod.Post, url);
+                    req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + apiKey);
+                    req.Content = new StringContent(bodyObj.ToString(Newtonsoft.Json.Formatting.None), Encoding.UTF8, "application/json");
+
+                    using var timeoutCts = new CancellationTokenSource();
+                    timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(15, Math.Min(45, requestTimeoutSeconds))));
+
+                    using var resp = await _http.SendAsync(req, timeoutCts.Token);
+                    var body = await resp.Content.ReadAsStringAsync();
+                    if (!resp.IsSuccessStatusCode)
+                        throw new InvalidOperationException($"HTTP {(int)resp.StatusCode}: {Truncate(body, 300)}");
+
+                    var content = StripThinkingTags(ParseNonStreamResponse(body).Content);
+                    if (string.IsNullOrWhiteSpace(content))
+                        throw new InvalidOperationException("模型没有返回标题文本。");
+
+                    MainThreadDispatcher.Enqueue(() => onComplete?.Invoke(content.Trim()));
+                }
+                catch (OperationCanceledException)
+                {
+                    MainThreadDispatcher.Enqueue(() => onError?.Invoke(new InvalidOperationException("总结请求超时。")));
+                }
+                catch (Exception e)
+                {
+                    var detail = e.InnerException != null
+                        ? $"{e.Message} -> {e.InnerException.Message}"
+                        : e.Message;
+                    MainThreadDispatcher.Enqueue(() => onError?.Invoke(new InvalidOperationException(detail, e)));
+                }
+            });
+        }
+
+        private static string StripThinkingTags(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            while (true)
+            {
+                var start = text.IndexOf("<thinking>", StringComparison.OrdinalIgnoreCase);
+                var end = text.IndexOf("</thinking>", StringComparison.OrdinalIgnoreCase);
+                if (start < 0 || end < 0 || end <= start) break;
+                text = text.Remove(start, end + "</thinking>".Length - start);
+            }
+            return text.Trim();
+        }
+
         public void ChatWithToolsAsync(
             IReadOnlyList<ChatMessage> messages,
             JArray tools,

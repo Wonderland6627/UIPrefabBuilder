@@ -30,7 +30,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 if (!string.IsNullOrEmpty(name))
                     _toolNames.Add(name);
             }
-            ConsoleLogger.Log($"[ToolRegistry] Registered {_toolNames.Count} tools.");
+            ConsoleLogger.LogVolatile($"[ToolRegistry] Registered {_toolNames.Count} tools.");
         }
 
         public bool HasTool(string name)

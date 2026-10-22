@@ -332,7 +332,13 @@ namespace Indey.UIPrefabBuilder.Core
 
         public void Cancel()
         {
+            bool running = _state == AgentState.Thinking || _state == AgentState.CallingTool
+                || _state == AgentState.WaitingForLLM || _state == AgentState.BuildingContext
+                || _state == AgentState.Compiling || _state == AgentState.Executing
+                || _state == AgentState.ObservingResult || _state == AgentState.ExtractingCode;
             _cts?.Cancel();
+            if (running)
+                ConsoleLogger.Log("Task stopped by user");
             TransitionTo(AgentState.Idle);
         }
 
@@ -1512,6 +1518,11 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine($"    -> tool_call: {tc.Name}({(tc.Arguments?.Length > 120 ? tc.Arguments.Substring(0, 120) + "..." : tc.Arguments)})");
             }
             ConsoleLogger.LogBlock("ERROR_CONTEXT_LAST_MESSAGES", sb.ToString());
+        }
+
+        public void RequestPlainCompletion(string systemPrompt, string userPrompt, Action<string> onComplete, Action<string> onError)
+        {
+            _llm.CompleteTextAsync(systemPrompt, userPrompt, onComplete, e => onError?.Invoke(e.Message));
         }
 
         public void Dispose()

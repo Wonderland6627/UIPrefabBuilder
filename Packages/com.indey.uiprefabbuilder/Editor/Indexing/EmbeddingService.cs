@@ -56,14 +56,14 @@ namespace Indey.UIPrefabBuilder.Indexing
                 if (TryCreateGPUWorker())
                 {
                     _isLoaded = true;
-                    ConsoleLogger.Log($"[EmbeddingService] Model loaded from {modelPath} (GPU backend)");
+                    ConsoleLogger.LogVolatile($"[EmbeddingService] Model loaded from {modelPath} (GPU backend)");
                 }
                 else
                 {
                     _worker?.Dispose();
                     _worker = WorkerFactory.CreateWorker(BackendType.CPU, _model);
                     _isLoaded = true;
-                    ConsoleLogger.Log($"[EmbeddingService] Model loaded from {modelPath} (CPU fallback)");
+                    ConsoleLogger.LogVolatile($"[EmbeddingService] Model loaded from {modelPath} (CPU fallback)");
                 }
             }
             catch (Exception e)
@@ -212,7 +212,7 @@ namespace Indey.UIPrefabBuilder.Indexing
                 return null;
             }
 
-            ConsoleLogger.Log($"[EmbeddingService] Loading model asset: {assetPath}");
+            ConsoleLogger.LogVolatile($"[EmbeddingService] Loading model asset: {assetPath}");
 
             var modelAsset = AssetDatabase.LoadAssetAtPath<ModelAsset>(assetPath);
             if (modelAsset == null)
@@ -316,7 +316,7 @@ namespace Indey.UIPrefabBuilder.Indexing
 
             foreach (var input in _model.inputs)
             {
-                ConsoleLogger.Log($"[EmbeddingService] Model input: '{input.name}'");
+                ConsoleLogger.LogVolatile($"[EmbeddingService] Model input: '{input.name}'");
 
                 if (input.name.Contains("scale"))
                 {
@@ -330,10 +330,10 @@ namespace Indey.UIPrefabBuilder.Indexing
             }
 
             foreach (var outputName in _model.outputs)
-                ConsoleLogger.Log($"[EmbeddingService] Model output: '{outputName}'");
+                ConsoleLogger.LogVolatile($"[EmbeddingService] Model output: '{outputName}'");
 
             if (_needsScale)
-                ConsoleLogger.Log($"[EmbeddingService] Quantized model detected, will provide '{_scaleInputName}' = 1.0");
+                ConsoleLogger.LogVolatile($"[EmbeddingService] Quantized model detected, will provide '{_scaleInputName}' = 1.0");
         }
 #endif
 

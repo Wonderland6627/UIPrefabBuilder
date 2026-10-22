@@ -51,7 +51,7 @@ namespace Indey.UIPrefabBuilder.Indexing
             if (!File.Exists(metaPath) || !File.Exists(vectorsPath))
             {
                 InitFresh();
-                ConsoleLogger.Log("[VectorStore] No existing index found, starting fresh.");
+                ConsoleLogger.LogVolatile("[VectorStore] No existing index found, starting fresh.");
                 return;
             }
 
@@ -100,7 +100,7 @@ namespace Indey.UIPrefabBuilder.Indexing
                     ? _entries.Max(e => e.timestamp) : 0;
 
                 IsLoaded = true;
-                ConsoleLogger.Log($"[VectorStore] Loaded {_entries.Count} entries ({_dimension}D).");
+                ConsoleLogger.LogVolatile($"[VectorStore] Loaded {_entries.Count} entries ({_dimension}D).");
             }
             catch (Exception e)
             {

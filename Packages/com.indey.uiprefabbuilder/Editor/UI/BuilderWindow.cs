@@ -32,8 +32,10 @@ namespace Indey.UIPrefabBuilder.UI
         // Styles
         private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble, _errorBubble, _toolCallBubble;
         private GUIStyle _toolCallLabel;
+        private GUIStyle _markdownBody, _codeBlockStyle;
         private GUIStyle _inputStyle, _statusLabel;
         private bool _stylesInit;
+        private bool _markdownFailed;
 
         // Sub-panels
         private SessionManager _sessions;
@@ -288,6 +290,10 @@ namespace Indey.UIPrefabBuilder.UI
             {
                 GUILayout.Label(b.Content, _toolCallLabel);
             }
+            else if (b.Type == BubbleType.AI || b.Type == BubbleType.AIStream)
+            {
+                DrawMarkdownContent(b.Content, maxBubbleWidth - 16f);
+            }
             else
             {
                 GUILayout.Label(b.Content, EditorStyles.wordWrappedLabel);
@@ -314,6 +320,64 @@ namespace Indey.UIPrefabBuilder.UI
 
             EditorGUILayout.EndHorizontal();
             GUILayout.Space(4);
+        }
+
+        private void DrawMarkdownContent(string content, float contentWidth)
+        {
+            if (string.IsNullOrEmpty(content))
+                return;
+
+            List<MarkdownBlock> blocks;
+            try
+            {
+                var theme = MarkdownView.Theme.ForEditorSkin(EditorGUIUtility.isProSkin);
+                blocks = MarkdownView.Parse(content, theme);
+            }
+            catch (Exception e)
+            {
+                if (!_markdownFailed)
+                {
+                    _markdownFailed = true;
+                    Debug.LogException(e);
+                }
+                GUILayout.Label(content, EditorStyles.wordWrappedLabel);
+                return;
+            }
+
+            if (blocks.Count == 0)
+            {
+                GUILayout.Label(content, EditorStyles.wordWrappedLabel);
+                return;
+            }
+
+            for (var i = 0; i < blocks.Count; i++)
+            {
+                if (i > 0)
+                    GUILayout.Space(4f);
+
+                var block = blocks[i];
+                if (block.Kind == MarkdownBlockKind.Code)
+                    DrawFenceBlock(block.Text, block.Language, contentWidth);
+                else
+                    GUILayout.Label(block.Text, _markdownBody);
+            }
+        }
+
+        private void DrawFenceBlock(string code, string language, float contentWidth)
+        {
+            var shown = string.IsNullOrEmpty(code) ? " " : code;
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Label(string.IsNullOrEmpty(language) ? "code" : language, EditorStyles.miniLabel);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("Copy", EditorStyles.miniButton, GUILayout.Width(48)))
+                EditorGUIUtility.systemCopyBuffer = code ?? "";
+            EditorGUILayout.EndHorizontal();
+
+            var width = Mathf.Max(120f, contentWidth - 28f);
+            var height = Mathf.Max(20f, _codeBlockStyle.CalcHeight(new GUIContent(shown), width));
+            EditorGUILayout.SelectableLabel(shown, _codeBlockStyle, GUILayout.MinHeight(height));
+            EditorGUILayout.EndVertical();
         }
 
         private void DrawInputArea()
@@ -676,7 +740,8 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void InitStyles()
         {
-            if (_stylesInit) return;
+            if (_stylesInit && _markdownBody != null && _codeBlockStyle != null)
+                return;
             _stylesInit = true;
             BuilderStyles.EnsureStyles();
             _headerStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 13, alignment = TextAnchor.MiddleLeft };
@@ -691,6 +756,17 @@ namespace Indey.UIPrefabBuilder.UI
             {
                 richText = false,
                 normal = { textColor = BuilderStyles.ToolCallText }
+            };
+            _markdownBody = new GUIStyle(EditorStyles.wordWrappedLabel)
+            {
+                richText = true,
+                wordWrap = true
+            };
+            _codeBlockStyle = new GUIStyle(EditorStyles.textArea)
+            {
+                wordWrap = true,
+                richText = false,
+                fontSize = 11
             };
             _inputStyle = BuilderStyles.CreateInputStyle();
             _statusLabel = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleLeft };

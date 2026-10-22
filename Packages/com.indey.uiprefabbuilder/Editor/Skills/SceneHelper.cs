@@ -1,4 +1,4 @@
-using UnityEditor;
+using Indey.UIPrefabBuilder.Core;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -13,7 +13,9 @@ namespace Indey.UIPrefabBuilder.Skills
         public static bool SaveScene()
         {
             var scene = SceneManager.GetActiveScene();
-            return EditorSceneManager.SaveScene(scene);
+            var saved = EditorSceneManager.SaveScene(scene);
+            if (saved) SessionAssetChanges.Record(scene.path, SessionAssetChangeKind.Modified);
+            return saved;
         }
 
         public static void MarkDirty()

@@ -621,6 +621,12 @@ namespace Indey.UIPrefabBuilder.Skills
                     P("name", "string", "Override name for the instance (optional)", false)
                 )),
 
+            Def("apply_prefab",
+                "Write one prefab instance's overrides back to its existing prefab asset. Only available in Modify mode, and only when that instance's source asset is the confirmed target for this task. This changes the project prefab file directly. Do not use it to save a new prefab.",
+                Props(
+                    P("target", "string", "Name, hierarchy path, or #instanceId of the prefab instance to apply", true)
+                )),
+
             Def("find_prefab_instances",
                 "Find all instances of a prefab in the current scene.",
                 Props(P("path", "string", "Asset path to the prefab", true))),

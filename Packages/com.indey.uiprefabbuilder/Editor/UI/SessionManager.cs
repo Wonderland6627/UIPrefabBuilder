@@ -24,6 +24,7 @@ namespace Indey.UIPrefabBuilder.UI
         public DateTime UpdatedAt;
         public List<SerializedMessage> Messages = new List<SerializedMessage>();
         public List<SerializedBubble> Bubbles = new List<SerializedBubble>();
+        public List<SerializedAssetChange> ChangedAssets = new List<SerializedAssetChange>();
     }
 
     [Serializable]
@@ -38,6 +39,13 @@ namespace Indey.UIPrefabBuilder.UI
     {
         public string Type;
         public string Content;
+    }
+
+    public class SerializedAssetChange
+    {
+        public string Path;
+        public string Kind;
+        public long Ticks;
     }
 
     public class SessionManager
@@ -112,7 +120,13 @@ namespace Indey.UIPrefabBuilder.UI
                 CreatedAt = previous?.CreatedAt ?? DateTime.Now,
                 UpdatedAt = DateTime.Now,
                 Messages = history.Messages.Select(m => new SerializedMessage { Role = m.Role.ToString(), Content = m.Content }).ToList(),
-                Bubbles = bubbles.Select(b => new SerializedBubble { Type = b.Type.ToString(), Content = b.Content }).ToList()
+                Bubbles = bubbles.Select(b => new SerializedBubble { Type = b.Type.ToString(), Content = b.Content }).ToList(),
+                ChangedAssets = SessionAssetChanges.Snapshot().Select(a => new SerializedAssetChange
+                {
+                    Path = a.Path,
+                    Kind = a.Kind.ToString(),
+                    Ticks = a.Ticks
+                }).ToList()
             };
             WriteSession(session, previousStem);
             EditorPrefs.SetString("UIPrefabBuilder_LastSession", _currentId);
@@ -156,6 +170,7 @@ namespace Indey.UIPrefabBuilder.UI
                             bubbles.Add(new ChatBubble { Type = t, Content = b.Content });
                     }
                 }
+                SessionAssetChanges.Replace(ReadAssetChanges(session));
                 _currentId = id;
                 EditorPrefs.SetString("UIPrefabBuilder_LastSession", id);
                 ConsoleLogger.SetSession(id, session.StorageName);
@@ -199,6 +214,26 @@ namespace Indey.UIPrefabBuilder.UI
             DeleteFileIfExists(LogPath(id));
             if (id == _currentId)
                 ConsoleLogger.RetargetLog(id);
+        }
+
+        private static List<SessionAssetChange> ReadAssetChanges(ChatSession session)
+        {
+            var restored = new List<SessionAssetChange>();
+            if (session?.ChangedAssets == null) return restored;
+            foreach (var change in session.ChangedAssets)
+            {
+                if (change == null || string.IsNullOrEmpty(change.Path)) continue;
+                var kind = string.Equals(change.Kind, nameof(SessionAssetChangeKind.Added), StringComparison.OrdinalIgnoreCase)
+                    ? SessionAssetChangeKind.Added
+                    : SessionAssetChangeKind.Modified;
+                restored.Add(new SessionAssetChange
+                {
+                    Path = change.Path,
+                    Kind = kind,
+                    Ticks = change.Ticks
+                });
+            }
+            return restored;
         }
 
         public static void OpenDirectory(string directory)

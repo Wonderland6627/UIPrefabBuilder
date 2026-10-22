@@ -29,6 +29,10 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _isThinking;
         private bool _showHistory;
         private string _titleRequestedSessionId;
+        private PrefabWorkflowMode _workflowMode = PrefabWorkflowMode.Auto;
+        private bool _changedAssetsExpanded = true;
+        private Vector2 _changedAssetsScroll;
+        private const string WorkflowModePref = "UIPrefabBuilder_WorkflowMode";
         private bool _ignoreStream;
         private double _lastSessionPersist;
 
@@ -91,6 +95,8 @@ namespace Indey.UIPrefabBuilder.UI
             _settingsPanel = new SettingsPanel();
             _consolePanel = new ConsolePanel();
             _projectConfigPanel = new ProjectConfigPanel();
+            _workflowMode = LoadWorkflowMode();
+            SessionAssetChanges.Changed += OnSessionAssetsChanged;
             _sessions.RestoreLastSession(_agent.History, _bubbles);
 
             _hSplitLeft = new SplitView("UIPrefabBuilder_HSplitLeft", SplitDirection.Horizontal, 220f, 150f, 400f);
@@ -108,6 +114,7 @@ namespace Indey.UIPrefabBuilder.UI
         private void OnDisable()
         {
             EditorApplication.update -= Tick;
+            SessionAssetChanges.Changed -= OnSessionAssetsChanged;
             PersistSession();
             _agent?.Dispose();
         }
@@ -202,6 +209,7 @@ namespace Indey.UIPrefabBuilder.UI
             else
             {
                 DrawChatArea();
+                DrawChangedAssets();
             }
 
             DrawStatusBar();
@@ -418,12 +426,12 @@ namespace Indey.UIPrefabBuilder.UI
             _input = EditorGUILayout.TextArea(_input, _inputStyle, GUILayout.ExpandHeight(true));
             EditorGUILayout.EndScrollView();
 
-            // Bottom row: Send/Stop + Confirm/Undo
+            // Bottom row: mode + Send/Stop + Confirm/Undo
             EditorGUILayout.BeginHorizontal();
-            GUILayout.FlexibleSpace();
-
             var state = _agent?.State ?? AgentState.Idle;
             bool isRunning = IsAgentRunning();
+            DrawWorkflowMode(isRunning);
+            GUILayout.FlexibleSpace();
             if (isRunning)
             {
                 if (GUILayout.Button("Stop", EditorStyles.miniButton, GUILayout.Width(55))) StopTask();
@@ -443,6 +451,71 @@ namespace Indey.UIPrefabBuilder.UI
             }
             EditorGUILayout.EndHorizontal();
             EditorGUILayout.EndVertical();
+        }
+
+        private void DrawWorkflowMode(bool isRunning)
+        {
+            EditorGUI.BeginDisabledGroup(isRunning);
+            GUILayout.Label("Mode", EditorStyles.miniLabel, GUILayout.Width(36));
+            var next = (PrefabWorkflowMode)GUILayout.Toolbar(
+                (int)_workflowMode,
+                new[] { "Auto", "New", "Modify" },
+                EditorStyles.miniButton,
+                GUILayout.Width(168));
+            if (next != _workflowMode)
+            {
+                _workflowMode = next;
+                EditorPrefs.SetInt(WorkflowModePref, (int)next);
+            }
+            EditorGUI.EndDisabledGroup();
+        }
+
+        private static PrefabWorkflowMode LoadWorkflowMode()
+        {
+            var stored = EditorPrefs.GetInt(WorkflowModePref, (int)PrefabWorkflowMode.Auto);
+            if (!Enum.IsDefined(typeof(PrefabWorkflowMode), stored)) return PrefabWorkflowMode.Auto;
+            return (PrefabWorkflowMode)stored;
+        }
+
+        private void DrawChangedAssets()
+        {
+            var items = SessionAssetChanges.Items;
+            if (items.Count == 0) return;
+
+            var ordered = new List<SessionAssetChange>(items);
+            ordered.Sort((a, b) => b.Ticks.CompareTo(a.Ticks));
+
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            var title = ordered.Count == 1 ? "1 File" : ordered.Count + " Files";
+            _changedAssetsExpanded = EditorGUILayout.Foldout(_changedAssetsExpanded, title, true);
+            if (_changedAssetsExpanded)
+            {
+                var height = Mathf.Min(96f, ordered.Count * 20f + 4f);
+                _changedAssetsScroll = EditorGUILayout.BeginScrollView(_changedAssetsScroll, GUILayout.Height(height));
+                foreach (var item in ordered)
+                {
+                    var kind = item.Kind == SessionAssetChangeKind.Added ? "Added" : "Modified";
+                    var row = new GUIContent(Path.GetFileName(item.Path) + "    " + kind, item.Path);
+                    if (GUILayout.Button(row, EditorStyles.label))
+                        PingProjectAsset(item.Path);
+                }
+                EditorGUILayout.EndScrollView();
+            }
+            EditorGUILayout.EndVertical();
+        }
+
+        private void OnSessionAssetsChanged()
+        {
+            _needsRepaint = true;
+        }
+
+        private static void PingProjectAsset(string assetPath)
+        {
+            var asset = AssetDatabase.LoadMainAssetAtPath(assetPath);
+            if (asset == null) return;
+            Selection.activeObject = asset;
+            EditorGUIUtility.PingObject(asset);
+            EditorUtility.FocusProjectWindow();
         }
 
         private static readonly HashSet<string> AllowedImageExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -590,6 +663,9 @@ namespace Indey.UIPrefabBuilder.UI
                 displayText = (hasText ? text + "\n" : "") + fileNames.ToString().TrimEnd();
             }
 
+            var workflowMode = _workflowMode;
+            var selected = Selection.activeGameObject;
+
             if (hasFiles)
             {
                 var filesCopy = new List<string>(_attachedFiles);
@@ -598,7 +674,7 @@ namespace Indey.UIPrefabBuilder.UI
 
                 if (VisionCapabilityProbe.IsCacheValid(settings))
                 {
-                    BeginImageTask(userText, filesCopy, bubbleText);
+                    BeginImageTask(userText, filesCopy, bubbleText, workflowMode, selected);
                     return;
                 }
 
@@ -614,7 +690,7 @@ namespace Indey.UIPrefabBuilder.UI
                         settings.SupportsVision = true;
                         settings.RestoreAutoDisabledVisualVerification();
                         settings.Save();
-                        BeginImageTask(userText, filesCopy, bubbleText);
+                        BeginImageTask(userText, filesCopy, bubbleText, workflowMode, selected);
                     }
                     else
                     {
@@ -636,7 +712,7 @@ namespace Indey.UIPrefabBuilder.UI
 
             AddBubble(BubbleType.User, displayText, null);
             _ignoreStream = false;
-            _agent?.StartTask(text);
+            _agent?.StartTask(text, workflowMode, selected);
             RequestAutoTitle(hasText ? text : displayText);
             PersistSession();
             _input = "";
@@ -648,11 +724,11 @@ namespace Indey.UIPrefabBuilder.UI
             GUI.FocusControl(null);
         }
 
-        private void BeginImageTask(string userText, List<string> files, string bubbleText)
+        private void BeginImageTask(string userText, List<string> files, string bubbleText, PrefabWorkflowMode mode, GameObject selected)
         {
             AddBubble(BubbleType.User, bubbleText, new List<string>(files));
             _ignoreStream = false;
-            _agent?.StartTask(userText, files);
+            _agent?.StartTask(userText, files, mode, selected);
             RequestAutoTitle(string.IsNullOrWhiteSpace(userText) ? bubbleText : userText);
             PersistSession();
             _input = "";
@@ -755,6 +831,7 @@ namespace Indey.UIPrefabBuilder.UI
             _titleRequestedSessionId = null;
             _sessions.SaveCurrentSession(_agent.History, SnapshotBubbles());
             _bubbles.Clear();
+            SessionAssetChanges.Clear();
             _agent.History.Clear();
             _agent.Refresh();
             _sessions.NewSession();

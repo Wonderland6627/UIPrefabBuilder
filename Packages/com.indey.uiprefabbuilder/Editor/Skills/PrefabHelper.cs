@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using Indey.UIPrefabBuilder.Core;
 using UnityEditor;
 using UnityEngine;
 
@@ -26,7 +27,9 @@ namespace Indey.UIPrefabBuilder.Skills
             var dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
             var prefab = PrefabUtility.SaveAsPrefabAssetAndConnect(source, path, InteractionMode.UserAction);
-            return prefab != null ? path : null;
+            if (prefab == null) return null;
+            SessionAssetChanges.Record(path, SessionAssetChangeKind.Added);
+            return path;
         }
 
         public static GameObject Instantiate(string path, Transform parent = null, string name = null)
@@ -44,7 +47,9 @@ namespace Indey.UIPrefabBuilder.Skills
         public static bool Apply(GameObject instance)
         {
             if (instance == null || !PrefabUtility.IsPartOfPrefabInstance(instance)) return false;
+            var path = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(instance);
             PrefabUtility.ApplyPrefabInstance(instance, InteractionMode.UserAction);
+            SessionAssetChanges.Record(path, SessionAssetChangeKind.Modified);
             return true;
         }
 

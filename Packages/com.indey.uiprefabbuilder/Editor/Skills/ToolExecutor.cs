@@ -27,6 +27,7 @@ namespace Indey.UIPrefabBuilder.Skills
 
         public string Execute(string toolName, string argumentsJson)
         {
+            SessionAssetChanges.BeginRecording();
             try
             {
                 var args = string.IsNullOrWhiteSpace(argumentsJson)
@@ -40,6 +41,10 @@ namespace Indey.UIPrefabBuilder.Skills
             {
                 ConsoleLogger.Error($"Tool '{toolName}' error: {e.Message}");
                 return Error($"Tool execution failed: {e.Message}");
+            }
+            finally
+            {
+                SessionAssetChanges.EndRecording();
             }
         }
 
@@ -1605,6 +1610,24 @@ namespace Indey.UIPrefabBuilder.Skills
         private string DoInstantiatePrefab(JObject args)
         {
             var path = Str(args, "path");
+            if (PrefabWorkflowContext.Mode == PrefabWorkflowMode.New)
+            {
+                return Error("MODE BLOCKED: New mode builds a new UI root and cannot instantiate an existing prefab. " +
+                    "Use create_batch or the create_* tools instead.");
+            }
+            if (PrefabWorkflowContext.Mode == PrefabWorkflowMode.Modify)
+            {
+                if (!PrefabWorkflowContext.HasApplyTarget)
+                {
+                    return Error("MODE BLOCKED: Modify mode has no confirmed prefab. Ask the user for an Assets/...prefab path " +
+                        "or to select a prefab instance in the Hierarchy. Do not choose a prefab by search.");
+                }
+                if (!PrefabWorkflowContext.PathsMatch(path, PrefabWorkflowContext.ApplyTargetPath))
+                {
+                    return Error("MODE BLOCKED: Modify mode can only instantiate the confirmed prefab '" +
+                        PrefabWorkflowContext.ApplyTargetPath + "'.");
+                }
+            }
             var parentName = Str(args, "parent", null);
             Transform parent = null;
             if (!string.IsNullOrEmpty(parentName))
@@ -1619,10 +1642,35 @@ namespace Indey.UIPrefabBuilder.Skills
 
         private string DoApplyPrefab(JObject args)
         {
-            return Error("Disabled for safety: applying instance overrides back to the source prefab asset " +
-                "(PrefabUtility.ApplyPrefabInstance) modifies the project's prefab file directly, which is not allowed. " +
-                "You may only modify the GameObject instance in the scene Hierarchy. If the user wants the changes " +
-                "persisted as a prefab, save a NEW prefab via `save_as_prefab` at a different path instead.");
+            if (PrefabWorkflowContext.Mode != PrefabWorkflowMode.Modify)
+            {
+                return Error("MODE BLOCKED: apply_prefab is only available in Modify mode. " +
+                    "Auto and New modes must not write back to an existing prefab asset.");
+            }
+            if (!PrefabWorkflowContext.HasApplyTarget)
+            {
+                return Error("MODE BLOCKED: Modify mode has no confirmed prefab target. Ask the user for an Assets/...prefab path " +
+                    "or to select a prefab instance in the Hierarchy, then wait. Do not guess a target.");
+            }
+
+            var targetName = Str(args, "target");
+            var go = FindGO(targetName);
+            if (go == null) return TargetNotFound(targetName);
+
+            var root = PrefabUtility.GetOutermostPrefabInstanceRoot(go);
+            if (root == null || !PrefabUtility.IsPartOfPrefabInstance(root))
+                return Error($"'{targetName}' is not part of a prefab instance, so there is nothing to apply.");
+
+            var source = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(root);
+            if (!PrefabWorkflowContext.PathsMatch(source, PrefabWorkflowContext.ApplyTargetPath))
+            {
+                return Error("MODE BLOCKED: instance source '" + source + "' is not the confirmed target '" +
+                    PrefabWorkflowContext.ApplyTargetPath + "'. Apply only that prefab.");
+            }
+
+            return PrefabHelper.Apply(root)
+                ? Ok($"Applied instance overrides to '{source}'.")
+                : Error($"Failed to apply prefab '{source}'.");
         }
 
         private string DoFindPrefabInstances(JObject args)
@@ -2967,6 +3015,14 @@ namespace Indey.UIPrefabBuilder.Skills
             {
                 return "execute_code must not strip components off prefab instances (found 'RemoveComponent'). " +
                     "Disable the behaviour instead, or fix the layout with the dedicated UI tools.";
+            }
+
+            var prefabWrites = new[] { "ApplyPrefabInstance", "SaveAsPrefabAsset", "ApplyPrefab", "DeleteAsset" };
+            foreach (var call in prefabWrites)
+            {
+                if (code.IndexOf(call, StringComparison.Ordinal) < 0) continue;
+                return "execute_code must not write or delete prefab assets (found '" + call + "'). " +
+                    "Create a new prefab with save_as_prefab, or in Modify mode write the confirmed prefab with apply_prefab.";
             }
 
             return null;

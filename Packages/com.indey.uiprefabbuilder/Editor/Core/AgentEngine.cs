@@ -120,6 +120,11 @@ namespace Indey.UIPrefabBuilder.Core
 
         public void StartTask(string msg)
         {
+            StartTask(msg, PrefabWorkflowMode.Auto, null);
+        }
+
+        public void StartTask(string msg, PrefabWorkflowMode mode, GameObject selected)
+        {
             if (string.IsNullOrWhiteSpace(msg)) return;
             if (_state != AgentState.Idle && _state != AgentState.Error
                 && _state != AgentState.WaitingConfirmation && _state != AgentState.Completed)
@@ -127,13 +132,13 @@ namespace Indey.UIPrefabBuilder.Core
 
             _pendingMessage = msg;
             ResetStepCounters();
+            PrefabWorkflowContext.Begin(mode, msg, selected);
             DesignImageContext.BeginTextTask();
             RebuildSystemPrompt();
 
             var effectiveMax = EffectiveMaxSteps;
             ConsoleLogger.Log($"=== NEW TASK ===");
-            ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
-            ConsoleLogger.Log($"[Config] tools={_toolRegistry.Definitions.Count}");
+            LogTaskConfig(effectiveMax);
             LogProjectRulesForTask();
             ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
             ConsoleLogger.LogBlock("USER_REQUEST", msg);
@@ -148,9 +153,14 @@ namespace Indey.UIPrefabBuilder.Core
 
         public void StartTask(string msg, List<string> imagePaths)
         {
+            StartTask(msg, imagePaths, PrefabWorkflowMode.Auto, null);
+        }
+
+        public void StartTask(string msg, List<string> imagePaths, PrefabWorkflowMode mode, GameObject selected)
+        {
             if (imagePaths == null || imagePaths.Count == 0)
             {
-                StartTask(msg);
+                StartTask(msg, mode, selected);
                 return;
             }
 
@@ -164,12 +174,12 @@ namespace Indey.UIPrefabBuilder.Core
 
             _pendingMessage = textContent;
             ResetStepCounters();
+            PrefabWorkflowContext.Begin(mode, textContent, selected);
             RebuildSystemPrompt();
 
             var effectiveMax = EffectiveMaxSteps;
             ConsoleLogger.Log($"=== NEW TASK (with {imagePaths.Count} image(s)) ===");
-            ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
-            ConsoleLogger.Log($"[Config] tools={_toolRegistry.Definitions.Count}");
+            LogTaskConfig(effectiveMax);
             LogProjectRulesForTask();
             ConsoleLogger.LogBlock("USER_REQUEST", textContent + $"\n[Attached: {imagePaths.Count} image(s)]");
 
@@ -358,6 +368,7 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("You are **UIPrefabBuilder**, a Unity Editor AI agent specialized in UGUI and UI Prefab workflows.");
             sb.AppendLine("You think step-by-step, verify your work visually, and self-correct when issues are found.");
             sb.AppendLine();
+            AppendPrefabWorkflowPrompt(sb);
 
             {
                 // ── Thinking Protocol ──
@@ -457,7 +468,18 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.AppendLine();
                 sb.AppendLine("### Phase 4: Finalize");
                 sb.AppendLine("- `inspect_hierarchy` for structure verification");
-                sb.AppendLine("- `save_as_prefab` if requested");
+                switch (PrefabWorkflowContext.Mode)
+                {
+                    case PrefabWorkflowMode.Modify:
+                        sb.AppendLine("- `apply_prefab` on the confirmed instance once the scene edits are done. Do not `save_as_prefab` over that existing asset.");
+                        break;
+                    case PrefabWorkflowMode.New:
+                        sb.AppendLine("- `save_as_prefab` only when the user wants a new prefab, and only at a path that does not already exist.");
+                        break;
+                    default:
+                        sb.AppendLine("- `save_as_prefab` if the user asked for a new prefab at an unused path. Do not write back to an existing prefab.");
+                        break;
+                }
                 sb.AppendLine("- Summarize what was created");
                 sb.AppendLine();
 
@@ -559,8 +581,7 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine("   - Use `search_assets` / `search_assets_glob` to find sprites by filename patterns.");
                     }
                     sb.AppendLine("   - Fall back to `search_assets_glob` if no good match is found in the visual index.");
-                    sb.AppendLine("   - **EXISTING PREFAB FIRST**: if search finds a highly name-related UI prefab (e.g. `UIChangeNameGender`, `*ChangeName*`, `*Share*`), prefer `instantiate_prefab` then adjust layout/sprites to the mockup. Do NOT ignore a near-exact prefab and rebuild from scratch.");
-                    sb.AppendLine("   - Once instantiated, KEEP it: adjust the instance in place. Deleting the prefab instance (or the Canvas) to hand-build a replacement throws away authored art you cannot reproduce, and `destroy_object` will refuse it.");
+                    AppendMockupPrefabRule(sb);
                     sb.AppendLine("5. **Build UI**: Use `create_batch` then `set_rect_transform_batch` with the mapped coordinates. Prefer explicit RectTransform sizing over LayoutGroups for design fidelity. If you must use LayoutGroup, set childForceExpandWidth/Height to false.");
                     sb.AppendLine("6. **Verify**: `take_screenshot` → `analyze_screenshot` (with `referenceImagePath` pointing to the user's mockup) to compare side-by-side. Fix discrepancies. Only success=true captures count.");
                     sb.AppendLine();
@@ -625,9 +646,10 @@ namespace Indey.UIPrefabBuilder.Core
             // ── Safety ──
             sb.AppendLine("## SAFETY");
             sb.AppendLine("- Never delete files or assets. Never quit Unity.");
-            sb.AppendLine("- **Prefab protection (CRITICAL)**: you may only modify GameObject instances that live in the scene Hierarchy. You must NEVER overwrite an existing prefab asset or push instance overrides back into a prefab asset in the Project:");
+            sb.AppendLine("- **Prefab protection (CRITICAL)**:");
             sb.AppendLine("  - `save_as_prefab` only creates a brand-new prefab and will refuse if the path already exists — never try to work around this by deleting the existing asset first.");
-            sb.AppendLine("  - Do NOT use `apply_prefab` or any `execute_code` calling `PrefabUtility.ApplyPrefabInstance` / `PrefabUtility.SaveAsPrefabAssetAndConnect` on an existing path — these write to the Project's prefab asset, not just the scene instance, and are forbidden.");
+            sb.AppendLine("  - `apply_prefab` is allowed only in Modify mode, and only for the one confirmed target prefab. Auto and New modes must not write an existing prefab asset.");
+            sb.AppendLine("  - Do NOT call `PrefabUtility.ApplyPrefabInstance`, `PrefabUtility.SaveAsPrefabAsset`, or `PrefabUtility.SaveAsPrefabAssetAndConnect` from `execute_code`. Those calls are rejected. Use `apply_prefab` or `save_as_prefab`.");
             sb.AppendLine("  - If a task is read-only/analysis-only (e.g. \"分析这个设计稿\", \"这个UI是什么结构\"), do NOT create/build/save/modify any GameObject or asset — just answer with your analysis and stop. " +
                 "This does NOT mean skip tool calls entirely: you SHOULD still use non-destructive search-only tools (`match_sprite_by_region_batch`, `search_sprites_by_text_batch`, `get_project_config`, `search_assets_glob`, etc.) as part of a thorough analysis — identifying the ACTUAL matching sprite asset paths for each element (not just describing them in words) makes your analysis far more useful and lets a later \"now build it\" turn reuse those exact matches instead of re-guessing.");
             sb.AppendLine();
@@ -641,7 +663,78 @@ namespace Indey.UIPrefabBuilder.Core
                 sb.Append(projectConfig.BuildPromptSection());
             }
 
+            if (PrefabWorkflowContext.Mode != PrefabWorkflowMode.Auto)
+            {
+                sb.AppendLine();
+                sb.AppendLine("PREFAB WORKFLOW MODE overrides Prefab Mapping. Do not instantiate a mapped prefab unless the mode section above explicitly allows that exact asset.");
+            }
+
             _history.SetSystemPrompt(sb.ToString());
+        }
+
+        private static void AppendPrefabWorkflowPrompt(StringBuilder sb)
+        {
+            sb.AppendLine("## PREFAB WORKFLOW MODE (MANDATORY)");
+            switch (PrefabWorkflowContext.Mode)
+            {
+                case PrefabWorkflowMode.New:
+                    sb.AppendLine("Mode: NEW. Build a new UI root. Do not start from an existing prefab.");
+                    sb.AppendLine("- Do NOT call `instantiate_prefab` or `apply_prefab`.");
+                    sb.AppendLine("- Do NOT overwrite an existing prefab. `save_as_prefab` is only for a path that does not already exist, and only when the user wants the result saved.");
+                    sb.AppendLine("- Ignore any instruction to instantiate a project prefab, including Prefab Mapping.");
+                    break;
+                case PrefabWorkflowMode.Modify:
+                    sb.AppendLine("Mode: MODIFY. Change the confirmed prefab instance, including its children, then write that same prefab asset with `apply_prefab`.");
+                    if (PrefabWorkflowContext.HasApplyTarget)
+                    {
+                        sb.AppendLine("- Confirmed prefab: `" + PrefabWorkflowContext.ApplyTargetPath + "`.");
+                        var selectionMatches = PrefabWorkflowContext.PathsMatch(
+                            PrefabWorkflowContext.SelectedAssetPath, PrefabWorkflowContext.ApplyTargetPath);
+                        if (selectionMatches)
+                            sb.AppendLine("- Selected instance: `" + PrefabWorkflowContext.SelectedHierarchyPath + "` (instanceId " + PrefabWorkflowContext.SelectedInstanceId + "). Edit this instance in place.");
+                        else
+                            sb.AppendLine("- The Hierarchy selection is not that prefab. Instantiate ONLY `" + PrefabWorkflowContext.ApplyTargetPath + "`, edit that instance, then `apply_prefab` it.");
+                        sb.AppendLine("- When the scene edits are finished, call `apply_prefab` on that instance. It writes directly to the confirmed prefab. Do not apply any other prefab.");
+                    }
+                    else
+                    {
+                        sb.AppendLine("- Confirmed prefab: NONE.");
+                        sb.AppendLine("- Ask the user for an `Assets/...prefab` path, or to select a prefab instance in the Hierarchy. Do not search for a best match, do not instantiate another prefab, and do not call `apply_prefab` until a target is confirmed.");
+                    }
+                    sb.AppendLine("- Do not use `save_as_prefab` to replace the confirmed asset, and do not apply through `execute_code`.");
+                    break;
+                default:
+                    sb.AppendLine("Mode: AUTO. Decide whether to reuse an existing prefab or build a new one.");
+                    sb.AppendLine("- If search finds a highly related UI prefab, `instantiate_prefab` and adjust that scene instance.");
+                    sb.AppendLine("- Do NOT call `apply_prefab` and do NOT overwrite an existing prefab asset.");
+                    sb.AppendLine("- `save_as_prefab` only when the user wants a new prefab at an unused path.");
+                    break;
+            }
+            sb.AppendLine();
+        }
+
+        private static void AppendMockupPrefabRule(StringBuilder sb)
+        {
+            switch (PrefabWorkflowContext.Mode)
+            {
+                case PrefabWorkflowMode.New:
+                    sb.AppendLine("   - **NEW PREFAB MODE**: do NOT instantiate an existing prefab, even when its name matches the mockup. Build a new root.");
+                    break;
+                case PrefabWorkflowMode.Modify:
+                    sb.AppendLine("   - **MODIFY PREFAB MODE**: edit only the confirmed prefab instance, then `apply_prefab`. Do not rebuild or instantiate a different prefab.");
+                    break;
+                default:
+                    sb.AppendLine("   - **EXISTING PREFAB FIRST**: if search finds a highly name-related UI prefab (e.g. `UIChangeNameGender`, `*ChangeName*`, `*Share*`), prefer `instantiate_prefab` then adjust layout/sprites to the mockup. Do NOT ignore a near-exact prefab and rebuild from scratch.");
+                    sb.AppendLine("   - Once instantiated, KEEP it: adjust the instance in place. Deleting the prefab instance (or the Canvas) to hand-build a replacement throws away authored art you cannot reproduce, and `destroy_object` will refuse it.");
+                    break;
+            }
+        }
+
+        private void LogTaskConfig(int effectiveMax)
+        {
+            ConsoleLogger.Log($"[Config] model={_settings.ModelName}, baseUrl={_settings.BaseUrl}, timeout={_settings.RequestTimeoutSeconds}s, maxSteps={(_settings.MaxAgentSteps <= 0 ? "unlimited" : _settings.MaxAgentSteps.ToString())} (effective={effectiveMax})");
+            ConsoleLogger.Log($"[Config] tools={_toolRegistry.DefinitionsFor(PrefabWorkflowContext.Mode).Count}");
+            ConsoleLogger.Log($"[Workflow] mode={PrefabWorkflowContext.Mode}, target={PrefabWorkflowContext.ApplyTargetPath ?? "(none)"}, selected={PrefabWorkflowContext.SelectedHierarchyPath ?? "(none)"}");
         }
 
         private static void LogProjectRulesForTask()
@@ -783,7 +876,7 @@ namespace Indey.UIPrefabBuilder.Core
             _llm.RefreshApiKey();
             ConsoleLogger.Log($"[Agent] Step {_currentStep}/{(_settings.MaxAgentSteps <= 0 ? "∞" : max.ToString())}, messages={_history.Count}");
 
-            var toolDefs = _toolRegistry.Definitions;
+            var toolDefs = _toolRegistry.DefinitionsFor(PrefabWorkflowContext.Mode);
             _llm.ChatWithToolsAsync(
                 _history.Messages,
                 toolDefs,

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Indey.UIPrefabBuilder.Core;
 using Indey.UIPrefabBuilder.Logging;
 using Newtonsoft.Json.Linq;
 
@@ -31,6 +32,21 @@ namespace Indey.UIPrefabBuilder.Skills
                     _toolNames.Add(name);
             }
             ConsoleLogger.LogVolatile($"[ToolRegistry] Registered {_toolNames.Count} tools.");
+        }
+
+        public JArray DefinitionsFor(PrefabWorkflowMode mode)
+        {
+            var all = Definitions;
+            if (mode == PrefabWorkflowMode.Modify) return all;
+
+            var filtered = new JArray();
+            foreach (var tool in all)
+            {
+                var name = tool["function"]?["name"]?.ToString();
+                if (string.Equals(name, "apply_prefab", StringComparison.OrdinalIgnoreCase)) continue;
+                filtered.Add(tool.DeepClone());
+            }
+            return filtered;
         }
 
         public bool HasTool(string name)

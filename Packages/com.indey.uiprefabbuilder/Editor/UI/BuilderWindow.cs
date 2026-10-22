@@ -79,7 +79,9 @@ namespace Indey.UIPrefabBuilder.UI
             _sessions.RestoreLastSession(_agent.History, _bubbles);
 
             _hSplitLeft = new SplitView("UIPrefabBuilder_HSplitLeft", SplitDirection.Horizontal, 220f, 150f, 400f);
-            _hSplitRight = new SplitView("UIPrefabBuilder_HSplitRight", SplitDirection.Horizontal, 220f, 150f, 400f);
+            _hSplitRight = new SplitView("UIPrefabBuilder_HSplitRight", SplitDirection.Horizontal, 320f, 260f, 640f);
+            if (_hSplitRight.SplitPosition < 260f)
+                _hSplitRight.SplitPosition = 320f;
             _vSplitLeft = new SplitView("UIPrefabBuilder_VSplitLeft", SplitDirection.Vertical, 200f, 80f);
 
             ConsoleLogger.OnLogAdded += _ => _needsRepaint = true;
@@ -509,7 +511,7 @@ namespace Indey.UIPrefabBuilder.UI
         #region Right Panel
         private void DrawRightPanel(Rect rect)
         {
-            _projectConfigPanel.Draw(rect);
+            _projectConfigPanel.Draw(rect, Repaint);
         }
         #endregion
 

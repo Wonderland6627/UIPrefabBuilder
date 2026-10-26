@@ -12,6 +12,15 @@ namespace Indey.UIPrefabBuilder.Core
         public string Type;      // "text" or "image_url"
         public string Text;      // when Type == "text"
         public ImageUrl ImageUrl; // when Type == "image_url"
+        public string SourcePath;
+    }
+
+    public class ImageArchiveRef
+    {
+        public string SourcePath;
+        public long ByteLength;
+        public string Sha256;
+        public string Detail;
     }
 
     [Serializable]
@@ -28,8 +37,21 @@ namespace Indey.UIPrefabBuilder.Core
         public string Content;
         public List<ContentPart> ContentParts;
         public long Timestamp;
+        public string MessageId;
+        public string TaskId;
+        public string StepId;
         public string ToolCallId;
+        public string ToolName;
         public List<ToolCallInfo> ToolCalls;
+        public string Thinking;
+        public bool ReasoningFieldPresent;
+        public string ContinuityJson;
+        /// <summary>Full tool result or message text kept for the session file and the audit log.</summary>
+        public string ArchiveContent;
+        public int PromptTokens;
+        public int CompletionTokens;
+        public int ReasoningTokens;
+        public List<ImageArchiveRef> ImageArchives;
         /// <summary>
         /// When true, images in this message are degraded to low-resolution
         /// instead of being replaced with text placeholders.
@@ -52,6 +74,8 @@ namespace Indey.UIPrefabBuilder.Core
     public class MessageHistory
     {
         private readonly List<ChatMessage> _messages = new List<ChatMessage>();
+        private string _taskId;
+        private string _stepId;
         private const int MaxMessages = 80;
         private const int SoftLimit = 50;
         private const int MaxToolResultChars = 2000;
@@ -61,26 +85,80 @@ namespace Indey.UIPrefabBuilder.Core
 
         public IReadOnlyList<ChatMessage> Messages => _messages;
         public int Count => _messages.Count;
+        public string CurrentTaskId => _taskId;
+        public string CurrentStepId => _stepId;
+        public string ResumeBlockedReason { get; private set; }
+
+        public void BeginTask(string taskId) => _taskId = taskId;
+
+        public void SetStep(string stepId) => _stepId = stepId;
 
         public void Clear()
         {
             _messages.Clear();
             _imagesDegraded = false;
+            ResumeBlockedReason = null;
+            _taskId = null;
+            _stepId = null;
+        }
+
+        public void RestoreMessages(List<ChatMessage> messages)
+        {
+            _messages.Clear();
+            _imagesDegraded = false;
+            if (messages != null)
+                _messages.AddRange(messages);
+            ResumeBlockedReason = EvaluateResume(_messages);
+            var lastTask = _messages.LastOrDefault(m => !string.IsNullOrEmpty(m.TaskId));
+            _taskId = lastTask?.TaskId;
+        }
+
+        public static string EvaluateResume(IReadOnlyList<ChatMessage> messages)
+        {
+            if (messages == null) return null;
+            var ids = new HashSet<string>();
+            foreach (var message in messages)
+            {
+                if (message.ToolCalls == null) continue;
+                foreach (var call in message.ToolCalls)
+                {
+                    if (!string.IsNullOrEmpty(call.Id))
+                        ids.Add(call.Id);
+                }
+            }
+
+            foreach (var message in messages)
+            {
+                if (message.Role != ChatRole.Tool) continue;
+                if (string.IsNullOrEmpty(message.ToolCallId) || !ids.Contains(message.ToolCallId))
+                    return "这份会话缺少与工具结果对应的调用参数，只能查看，不能继续任务。";
+            }
+            return null;
         }
 
         public void SetSystemPrompt(string prompt)
         {
             if (_messages.Count > 0 && _messages[0].Role == ChatRole.System)
+            {
                 _messages[0].Content = prompt;
-            else
-                _messages.Insert(0, new ChatMessage(ChatRole.System, prompt));
+                _messages[0].ArchiveContent = prompt;
+                Stamp(_messages[0]);
+                return;
+            }
+            var msg = new ChatMessage(ChatRole.System, prompt) { ArchiveContent = prompt };
+            Stamp(msg);
+            _messages.Insert(0, msg);
         }
 
-        public void AddUser(string content)
+        public ChatMessage AddUser(string content)
         {
-            if (string.IsNullOrWhiteSpace(content)) return;
-            _messages.Add(new ChatMessage(ChatRole.User, content));
+            if (string.IsNullOrWhiteSpace(content)) return null;
+            var msg = new ChatMessage(ChatRole.User, content);
+            msg.ArchiveContent = content;
+            Stamp(msg);
+            _messages.Add(msg);
             Trim();
+            return msg;
         }
 
         public void AddUserMultimodal(List<ContentPart> parts, bool pinImage = false)
@@ -95,41 +173,64 @@ namespace Indey.UIPrefabBuilder.Core
                 PinImage = pinImage,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
             });
+            Stamp(_messages[_messages.Count - 1]);
+            _messages[_messages.Count - 1].ArchiveContent = textContent;
             Trim();
         }
 
-        public void AddAssistant(string content)
+        public ChatMessage AddAssistant(string content)
         {
-            if (string.IsNullOrWhiteSpace(content)) return;
-            _messages.Add(new ChatMessage(ChatRole.Assistant, content));
-            Trim();
+            return AddAssistant(content, null);
         }
 
-        public void AddAssistantWithToolCalls(LLMResponse response)
+        public ChatMessage AddAssistant(string content, LLMResponse response)
+        {
+            if (response == null && string.IsNullOrWhiteSpace(content))
+                return null;
+            var msg = new ChatMessage(ChatRole.Assistant, content ?? "");
+            msg.ArchiveContent = content ?? "";
+            CopyTrace(msg, response);
+            Stamp(msg);
+            _messages.Add(msg);
+            Trim();
+            return msg;
+        }
+
+        public ChatMessage AddAssistantWithToolCalls(LLMResponse response)
         {
             var msg = new ChatMessage
             {
                 Role = ChatRole.Assistant,
                 Content = response.Content ?? "",
+                ArchiveContent = response.Content ?? "",
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 ToolCalls = response.ToolCalls
             };
+            CopyTrace(msg, response);
+            Stamp(msg);
             _messages.Add(msg);
             Trim();
+            return msg;
         }
 
-        public void AddToolResult(string toolCallId, string toolName, string result)
+        public ChatMessage AddToolResult(string toolCallId, string toolName, string result)
         {
-            var truncated = TruncateToolResult(result ?? "", MaxToolResultChars);
-            _messages.Add(new ChatMessage
+            var full = result ?? "";
+            var truncated = TruncateToolResult(full, MaxToolResultChars);
+            var msg = new ChatMessage
             {
                 Role = ChatRole.Tool,
                 Content = truncated,
+                ArchiveContent = full,
                 ToolCallId = toolCallId,
+                ToolName = toolName,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-            });
+            };
+            Stamp(msg);
+            _messages.Add(msg);
             CompressIfNeeded();
             Trim();
+            return msg;
         }
 
         public void AddToolResultMultimodal(string toolCallId, string toolName, string textContent, List<ContentPart> parts)
@@ -140,16 +241,44 @@ namespace Indey.UIPrefabBuilder.Core
                 Content = textContent ?? "",
                 ContentParts = parts,
                 ToolCallId = toolCallId,
+                ToolName = toolName,
+                ArchiveContent = textContent ?? "",
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
             });
+            Stamp(_messages[_messages.Count - 1]);
             CompressIfNeeded();
             Trim();
         }
 
         public void AddToolResult(string content)
         {
-            _messages.Add(new ChatMessage(ChatRole.User, "[Execution Result]\n" + content));
+            var text = "[Execution Result]\n" + content;
+            var msg = new ChatMessage(ChatRole.User, text) { ArchiveContent = text };
+            Stamp(msg);
+            _messages.Add(msg);
             Trim();
+        }
+
+        private void Stamp(ChatMessage msg)
+        {
+            if (msg == null) return;
+            if (string.IsNullOrEmpty(msg.MessageId))
+                msg.MessageId = Guid.NewGuid().ToString("N");
+            if (string.IsNullOrEmpty(msg.TaskId))
+                msg.TaskId = _taskId;
+            if (string.IsNullOrEmpty(msg.StepId))
+                msg.StepId = _stepId;
+        }
+
+        private static void CopyTrace(ChatMessage msg, LLMResponse response)
+        {
+            if (response == null) return;
+            msg.Thinking = response.Thinking;
+            msg.ReasoningFieldPresent = response.ReasoningFieldPresent;
+            msg.ContinuityJson = response.ContinuityJson;
+            msg.PromptTokens = response.PromptTokens;
+            msg.CompletionTokens = response.CompletionTokens;
+            msg.ReasoningTokens = response.ReasoningTokens;
         }
 
         /// <summary>

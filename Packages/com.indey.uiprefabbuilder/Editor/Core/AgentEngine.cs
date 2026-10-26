@@ -129,8 +129,10 @@ namespace Indey.UIPrefabBuilder.Core
             if (_state != AgentState.Idle && _state != AgentState.Error
                 && _state != AgentState.WaitingConfirmation && _state != AgentState.Completed)
                 return;
+            if (BlockResume()) return;
 
             _pendingMessage = msg;
+            _history.BeginTask(Guid.NewGuid().ToString("N"));
             ResetStepCounters();
             PrefabWorkflowContext.Begin(mode, msg, selected);
             _toolRegistry.BeginTask();
@@ -138,7 +140,7 @@ namespace Indey.UIPrefabBuilder.Core
             RebuildSystemPrompt();
 
             var effectiveMax = EffectiveMaxSteps;
-            ConsoleLogger.Log($"=== NEW TASK ===");
+            ConsoleLogger.Log($"=== NEW TASK === task={_history.CurrentTaskId}");
             LogTaskConfig(effectiveMax);
             LogProjectRulesForTask();
             ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
@@ -147,7 +149,7 @@ namespace Indey.UIPrefabBuilder.Core
             _cts?.Cancel();
             _cts = new CancellationTokenSource();
 
-            _history.AddUser(_pendingMessage);
+            LogMessageAudit("user", _history.AddUser(_pendingMessage));
             _txManager.Begin("AI Agent Task");
             TransitionTo(AgentState.Thinking);
         }
@@ -168,19 +170,21 @@ namespace Indey.UIPrefabBuilder.Core
             if (_state != AgentState.Idle && _state != AgentState.Error
                 && _state != AgentState.WaitingConfirmation && _state != AgentState.Completed)
                 return;
+            if (BlockResume()) return;
 
             var textContent = string.IsNullOrWhiteSpace(msg)
                 ? "Please analyze the attached design mockup(s) and build the UI."
                 : msg;
 
             _pendingMessage = textContent;
+            _history.BeginTask(Guid.NewGuid().ToString("N"));
             ResetStepCounters();
             PrefabWorkflowContext.Begin(mode, textContent, selected);
             _toolRegistry.BeginTask();
             RebuildSystemPrompt();
 
             var effectiveMax = EffectiveMaxSteps;
-            ConsoleLogger.Log($"=== NEW TASK (with {imagePaths.Count} image(s)) ===");
+            ConsoleLogger.Log($"=== NEW TASK (with {imagePaths.Count} image(s)) === task={_history.CurrentTaskId}");
             LogTaskConfig(effectiveMax);
             LogProjectRulesForTask();
             ConsoleLogger.LogBlock("USER_REQUEST", textContent + $"\n[Attached: {imagePaths.Count} image(s)]");
@@ -202,6 +206,7 @@ namespace Indey.UIPrefabBuilder.Core
                     parts.Add(new ContentPart
                     {
                         Type = "image_url",
+                        SourcePath = path,
                         ImageUrl = new ImageUrl
                         {
                             Url = $"data:{mime};base64,{b64}",
@@ -229,9 +234,12 @@ namespace Indey.UIPrefabBuilder.Core
             {
                 textContent = textContent + "\n\n" + meta;
                 parts[0].Text = textContent;
+                ConsoleLogger.LogBlock("DESIGN_META", meta);
             }
 
             _history.AddUserMultimodal(parts, pinImage: true);
+            if (_history.Count > 0)
+                LogMessageAudit("user", _history.Messages[_history.Count - 1]);
             _txManager.Begin("AI Agent Task");
             TransitionTo(AgentState.Thinking);
         }
@@ -908,7 +916,9 @@ namespace Indey.UIPrefabBuilder.Core
             _currentStep++;
 
             _llm.RefreshApiKey();
-            ConsoleLogger.Log($"[Agent] Step {_currentStep}/{(_settings.MaxAgentSteps <= 0 ? "∞" : max.ToString())}, messages={_history.Count}");
+            var stepId = (_history.CurrentTaskId ?? "task") + "-s" + _currentStep;
+            _history.SetStep(stepId);
+            ConsoleLogger.Log($"[Agent] Step {_currentStep}/{(_settings.MaxAgentSteps <= 0 ? "∞" : max.ToString())}, task={_history.CurrentTaskId}, step={stepId}, messages={_history.Count}");
 
             var toolDefs = _toolRegistry.DefinitionsFor(PrefabWorkflowContext.Mode);
             _llm.ChatWithToolsAsync(
@@ -918,7 +928,9 @@ namespace Indey.UIPrefabBuilder.Core
                 t => { OnThinkingToken?.Invoke(t); },
                 response => HandleLLMResponse(response),
                 e => HandleError(e.Message),
-                _cts.Token);
+                _cts.Token,
+                _history.CurrentTaskId,
+                stepId);
         }
 
         private void HandleLLMResponse(LLMResponse response)
@@ -927,7 +939,7 @@ namespace Indey.UIPrefabBuilder.Core
             var toolNames = toolCount > 0
                 ? string.Join(", ", response.ToolCalls.ConvertAll(tc => tc.Name))
                 : "none";
-            ConsoleLogger.Log($"[Agent] Step {_currentStep} response: tools=[{toolNames}], content={response.Content?.Length ?? 0}c, thinking={response.Thinking?.Length ?? 0}c");
+            ConsoleLogger.Log($"[Agent] Step {_currentStep} response: task={_history.CurrentTaskId}, step={_history.CurrentStepId}, provider={response.Provider}, tools=[{toolNames}], content={response.Content?.Length ?? 0}c, thinking={response.Thinking?.Length ?? 0}c, promptTokens={response.PromptTokens}, completionTokens={response.CompletionTokens}, reasoningTokens={response.ReasoningTokens}");
 
             if (!string.IsNullOrEmpty(response.Thinking))
                 ConsoleLogger.LogBlock($"LLM_THINKING_STEP_{_currentStep}", response.Thinking);
@@ -942,7 +954,7 @@ namespace Indey.UIPrefabBuilder.Core
 
             if (response.HasToolCalls)
             {
-                _history.AddAssistantWithToolCalls(response);
+                LogMessageAudit("assistant", _history.AddAssistantWithToolCalls(response));
 
                 TransitionTo(AgentState.CallingTool);
                 ExecuteToolCalls(response.ToolCalls);
@@ -955,8 +967,8 @@ namespace Indey.UIPrefabBuilder.Core
                 {
                     if (isProtocolNudge) _protocolNudgeCount++;
                     else _consecutiveFixNudges++;
-                    _history.AddAssistant(response.Content);
-                    _history.AddUser(gateNudge);
+                    LogMessageAudit("assistant", _history.AddAssistant(response.Content, response));
+                    LogMessageAudit("user", _history.AddUser(gateNudge));
                     ConsoleLogger.Log($"[Agent] Visual gate ({(isProtocolNudge ? $"protocol {_protocolNudgeCount}/{MaxProtocolNudges}" : $"fix round {_verdictFixRounds}/{MaxVerdictFixRounds}")}): {gateNudge}");
                     TransitionTo(AgentState.Thinking);
                     return;
@@ -968,16 +980,16 @@ namespace Indey.UIPrefabBuilder.Core
                 if (string.IsNullOrWhiteSpace(response.Content) && _emptyResponseNudgeCount < MaxEmptyResponseNudges)
                 {
                     _emptyResponseNudgeCount++;
-                    _history.AddUser(
+                    LogMessageAudit("user", _history.AddUser(
                         "Your last message was EMPTY (no tool calls, no text). This is not a valid way to finish. " +
                         "If the task is NOT complete, continue with the next tool call now. " +
-                        "If it IS complete, reply with a brief text summary of what you built and any known issues.");
+                        "If it IS complete, reply with a brief text summary of what you built and any known issues."));
                     ConsoleLogger.Log($"[Agent] Empty response nudge #{_emptyResponseNudgeCount} (no tools, no content).");
                     TransitionTo(AgentState.Thinking);
                     return;
                 }
 
-                _history.AddAssistant(response.Content);
+                LogMessageAudit("assistant", _history.AddAssistant(response.Content, response));
 
                 // NOTE: We intentionally do NOT force the model to start building just because it
                 // searched first and then replied with text only. Not every task is a "build" task —
@@ -1130,6 +1142,58 @@ namespace Indey.UIPrefabBuilder.Core
                 "Describe only what is visible in the last screenshot — never claim an element you could not see.";
         }
 
+        private bool BlockResume()
+        {
+            if (string.IsNullOrEmpty(_history.ResumeBlockedReason)) return false;
+            HandleError(_history.ResumeBlockedReason);
+            return true;
+        }
+
+        private void LogMessageAudit(string kind, ChatMessage message)
+        {
+            if (message == null) return;
+            var tools = message.ToolCalls == null || message.ToolCalls.Count == 0
+                ? ""
+                : " tools=[" + string.Join(", ", message.ToolCalls.ConvertAll(call => call.Name)) + "]";
+            ConsoleLogger.Log(
+                "[Message] " + kind
+                + " task=" + message.TaskId
+                + " step=" + message.StepId
+                + " message=" + message.MessageId
+                + " tool=" + (message.ToolCallId ?? message.ToolName)
+                + " role=" + message.Role
+                + " content=" + (message.ArchiveContent ?? message.Content ?? "").Length + "c"
+                + " thinking=" + (message.Thinking?.Length ?? 0) + "c"
+                + tools
+                + DescribeLoggedImages(message));
+        }
+
+        private static string DescribeLoggedImages(ChatMessage message)
+        {
+            if (message?.ContentParts == null) return "";
+            var names = new List<string>();
+            foreach (var part in message.ContentParts)
+            {
+                if (part == null || part.Type != "image_url") continue;
+                names.Add(string.IsNullOrEmpty(part.SourcePath) ? "image" : Path.GetFileName(part.SourcePath));
+            }
+            if (names.Count == 0) return "";
+            return " images=[" + string.Join(", ", names) + "]";
+        }
+
+        private void RecordToolResult(ToolCallInfo call, string result)
+        {
+            var stored = _history.AddToolResult(call.Id, call.Name, result);
+            ConsoleLogger.LogToolCall(
+                call.Name,
+                call.Arguments,
+                stored?.ArchiveContent ?? result,
+                stored?.TaskId,
+                stored?.StepId,
+                stored?.MessageId,
+                call.Id);
+        }
+
         private void ExecuteToolCalls(List<ToolCallInfo> toolCalls)
         {
             _consecutiveFixNudges = 0;
@@ -1175,8 +1239,7 @@ namespace Indey.UIPrefabBuilder.Core
                         }
                         catch { }
                         ConsoleLogger.Log($"[Agent] Search cache hit: {call.Name}({call.Arguments?.Substring(0, Math.Min(call.Arguments?.Length ?? 0, 60))})");
-                        ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
-                        _history.AddToolResult(call.Id, call.Name, result);
+                        RecordToolResult(call, result);
                         OnToolCall?.Invoke(call.Name, call.Arguments, result);
                         ReportToolResult(call.Name, result);
                         continue;
@@ -1192,8 +1255,7 @@ namespace Indey.UIPrefabBuilder.Core
                                 "For missing assets, use a plain Image with color tint as fallback."
                         }.ToString();
                         ConsoleLogger.Log($"[Agent] Search hard-blocked (post-build budget exceeded): {call.Name}");
-                        ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
-                        _history.AddToolResult(call.Id, call.Name, result);
+                        RecordToolResult(call, result);
                         OnToolCall?.Invoke(call.Name, call.Arguments, result);
                         ReportToolResult(call.Name, result);
                         continue;
@@ -1208,8 +1270,7 @@ namespace Indey.UIPrefabBuilder.Core
                                 "The assets you are looking for do not exist. Use fallback colors and move on to building/styling."
                         }.ToString();
                         ConsoleLogger.Log($"[Agent] Search hard-blocked (cumulative empty limit): {call.Name}");
-                        ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
-                        _history.AddToolResult(call.Id, call.Name, result);
+                        RecordToolResult(call, result);
                         OnToolCall?.Invoke(call.Name, call.Arguments, result);
                         ReportToolResult(call.Name, result);
                         continue;
@@ -1219,6 +1280,23 @@ namespace Indey.UIPrefabBuilder.Core
                 // --- Camera manipulation guard for execute_code ---
                 if (call.Name == "execute_code")
                 {
+                    if (_lastStepWasAnalyzeScreenshot || (_verdictFixRounds > 0 && !_verdictMatches))
+                    {
+                        _lastStepWasAnalyzeScreenshot = false;
+                        result = new JObject
+                        {
+                            ["success"] = false,
+                            ["error"] = "BLOCKED: The design comparison is already done. Do not use execute_code to inspect prefabs, sprites, or pixels. " +
+                                "Fix the reported mismatches with set_image_batch, set_rect_transform_batch, and set_text_properties_batch, " +
+                                "then take_screenshot → analyze_screenshot → report_visual_verdict again."
+                        }.ToString();
+                        ConsoleLogger.Log("[Agent] execute_code blocked after visual verification.");
+                        RecordToolResult(call, result);
+                        OnToolCall?.Invoke(call.Name, call.Arguments, result);
+                        ReportToolResult(call.Name, result);
+                        continue;
+                    }
+
                     string codeContent = null;
                     try { codeContent = JObject.Parse(call.Arguments ?? "{}")["code"]?.ToString(); }
                     catch { }
@@ -1235,8 +1313,7 @@ namespace Indey.UIPrefabBuilder.Core
                                 " times. STOP trying to fix the camera and focus on UI layout issues.";
                         result = new JObject { ["success"] = false, ["error"] = blockMsg }.ToString();
                         ConsoleLogger.Log($"[Agent] Camera manipulation blocked (attempt {_consecutiveCameraAttempts}): {call.Name}");
-                        ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
-                        _history.AddToolResult(call.Id, call.Name, result);
+                        RecordToolResult(call, result);
                         OnToolCall?.Invoke(call.Name, call.Arguments, result);
                         ReportToolResult(call.Name, result);
                         continue;
@@ -1260,8 +1337,7 @@ namespace Indey.UIPrefabBuilder.Core
                                         "inspect_hierarchy, or other specialized tools instead."
                                 }.ToString();
                                 ConsoleLogger.Log($"[Agent] Repeated execute_code blocked (similarity={_consecutiveSimilarCodeCount})");
-                                ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
-                                _history.AddToolResult(call.Id, call.Name, result);
+                                RecordToolResult(call, result);
                                 OnToolCall?.Invoke(call.Name, call.Arguments, result);
                                 ReportToolResult(call.Name, result);
                                 continue;
@@ -1463,15 +1539,22 @@ namespace Indey.UIPrefabBuilder.Core
                         {
                             foreach (var img in images)
                             {
-                                pendingImageParts.Add(new ContentPart
+                                var imageUrl = img.ToString();
+                                var imagePart = new ContentPart
                                 {
                                     Type = "image_url",
                                     ImageUrl = new ImageUrl
                                     {
-                                        Url = img.ToString(),
+                                        Url = imageUrl,
                                         Detail = "low"
                                     }
-                                });
+                                };
+                                if (!imageUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                                    imagePart.SourcePath = imageUrl;
+                                else
+                                    imagePart.SourcePath = ReadArgument(execArgs, "screenshotPath")
+                                        ?? ReadArgument(execArgs, "referenceImagePath");
+                                pendingImageParts.Add(imagePart);
                             }
                         }
                         pendingAnalysisPrompt = resultObj["message"]?.ToString();
@@ -1494,8 +1577,7 @@ namespace Indey.UIPrefabBuilder.Core
                     catch { }
                 }
 
-                ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
-                _history.AddToolResult(call.Id, call.Name, result);
+                RecordToolResult(call, result);
                 OnToolCall?.Invoke(call.Name, call.Arguments, result);
                 ReportToolResult(call.Name, result);
             }
@@ -1548,6 +1630,8 @@ namespace Indey.UIPrefabBuilder.Core
                 });
                 parts.AddRange(pendingImageParts);
                 _history.AddUserMultimodal(parts);
+                if (_history.Count > 0)
+                    LogMessageAudit("vision_prompt", _history.Messages[_history.Count - 1]);
                 ConsoleLogger.Log($"[Agent] Injected vision user message with {pendingImageParts.Count} image(s).");
             }
 
@@ -1661,8 +1745,7 @@ namespace Indey.UIPrefabBuilder.Core
             for (int i = start; i < messages.Count; i++)
             {
                 var m = messages[i];
-                var preview = m.Content ?? "";
-                if (preview.Length > 300) preview = preview.Substring(0, 300) + "...";
+                var preview = m.ArchiveContent ?? m.Content ?? "";
                 sb.AppendLine($"  [{m.Role}] {preview}");
                 if (m.ToolCalls != null)
                     foreach (var tc in m.ToolCalls)

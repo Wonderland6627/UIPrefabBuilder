@@ -14,8 +14,7 @@ namespace Indey.UIPrefabBuilder.Config
         [SerializeField] private int executeTimeoutSeconds = 5;
         [SerializeField] private bool autoExecute = true;
         [SerializeField] private int maxAgentSteps = 0;
-        [SerializeField] private bool enableExtendedThinking = false;
-        [SerializeField] private int thinkingBudgetTokens = 4096;
+        [SerializeField] private bool enableReasoning = false;
         [SerializeField] private float temperature = -1f;
         [SerializeField] private bool enableVisualVerification = true;
         [SerializeField] private bool visualVerificationAutoDisabled = false;
@@ -34,8 +33,7 @@ namespace Indey.UIPrefabBuilder.Config
         public bool AutoExecute { get => autoExecute; set => autoExecute = value; }
         /// <summary>0 = unlimited (soft cap at 500 for safety)</summary>
         public int MaxAgentSteps { get => maxAgentSteps; set => maxAgentSteps = value; }
-        public bool EnableExtendedThinking { get => enableExtendedThinking; set => enableExtendedThinking = value; }
-        public int ThinkingBudgetTokens { get => thinkingBudgetTokens; set => thinkingBudgetTokens = value; }
+        public bool EnableReasoning { get => enableReasoning; set => enableReasoning = value; }
         /// <summary>-1 = not set (use model default)</summary>
         public float Temperature { get => temperature; set => temperature = value; }
         public bool EnableVisualVerification { get => enableVisualVerification; set => enableVisualVerification = value; }

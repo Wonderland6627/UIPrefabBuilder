@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using Indey.UIPrefabBuilder.Core;
 using Indey.UIPrefabBuilder.Logging;
@@ -22,16 +23,63 @@ namespace Indey.UIPrefabBuilder.UI
         public bool TitleLocked;
         public DateTime CreatedAt;
         public DateTime UpdatedAt;
+        public int SchemaVersion = 2;
+        /// <summary>Short index of the conversation. The full text stays in Messages.</summary>
+        public List<SerializedOutline> Outline = new List<SerializedOutline>();
         public List<SerializedMessage> Messages = new List<SerializedMessage>();
         public List<SerializedBubble> Bubbles = new List<SerializedBubble>();
         public List<SerializedAssetChange> ChangedAssets = new List<SerializedAssetChange>();
     }
 
     [Serializable]
+    public class SerializedOutline
+    {
+        public int Index;
+        public string MessageId;
+        public string StepId;
+        public string Role;
+        public string ToolName;
+        public List<string> ToolCalls;
+        public int ContentChars;
+        public int ThinkingChars;
+        public int ModelChars;
+    }
+
+    [Serializable]
     public class SerializedMessage
     {
+        public string MessageId;
+        public string TaskId;
+        public string StepId;
         public string Role;
         public string Content;
+        public string ModelContent;
+        public string ToolCallId;
+        public string ToolName;
+        public string Thinking;
+        public bool ReasoningFieldPresent;
+        public string ContinuityJson;
+        public int PromptTokens;
+        public int CompletionTokens;
+        public int ReasoningTokens;
+        public List<SerializedToolCall> ToolCalls;
+        public List<SerializedImageRef> ImageRefs;
+    }
+
+    public class SerializedToolCall
+    {
+        public string Id;
+        public string Name;
+        public string Arguments;
+        public string ContinuityJson;
+    }
+
+    public class SerializedImageRef
+    {
+        public string SourcePath;
+        public long ByteLength;
+        public string Sha256;
+        public string Detail;
     }
 
     [Serializable]
@@ -111,6 +159,7 @@ namespace Indey.UIPrefabBuilder.UI
         {
             if (history == null || history.Count <= 1) return;
             var previous = ReadSession(_currentId, out var previousStem);
+            var messages = history.Messages.Select(ToSerializedMessage).ToList();
             var session = new ChatSession
             {
                 SessionId = _currentId,
@@ -119,8 +168,10 @@ namespace Indey.UIPrefabBuilder.UI
                 StorageName = previous?.StorageName,
                 CreatedAt = previous?.CreatedAt ?? DateTime.Now,
                 UpdatedAt = DateTime.Now,
-                Messages = history.Messages.Select(m => new SerializedMessage { Role = m.Role.ToString(), Content = m.Content }).ToList(),
-                Bubbles = bubbles.Select(b => new SerializedBubble { Type = b.Type.ToString(), Content = b.Content }).ToList(),
+                SchemaVersion = 2,
+                Outline = BuildOutline(messages),
+                Messages = messages,
+                Bubbles = SelectUnrebuiltBubbles(bubbles),
                 ChangedAssets = SessionAssetChanges.Snapshot().Select(a => new SerializedAssetChange
                 {
                     Path = a.Path,
@@ -147,22 +198,19 @@ namespace Indey.UIPrefabBuilder.UI
                 if (session == null) return;
                 history.Clear();
                 bubbles.Clear();
+                var restored = new List<ChatMessage>();
                 if (session.Messages != null)
                 {
                     foreach (var m in session.Messages)
-                    {
-                        if (Enum.TryParse<ChatRole>(m.Role, out var role))
-                        {
-                            switch (role)
-                            {
-                                case ChatRole.System: history.SetSystemPrompt(m.Content); break;
-                                case ChatRole.User: history.AddUser(m.Content); break;
-                                case ChatRole.Assistant: history.AddAssistant(m.Content); break;
-                            }
-                        }
-                    }
+                        restored.Add(FromSerializedMessage(m));
                 }
-                if (session.Bubbles != null)
+                history.RestoreMessages(restored);
+                if (restored.Exists(m => !string.IsNullOrEmpty(m.MessageId)))
+                {
+                    RebuildBubbles(restored, bubbles);
+                    AppendStoredBubbles(session.Bubbles, bubbles);
+                }
+                else if (session.Bubbles != null)
                 {
                     foreach (var b in session.Bubbles)
                     {
@@ -234,6 +282,285 @@ namespace Indey.UIPrefabBuilder.UI
                 });
             }
             return restored;
+        }
+
+        static List<SerializedOutline> BuildOutline(List<SerializedMessage> messages)
+        {
+            var outline = new List<SerializedOutline>();
+            if (messages == null) return outline;
+            for (int i = 0; i < messages.Count; i++)
+            {
+                var message = messages[i];
+                if (message == null) continue;
+                outline.Add(new SerializedOutline
+                {
+                    Index = i,
+                    MessageId = message.MessageId,
+                    StepId = message.StepId,
+                    Role = message.Role,
+                    ToolName = message.ToolName,
+                    ToolCalls = message.ToolCalls?.Select(call => call.Name).ToList(),
+                    ContentChars = message.Content?.Length ?? 0,
+                    ThinkingChars = message.Thinking?.Length ?? 0,
+                    ModelChars = message.ModelContent?.Length ?? 0
+                });
+            }
+            return outline;
+        }
+
+        static List<SerializedBubble> SelectUnrebuiltBubbles(List<ChatBubble> bubbles)
+        {
+            if (bubbles == null) return new List<SerializedBubble>();
+            return bubbles
+                .Where(b => b != null && b.Type == BubbleType.Error)
+                .Select(b => new SerializedBubble { Type = b.Type.ToString(), Content = b.Content })
+                .ToList();
+        }
+
+        static void RebuildBubbles(List<ChatMessage> messages, List<ChatBubble> bubbles)
+        {
+            var results = new Dictionary<string, ChatMessage>();
+            foreach (var message in messages)
+            {
+                if (message == null || message.Role != ChatRole.Tool || string.IsNullOrEmpty(message.ToolCallId)) continue;
+                results[message.ToolCallId] = message;
+            }
+
+            foreach (var message in messages)
+            {
+                if (message == null || message.Role == ChatRole.System || message.Role == ChatRole.Tool) continue;
+                if (message.Role == ChatRole.User)
+                {
+                    var text = message.ArchiveContent ?? message.Content ?? "";
+                    var files = message.ImageArchives?
+                        .Select(image => image.SourcePath)
+                        .Where(path => !string.IsNullOrEmpty(path))
+                        .ToList();
+                    if (string.IsNullOrWhiteSpace(text) && (files == null || files.Count == 0)) continue;
+                    bubbles.Add(new ChatBubble { Type = BubbleType.User, Content = text, AttachedFilePaths = files });
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(message.Thinking))
+                    bubbles.Add(new ChatBubble { Type = BubbleType.Thinking, Content = message.Thinking });
+                if (message.ToolCalls != null)
+                {
+                    foreach (var call in message.ToolCalls)
+                    {
+                        results.TryGetValue(call.Id ?? "", out var result);
+                        var body = result?.ArchiveContent ?? result?.Content;
+                        bubbles.Add(new ChatBubble { Type = BubbleType.ToolCall, Content = FormatToolBubble(call.Name, body) });
+                    }
+                }
+                if (!string.IsNullOrWhiteSpace(message.Content))
+                    bubbles.Add(new ChatBubble { Type = BubbleType.AI, Content = message.ArchiveContent ?? message.Content });
+            }
+        }
+
+        static void AppendStoredBubbles(List<SerializedBubble> stored, List<ChatBubble> bubbles)
+        {
+            if (stored == null) return;
+            foreach (var bubble in stored)
+            {
+                if (bubble == null || !Enum.TryParse<BubbleType>(bubble.Type, out var type) || type != BubbleType.Error) continue;
+                bubbles.Add(new ChatBubble { Type = type, Content = bubble.Content });
+            }
+        }
+
+        static string FormatToolBubble(string name, string result)
+        {
+            var text = "\u2699 " + name;
+            if (string.IsNullOrEmpty(result)) return text;
+            try
+            {
+                var obj = Newtonsoft.Json.Linq.JObject.Parse(result);
+                var success = (bool)(obj["success"] ?? false);
+                var message = obj["message"]?.ToString() ?? obj["error"]?.ToString();
+                text += success ? " \u2714" : " \u2716";
+                if (!string.IsNullOrEmpty(message))
+                    text += " " + (message.Length > 180 ? message.Substring(0, 180) + "..." : message);
+            }
+            catch
+            {
+                text += result.Length > 120 ? ": " + result.Substring(0, 120) + "..." : ": " + result;
+            }
+            return text;
+        }
+
+        static SerializedMessage ToSerializedMessage(ChatMessage message)
+        {
+            var full = message.ArchiveContent ?? message.Content ?? "";
+            var model = message.Content ?? "";
+            var serialized = new SerializedMessage
+            {
+                MessageId = message.MessageId,
+                TaskId = message.TaskId,
+                StepId = message.StepId,
+                Role = message.Role.ToString(),
+                Content = full,
+                ModelContent = model == full ? null : model,
+                ToolCallId = message.ToolCallId,
+                ToolName = message.ToolName,
+                Thinking = message.Thinking,
+                ReasoningFieldPresent = message.ReasoningFieldPresent,
+                ContinuityJson = message.ContinuityJson,
+                PromptTokens = message.PromptTokens,
+                CompletionTokens = message.CompletionTokens,
+                ReasoningTokens = message.ReasoningTokens,
+                ImageRefs = CollectImageRefs(message)
+            };
+            if (message.ToolCalls != null && message.ToolCalls.Count > 0)
+            {
+                serialized.ToolCalls = message.ToolCalls.Select(call => new SerializedToolCall
+                {
+                    Id = call.Id,
+                    Name = call.Name,
+                    Arguments = call.Arguments,
+                    ContinuityJson = call.ContinuityJson
+                }).ToList();
+            }
+            return serialized;
+        }
+
+        static ChatMessage FromSerializedMessage(SerializedMessage message)
+        {
+            var role = ChatRole.User;
+            if (!string.IsNullOrEmpty(message.Role))
+                Enum.TryParse(message.Role, out role);
+            var full = message.Content ?? "";
+            var model = string.IsNullOrEmpty(message.ModelContent) ? full : message.ModelContent;
+            var restored = new ChatMessage
+            {
+                Role = role,
+                Content = model,
+                ArchiveContent = full,
+                MessageId = message.MessageId,
+                TaskId = message.TaskId,
+                StepId = message.StepId,
+                ToolCallId = message.ToolCallId,
+                ToolName = message.ToolName,
+                Thinking = message.Thinking,
+                ReasoningFieldPresent = message.ReasoningFieldPresent,
+                ContinuityJson = message.ContinuityJson,
+                PromptTokens = message.PromptTokens,
+                CompletionTokens = message.CompletionTokens,
+                ReasoningTokens = message.ReasoningTokens,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            };
+            if (message.ToolCalls != null)
+            {
+                restored.ToolCalls = message.ToolCalls.Select(call => new ToolCallInfo
+                {
+                    Id = call.Id,
+                    Name = call.Name,
+                    Arguments = call.Arguments,
+                    ContinuityJson = call.ContinuityJson
+                }).ToList();
+            }
+            restored.ImageArchives = message.ImageRefs?.Select(image => new ImageArchiveRef
+            {
+                SourcePath = image.SourcePath,
+                ByteLength = image.ByteLength,
+                Sha256 = image.Sha256,
+                Detail = image.Detail
+            }).ToList();
+            restored.ContentParts = RehydrateImages(message, model);
+            return restored;
+        }
+
+        static List<SerializedImageRef> CollectImageRefs(ChatMessage message)
+        {
+            var refs = new List<SerializedImageRef>();
+            if (message.ContentParts != null)
+            {
+                foreach (var part in message.ContentParts)
+                {
+                    if (part == null || part.Type != "image_url") continue;
+                    refs.Add(DescribeImage(part));
+                }
+            }
+            if (refs.Count == 0 && message.ImageArchives != null)
+            {
+                foreach (var image in message.ImageArchives)
+                {
+                    refs.Add(new SerializedImageRef
+                    {
+                        SourcePath = image.SourcePath,
+                        ByteLength = image.ByteLength,
+                        Sha256 = image.Sha256,
+                        Detail = image.Detail
+                    });
+                }
+            }
+            return refs.Count == 0 ? null : refs;
+        }
+
+        static SerializedImageRef DescribeImage(ContentPart part)
+        {
+            var described = new SerializedImageRef
+            {
+                SourcePath = part.SourcePath,
+                Detail = part.ImageUrl?.Detail
+            };
+            var url = part.ImageUrl?.Url;
+            if (!string.IsNullOrEmpty(url) && url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                var comma = url.IndexOf(',');
+                var payload = comma >= 0 ? url.Substring(comma + 1) : "";
+                try
+                {
+                    var bytes = Convert.FromBase64String(payload);
+                    described.ByteLength = bytes.Length;
+                    described.Sha256 = HashBytes(bytes);
+                }
+                catch { }
+            }
+            else if (!string.IsNullOrEmpty(part.SourcePath) && File.Exists(part.SourcePath))
+            {
+                var bytes = File.ReadAllBytes(part.SourcePath);
+                described.ByteLength = bytes.Length;
+                described.Sha256 = HashBytes(bytes);
+            }
+            return described;
+        }
+
+        static List<ContentPart> RehydrateImages(SerializedMessage message, string text)
+        {
+            if (message.ImageRefs == null || message.ImageRefs.Count == 0) return null;
+            var parts = new List<ContentPart>();
+            if (!string.IsNullOrEmpty(text))
+                parts.Add(new ContentPart { Type = "text", Text = text });
+            foreach (var image in message.ImageRefs)
+            {
+                var part = new ContentPart
+                {
+                    Type = "image_url",
+                    SourcePath = image.SourcePath,
+                    ImageUrl = new ImageUrl { Detail = image.Detail ?? "low" }
+                };
+                if (!string.IsNullOrEmpty(image.SourcePath) && File.Exists(image.SourcePath))
+                {
+                    var bytes = File.ReadAllBytes(image.SourcePath);
+                    var mime = image.SourcePath.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase)
+                        || image.SourcePath.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase)
+                        ? "image/jpeg" : "image/png";
+                    part.ImageUrl.Url = "data:" + mime + ";base64," + Convert.ToBase64String(bytes);
+                    parts.Add(part);
+                    continue;
+                }
+                parts.Add(new ContentPart
+                {
+                    Type = "text",
+                    Text = "[Image unavailable: " + (image.SourcePath ?? "unknown") + " sha256=" + (image.Sha256 ?? "") + "]"
+                });
+            }
+            return parts;
+        }
+
+        static string HashBytes(byte[] bytes)
+        {
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
         }
 
         public static void OpenDirectory(string directory)

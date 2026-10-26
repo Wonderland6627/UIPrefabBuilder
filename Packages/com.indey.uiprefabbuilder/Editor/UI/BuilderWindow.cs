@@ -17,6 +17,7 @@ namespace Indey.UIPrefabBuilder.UI
         private AgentEngine _agent;
         private string _input = "";
         private Vector2 _chatScroll, _inputScroll, _historyScroll;
+        private readonly Dictionary<int, Vector2> _bubbleScroll = new Dictionary<int, Vector2>();
         private bool _needsRepaint;
         private float _lastRepaint;
 
@@ -223,19 +224,19 @@ namespace Indey.UIPrefabBuilder.UI
         {
             _chatScroll = EditorGUILayout.BeginScrollView(_chatScroll, GUILayout.ExpandHeight(true));
 
-            foreach (var b in _bubbles)
-                DrawBubble(b);
+            for (int i = 0; i < _bubbles.Count; i++)
+                DrawBubble(_bubbles[i], i);
 
             // Thinking stream (real-time)
             if (_isThinking && !string.IsNullOrEmpty(_thinkingStreamBuffer))
             {
-                DrawBubble(new ChatBubble { Type = BubbleType.Thinking, Content = _thinkingStreamBuffer });
+                DrawBubble(new ChatBubble { Type = BubbleType.Thinking, Content = _thinkingStreamBuffer }, -1);
             }
 
             // Content stream (real-time)
             if (_isStreaming && !string.IsNullOrEmpty(_streamBuffer))
             {
-                DrawBubble(new ChatBubble { Type = BubbleType.AIStream, Content = _streamBuffer });
+                DrawBubble(new ChatBubble { Type = BubbleType.AIStream, Content = _streamBuffer }, -2);
             }
 
             EditorGUILayout.EndScrollView();
@@ -276,7 +277,7 @@ namespace Indey.UIPrefabBuilder.UI
             EditorGUILayout.EndVertical();
         }
 
-        private void DrawBubble(ChatBubble b)
+        private void DrawBubble(ChatBubble b, int scrollKey)
         {
             bool isUser = b.Type == BubbleType.User;
             GUIStyle style;
@@ -311,7 +312,7 @@ namespace Indey.UIPrefabBuilder.UI
             if (b.Type == BubbleType.Thinking)
             {
                 GUILayout.Label("Thinking...", EditorStyles.miniBoldLabel);
-                GUILayout.Label(b.Content, EditorStyles.wordWrappedMiniLabel);
+                DrawScrollableText(b.Content, EditorStyles.wordWrappedMiniLabel, maxBubbleWidth - 24f, scrollKey);
             }
             else if (b.Type == BubbleType.Code)
             {
@@ -324,7 +325,7 @@ namespace Indey.UIPrefabBuilder.UI
             }
             else if (b.Type == BubbleType.ToolCall)
             {
-                GUILayout.Label(b.Content, _toolCallLabel);
+                DrawScrollableText(b.Content, _toolCallLabel, maxBubbleWidth - 24f, scrollKey);
             }
             else if (b.Type == BubbleType.AI || b.Type == BubbleType.AIStream)
             {
@@ -332,7 +333,7 @@ namespace Indey.UIPrefabBuilder.UI
             }
             else
             {
-                GUILayout.Label(b.Content, EditorStyles.wordWrappedLabel);
+                DrawScrollableText(b.Content, EditorStyles.wordWrappedLabel, maxBubbleWidth - 24f, scrollKey);
             }
 
             if (b.AttachedFilePaths != null && b.AttachedFilePaths.Count > 0)
@@ -356,6 +357,23 @@ namespace Indey.UIPrefabBuilder.UI
 
             EditorGUILayout.EndHorizontal();
             GUILayout.Space(4);
+        }
+
+        private void DrawScrollableText(string content, GUIStyle style, float width, int scrollKey)
+        {
+            if (string.IsNullOrEmpty(content)) return;
+            var height = Mathf.Max(18f, style.CalcHeight(new GUIContent(content), Mathf.Max(40f, width)));
+            if (height <= 160f)
+            {
+                GUILayout.Label(content, style, GUILayout.Width(width));
+                return;
+            }
+
+            if (!_bubbleScroll.TryGetValue(scrollKey, out var scroll))
+                scroll = Vector2.zero;
+            _bubbleScroll[scrollKey] = EditorGUILayout.BeginScrollView(scroll, GUILayout.Height(220f), GUILayout.Width(width));
+            GUILayout.Label(content, style, GUILayout.Width(width - 20f));
+            EditorGUILayout.EndScrollView();
         }
 
         private void DrawMarkdownContent(string content, float contentWidth)
@@ -423,6 +441,10 @@ namespace Indey.UIPrefabBuilder.UI
             DrawAttachmentArea();
 
             // Input text area
+            var resumeBlock = _agent?.History?.ResumeBlockedReason;
+            if (!string.IsNullOrEmpty(resumeBlock))
+                EditorGUILayout.HelpBox(resumeBlock, MessageType.Warning);
+
             _inputScroll = EditorGUILayout.BeginScrollView(_inputScroll, GUILayout.Height(55));
             _input = EditorGUILayout.TextArea(_input, _inputStyle, GUILayout.ExpandHeight(true));
             EditorGUILayout.EndScrollView();

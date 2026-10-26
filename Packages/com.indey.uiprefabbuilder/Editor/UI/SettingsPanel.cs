@@ -180,9 +180,8 @@ namespace Indey.UIPrefabBuilder.UI
 
             GUILayout.Space(BuilderStyles.SubGap);
             GUILayout.Label("Thinking", BuilderStyles.SectionLabel);
-            settings.EnableExtendedThinking = EditorGUILayout.Toggle("Extended Thinking (Claude)", settings.EnableExtendedThinking);
-            if (settings.EnableExtendedThinking)
-                settings.ThinkingBudgetTokens = EditorGUILayout.IntField("Thinking Budget", settings.ThinkingBudgetTokens);
+            settings.EnableReasoning = EditorGUILayout.Toggle("启用深度思考", settings.EnableReasoning);
+            EditorGUILayout.HelpBox("开启后使用该模型自己的默认思考方式，并记录接口返回的思考摘要。Gemini 等模型本身会思考，此开关负责把摘要要回来。", MessageType.None);
 
             GUILayout.Space(BuilderStyles.SubGap);
             GUILayout.Label("Vision", BuilderStyles.SectionLabel);

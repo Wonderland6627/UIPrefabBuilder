@@ -2,11 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Indey.UIPrefabBuilder.Async;
 using Indey.UIPrefabBuilder.Config;
+using Indey.UIPrefabBuilder.Logging;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace Indey.UIPrefabBuilder.Core
@@ -16,12 +20,20 @@ namespace Indey.UIPrefabBuilder.Core
         public string Id;
         public string Name;
         public string Arguments;
+        /// <summary>Vendor continuity object, such as a thought signature. Sent back unchanged.</summary>
+        public string ContinuityJson;
     }
 
     public class LLMResponse
     {
         public string Content;
         public string Thinking;
+        public bool ReasoningFieldPresent;
+        public string ContinuityJson;
+        public string Provider;
+        public int PromptTokens;
+        public int CompletionTokens;
+        public int ReasoningTokens;
         public List<ToolCallInfo> ToolCalls;
         public bool HasToolCalls => ToolCalls != null && ToolCalls.Count > 0;
     }
@@ -31,6 +43,11 @@ namespace Indey.UIPrefabBuilder.Core
         private readonly HttpClient _http;
         private readonly BuilderSettings _settings;
         private string _cachedApiKey;
+        private string _capabilitySignature;
+        private bool _reasoningSuppressed;
+        private bool _usageSuppressed;
+        private string _outlineTaskId;
+        private int _outlinedMessages;
 
         public LLMClient(BuilderSettings settings)
         {
@@ -391,7 +408,9 @@ namespace Indey.UIPrefabBuilder.Core
             Action<string> onThinkingToken,
             Action<LLMResponse> onComplete,
             Action<Exception> onError,
-            CancellationToken ct)
+            CancellationToken ct,
+            string taskId = null,
+            string stepId = null)
         {
             Task.Run(async () =>
             {
@@ -402,8 +421,26 @@ namespace Indey.UIPrefabBuilder.Core
                     if (string.IsNullOrEmpty(apiKey))
                         throw new InvalidOperationException("API Key not configured. Open Settings to set it.");
 
-                    var body = BuildRequestBody(messages, tools);
-                    var url = NormalizeUrl(_settings.BaseUrl);
+                    var baseUrl = _settings.BaseUrl;
+                    var model = _settings.ModelName;
+                    var reasoningEnabled = _settings.EnableReasoning;
+                    var signature = baseUrl + "|" + model + "|" + reasoningEnabled;
+                    if (!string.Equals(signature, _capabilitySignature, StringComparison.Ordinal))
+                    {
+                        _capabilitySignature = signature;
+                        _reasoningSuppressed = false;
+                        _usageSuppressed = false;
+                    }
+
+                    var hasTools = tools != null && tools.Count > 0;
+                    var rejection = ReasoningRequestAdapter.RejectionReason(baseUrl, model, reasoningEnabled && !_reasoningSuppressed, hasTools);
+                    if (rejection != null)
+                        throw new InvalidOperationException(rejection);
+
+                    var request = BuildRequestBody(messages, tools, reasoningEnabled && !_reasoningSuppressed, !_usageSuppressed);
+                    var body = request.ToString(Formatting.None);
+                    LogRequestOutline(taskId, stepId, request);
+                    var url = NormalizeUrl(baseUrl);
 
                     var maxRetries = _settings.MaxRetryCount > 0 ? _settings.MaxRetryCount : 3;
                     Exception lastEx = null;
@@ -429,24 +466,61 @@ namespace Indey.UIPrefabBuilder.Core
                                 var errBody = await resp.Content.ReadAsStringAsync();
                                 var statusCode = (int)resp.StatusCode;
 
-                                if (statusCode == 400 || statusCode == 401 || statusCode == 403 || statusCode == 404)
-                                    throw new InvalidOperationException($"HTTP {statusCode}: {errBody}");
+                                if (statusCode == 400 && reasoningEnabled && !_reasoningSuppressed
+                                    && ReasoningRequestAdapter.IsUnsupportedReasoningField(errBody))
+                                {
+                                    _reasoningSuppressed = true;
+                                    request = BuildRequestBody(messages, tools, false, !_usageSuppressed);
+                                    body = request.ToString(Formatting.None);
+                                    ConsoleLogger.Warning("[Reasoning] Endpoint rejected the reasoning fields. This session continues without them. " + TrimError(errBody));
+                                    ConsoleLogger.LogAudit("reasoning_fallback", taskId, stepId, null, null, TrimError(errBody));
+                                    resp.Dispose();
+                                    attempt--;
+                                    continue;
+                                }
 
-                                lastEx = new InvalidOperationException($"HTTP {statusCode}: {errBody}");
+                                if (statusCode == 400 && !_usageSuppressed
+                                    && ReasoningRequestAdapter.IsUnsupportedUsageField(errBody))
+                                {
+                                    _usageSuppressed = true;
+                                    request = BuildRequestBody(messages, tools, reasoningEnabled && !_reasoningSuppressed, false);
+                                    body = request.ToString(Formatting.None);
+                                    ConsoleLogger.Warning("[Audit] Endpoint rejected stream usage. Token counts will be omitted. " + TrimError(errBody));
+                                    resp.Dispose();
+                                    attempt--;
+                                    continue;
+                                }
+
+                                if (statusCode == 400 || statusCode == 401 || statusCode == 403 || statusCode == 404)
+                                    throw new InvalidOperationException($"HTTP {statusCode}: {TrimError(errBody)}");
+
+                                lastEx = new InvalidOperationException($"HTTP {statusCode}: {TrimError(errBody)}");
                                 resp.Dispose();
                                 continue;
                             }
 
                             var contentType = resp.Content.Headers.ContentType?.MediaType ?? "";
+                            var budget = TimeSpan.FromSeconds(Math.Max(15, _settings.RequestTimeoutSeconds));
                             if (contentType.Contains("text/event-stream"))
-                                result = await ReadSSEWithTools(resp, onToken, onThinkingToken, ct);
+                                result = await ReadSSEWithTools(resp, onToken, onThinkingToken, ct, budget);
                             else
-                                result = ParseNonStreamResponse(await resp.Content.ReadAsStringAsync());
+                                result = await ReadBodyWithin(resp, ct, budget);
 
+                            result.Provider = ReasoningRequestAdapter.Detect(baseUrl, model).ToString();
                             lastEx = null;
                             break;
                         }
-                        catch (OperationCanceledException) { throw; }
+                        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                        catch (OperationCanceledException)
+                        {
+                            lastEx = new TimeoutException($"Model request timed out after {Math.Max(15, _settings.RequestTimeoutSeconds)}s.");
+                            ConsoleLogger.Warning("[Agent] " + lastEx.Message);
+                        }
+                        catch (TimeoutException e)
+                        {
+                            lastEx = e;
+                            ConsoleLogger.Warning("[Agent] " + e.Message);
+                        }
                         catch (InvalidOperationException) { throw; }
                         catch (Exception e)
                         {
@@ -495,13 +569,15 @@ namespace Indey.UIPrefabBuilder.Core
                         onThinkingComplete?.Invoke(response.Thinking);
                     onComplete?.Invoke(response.Content ?? "");
                 },
-                onError, ct);
+                onError, ct, null, null);
         }
 
         #endregion
 
-        private string BuildRequestBody(IReadOnlyList<ChatMessage> messages, JArray tools)
+        private JObject BuildRequestBody(IReadOnlyList<ChatMessage> messages, JArray tools, bool reasoningEnabled, bool includeUsage)
         {
+            var provider = ReasoningRequestAdapter.Detect(_settings.BaseUrl, _settings.ModelName);
+            var echoReasoning = reasoningEnabled && ReasoningRequestAdapter.EchoReasoningContent(provider);
             var arr = new JArray();
             foreach (var m in messages)
             {
@@ -522,12 +598,21 @@ namespace Indey.UIPrefabBuilder.Core
                     msg["content"] = m.Content;
                 }
 
+                if (m.Role == ChatRole.Assistant && echoReasoning && m.ReasoningFieldPresent)
+                    msg["reasoning_content"] = m.Thinking ?? "";
+
+                if (!string.IsNullOrEmpty(m.ContinuityJson))
+                {
+                    try { msg["extra_content"] = JObject.Parse(m.ContinuityJson); }
+                    catch { }
+                }
+
                 if (m.ToolCalls != null && m.ToolCalls.Count > 0)
                 {
                     var calls = new JArray();
                     foreach (var tc in m.ToolCalls)
                     {
-                        calls.Add(new JObject
+                        var call = new JObject
                         {
                             ["id"] = tc.Id,
                             ["type"] = "function",
@@ -536,7 +621,13 @@ namespace Indey.UIPrefabBuilder.Core
                                 ["name"] = tc.Name,
                                 ["arguments"] = tc.Arguments
                             }
-                        });
+                        };
+                        if (!string.IsNullOrEmpty(tc.ContinuityJson))
+                        {
+                            try { call["extra_content"] = JObject.Parse(tc.ContinuityJson); }
+                            catch { }
+                        }
+                        calls.Add(call);
                     }
                     msg["tool_calls"] = calls;
                     if (msg["content"] == null)
@@ -556,23 +647,109 @@ namespace Indey.UIPrefabBuilder.Core
             if (tools != null && tools.Count > 0)
                 obj["tools"] = tools;
 
-            if (_settings.EnableExtendedThinking)
+            if (includeUsage)
             {
-                if (_settings.ModelName.IndexOf("claude", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    obj["thinking"] = new JObject
-                    {
-                        ["type"] = "enabled",
-                        ["budget_tokens"] = _settings.ThinkingBudgetTokens > 0
-                            ? _settings.ThinkingBudgetTokens : 4096
-                    };
-                }
+                obj["stream_options"] = new JObject { ["include_usage"] = true };
             }
+
+            ReasoningRequestAdapter.Apply(obj, _settings.BaseUrl, _settings.ModelName, reasoningEnabled);
 
             if (_settings.Temperature >= 0)
                 obj["temperature"] = _settings.Temperature;
 
-            return obj.ToString(Newtonsoft.Json.Formatting.None);
+            return obj;
+        }
+
+        /// <summary>
+        /// Writes the request envelope and only the messages added since the previous step.
+        /// The message bodies stay in the session file and in the tool log.
+        /// </summary>
+        private void LogRequestOutline(string taskId, string stepId, JObject request)
+        {
+            if (!string.Equals(taskId, _outlineTaskId, StringComparison.Ordinal))
+            {
+                _outlineTaskId = taskId;
+                _outlinedMessages = 0;
+            }
+
+            var messages = request?["messages"] as JArray;
+            int count = messages?.Count ?? 0;
+            int from = Math.Min(_outlinedMessages, count);
+            var tools = request?["tools"] as JArray;
+            ConsoleLogger.Log(
+                "[Request] step=" + stepId
+                + " model=" + request?["model"]
+                + " tools=" + (tools?.Count ?? 0)
+                + " messages=" + count
+                + " new=" + (count - from)
+                + " " + DescribeEnvelope(request));
+
+            if (messages != null && count > from)
+            {
+                var outline = new StringBuilder();
+                for (int i = from; i < count; i++)
+                {
+                    if (i > from) outline.Append('\n');
+                    outline.Append(DescribeRequestMessage(i, messages[i] as JObject));
+                }
+                ConsoleLogger.LogBlock("REQUEST_NEW", outline.ToString());
+            }
+
+            _outlinedMessages = count;
+        }
+
+        static string DescribeEnvelope(JObject request)
+        {
+            if (request == null) return "";
+            var parts = new List<string>();
+            if (request["stream_options"] != null) parts.Add("usage=included");
+            if (request["temperature"] != null) parts.Add("temperature=" + request["temperature"]);
+            if (request["extra_body"] != null) parts.Add("extra_body=" + request["extra_body"].ToString(Formatting.None));
+            if (request["thinking"] != null) parts.Add("thinking=" + request["thinking"].ToString(Formatting.None));
+            if (request["reasoning_effort"] != null) parts.Add("reasoning_effort=" + request["reasoning_effort"]);
+            return string.Join(" ", parts);
+        }
+
+        static string DescribeRequestMessage(int index, JObject message)
+        {
+            if (message == null) return "[" + index + "] (empty)";
+            int textChars = 0;
+            int images = 0;
+            var content = message["content"];
+            if (content is JArray parts)
+            {
+                foreach (var part in parts)
+                {
+                    var type = part?["type"]?.ToString();
+                    if (type == "text") textChars += part["text"]?.ToString().Length ?? 0;
+                    else if (type == "image_url") images++;
+                }
+            }
+            else if (content != null && content.Type == JTokenType.String)
+            {
+                textChars = content.ToString().Length;
+            }
+
+            var line = "[" + index + "] " + message["role"] + " content=" + textChars + "c";
+            var toolCallId = message["tool_call_id"]?.ToString();
+            if (!string.IsNullOrEmpty(toolCallId)) line += " tool=" + toolCallId;
+            if (images > 0) line += " images=" + images;
+            var calls = message["tool_calls"] as JArray;
+            if (calls != null && calls.Count > 0)
+            {
+                var names = new StringBuilder();
+                for (int i = 0; i < calls.Count; i++)
+                {
+                    if (i > 0) names.Append(", ");
+                    names.Append(calls[i]?["function"]?["name"]?.ToString());
+                }
+                line += " calls=[" + names + "]";
+            }
+            if (message["reasoning_content"] != null)
+                line += " reasoning=" + message["reasoning_content"].ToString().Length + "c";
+            if (message["extra_content"] != null)
+                line += " continuity";
+            return line;
         }
 
         private static JArray BuildMultimodalContent(ChatMessage m)
@@ -600,29 +777,52 @@ namespace Indey.UIPrefabBuilder.Core
             return contentArr;
         }
 
-        private const int SSEReadTimeoutSeconds = 90;
+        private static async Task<LLMResponse> ReadBodyWithin(HttpResponseMessage resp, CancellationToken ct, TimeSpan budget)
+        {
+            var read = resp.Content.ReadAsStringAsync();
+            var finished = await Task.WhenAny(read, Task.Delay(budget, ct));
+            if (finished != read)
+            {
+                ct.ThrowIfCancellationRequested();
+                try { resp.Content.Dispose(); } catch { }
+                ObserveAbandoned(read);
+                throw new TimeoutException($"Model response exceeded {budget.TotalSeconds:0}s.");
+            }
+            return ParseNonStreamResponse(await read);
+        }
 
         private static async Task<LLMResponse> ReadSSEWithTools(
             HttpResponseMessage resp,
             Action<string> onToken,
             Action<string> onThinkingToken,
-            CancellationToken ct)
+            CancellationToken ct,
+            TimeSpan budget)
         {
             var contentBuf = new StringBuilder();
             var thinkingBuf = new StringBuilder();
             var toolCalls = new Dictionary<int, ToolCallInfo>();
+            string continuityJson = null;
+            bool reasoningFieldPresent = false;
+            int promptTokens = 0, completionTokens = 0, reasoningTokens = 0;
+            var deadline = DateTime.UtcNow + budget;
 
             using var stream = await resp.Content.ReadAsStreamAsync();
             using var reader = new StreamReader(stream);
             while (!reader.EndOfStream && !ct.IsCancellationRequested)
             {
+                var remaining = deadline - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                    throw new TimeoutException($"Model response exceeded {budget.TotalSeconds:0}s.");
+
                 var lineTask = reader.ReadLineAsync();
-                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(SSEReadTimeoutSeconds), ct);
+                var timeoutTask = Task.Delay(remaining, ct);
                 var completed = await Task.WhenAny(lineTask, timeoutTask);
-                if (completed == timeoutTask)
+                if (completed != lineTask)
                 {
+                    try { stream.Close(); } catch { }
+                    ObserveAbandoned(lineTask);
                     ct.ThrowIfCancellationRequested();
-                    throw new TimeoutException($"SSE stream read timed out: no data received for {SSEReadTimeoutSeconds} seconds.");
+                    throw new TimeoutException($"Model response exceeded {budget.TotalSeconds:0}s without completing.");
                 }
                 var line = await lineTask;
                 if (string.IsNullOrEmpty(line) || !line.StartsWith("data:")) continue;
@@ -638,7 +838,12 @@ namespace Indey.UIPrefabBuilder.Core
                     if (delta == null) continue;
 
                     var content = delta["content"]?.ToString();
-                    var reasoning = delta["reasoning_content"]?.ToString();
+                    if (delta["reasoning_content"] != null)
+                        reasoningFieldPresent = true;
+                    var reasoning = delta["reasoning_content"]?.ToString() ?? delta["reasoning"]?.ToString();
+                    var deltaExtra = delta["extra_content"] as JObject;
+                    if (deltaExtra != null)
+                        continuityJson = deltaExtra.ToString(Formatting.None);
 
                     if (!string.IsNullOrEmpty(reasoning))
                     {
@@ -681,8 +886,14 @@ namespace Indey.UIPrefabBuilder.Core
                                 if (!string.IsNullOrEmpty(fnArgs))
                                     info.Arguments += fnArgs;
                             }
+
+                            var callExtra = tc["extra_content"] as JObject;
+                            if (callExtra != null)
+                                info.ContinuityJson = callExtra.ToString(Formatting.None);
                         }
                     }
+
+                    ReadUsage(json["usage"] as JObject, ref promptTokens, ref completionTokens, ref reasoningTokens);
                 }
                 catch { }
             }
@@ -700,7 +911,12 @@ namespace Indey.UIPrefabBuilder.Core
             var result = new LLMResponse
             {
                 Content = contentStr,
-                Thinking = thinkingStr
+                Thinking = thinkingStr,
+                ReasoningFieldPresent = reasoningFieldPresent || !string.IsNullOrEmpty(thinkingStr),
+                ContinuityJson = continuityJson,
+                PromptTokens = promptTokens,
+                CompletionTokens = completionTokens,
+                ReasoningTokens = reasoningTokens
             };
 
             if (toolCalls.Count > 0)
@@ -718,9 +934,21 @@ namespace Indey.UIPrefabBuilder.Core
             try
             {
                 var obj = JObject.Parse(json);
-                var message = obj["choices"]?[0]?["message"];
+                var message = obj["choices"]?[0]?["message"] as JObject;
                 var content = message?["content"]?.ToString() ?? "";
-                var result = new LLMResponse { Content = content };
+                var reasoningToken = message?["reasoning_content"];
+                int promptTokens = 0, completionTokens = 0, reasoningTokens = 0;
+                ReadUsage(obj["usage"] as JObject, ref promptTokens, ref completionTokens, ref reasoningTokens);
+                var result = new LLMResponse
+                {
+                    Content = content,
+                    Thinking = reasoningToken?.ToString() ?? "",
+                    ReasoningFieldPresent = reasoningToken != null,
+                    ContinuityJson = (message?["extra_content"] as JObject)?.ToString(Formatting.None),
+                    PromptTokens = promptTokens,
+                    CompletionTokens = completionTokens,
+                    ReasoningTokens = reasoningTokens
+                };
 
                 var msgToolCalls = message?["tool_calls"] as JArray;
                 if (msgToolCalls != null && msgToolCalls.Count > 0)
@@ -732,7 +960,8 @@ namespace Indey.UIPrefabBuilder.Core
                         {
                             Id = tc["id"]?.ToString(),
                             Name = tc["function"]?["name"]?.ToString(),
-                            Arguments = tc["function"]?["arguments"]?.ToString() ?? "{}"
+                            Arguments = tc["function"]?["arguments"]?.ToString() ?? "{}",
+                            ContinuityJson = (tc["extra_content"] as JObject)?.ToString(Formatting.None)
                         });
                     }
                 }
@@ -763,5 +992,50 @@ namespace Indey.UIPrefabBuilder.Core
         }
 
         public void Dispose() => _http?.Dispose();
+
+        static void ObserveAbandoned(Task task)
+        {
+            if (task == null) return;
+            task.ContinueWith(finished =>
+            {
+                try { var _ = finished.Exception; } catch { }
+            }, TaskContinuationOptions.ExecuteSynchronously);
+        }
+
+        static void ReadUsage(JObject usage, ref int promptTokens, ref int completionTokens, ref int reasoningTokens)
+        {
+            if (usage == null) return;
+            promptTokens = usage["prompt_tokens"]?.Value<int>() ?? promptTokens;
+            completionTokens = usage["completion_tokens"]?.Value<int>() ?? completionTokens;
+            var details = usage["completion_tokens_details"] as JObject;
+            reasoningTokens = details?["reasoning_tokens"]?.Value<int>()
+                ?? usage["reasoning_tokens"]?.Value<int>()
+                ?? reasoningTokens;
+        }
+
+        static string TrimError(string body)
+        {
+            if (string.IsNullOrEmpty(body)) return "";
+            return RedactForLog(body);
+        }
+
+        static string RedactForLog(string body)
+        {
+            if (string.IsNullOrEmpty(body)) return "";
+            body = Regex.Replace(body, @"Bearer\s+[A-Za-z0-9\-._~+/]+=*", "Bearer [redacted]");
+            return Regex.Replace(body, @"data:[^""\\]*;base64,[A-Za-z0-9+/=]+", match =>
+            {
+                var value = match.Value;
+                var comma = value.IndexOf(',');
+                var payload = comma >= 0 ? value.Substring(comma + 1) : value;
+                byte[] bytes;
+                try { bytes = Convert.FromBase64String(payload); }
+                catch { bytes = Encoding.UTF8.GetBytes(payload); }
+                string hash;
+                using (var sha = SHA256.Create())
+                    hash = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+                return "[image byteLength=" + bytes.Length + " sha256=" + hash + "]";
+            });
+        }
     }
 }

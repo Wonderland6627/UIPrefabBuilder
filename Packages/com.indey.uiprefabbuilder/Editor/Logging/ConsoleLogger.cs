@@ -95,28 +95,28 @@ namespace Indey.UIPrefabBuilder.Logging
         }
 
         /// <summary>
-        /// Compact log for tool calls: single line with name + truncated args/result.
-        /// The limits are generous on purpose — a batch payload cut at 150 chars hides which
-        /// sprite/text actually went in, which is exactly what post-mortems need.
+        /// Writes the complete tool arguments and result to the log file.
+        /// The console panel keeps a short index line so a large payload does not have to be drawn.
         /// </summary>
-        public static void LogToolCall(string toolName, string args, string result)
+        public static void LogToolCall(string toolName, string args, string result, string taskId, string stepId, string messageId, string toolCallId)
         {
-            var argPreview = TruncateForLog(args, 2000);
-            var line = $"[Tool] {toolName}({argPreview})";
-            AddEntry(LogLevel.Info, line);
-
-            if (!string.IsNullOrEmpty(result))
-            {
-                var resultPreview = TruncateForLog(result, 800);
-                AddEntry(LogLevel.Info, $"[Tool] {toolName} => {resultPreview}");
-            }
+            AddEntry(LogLevel.Info,
+                $"[Tool] {toolName} task={taskId} step={stepId} message={messageId} tool={toolCallId} args={args?.Length ?? 0}c result={result?.Length ?? 0}c");
+            WriteRawToFile(
+                "--- TOOL " + toolName + " task=" + taskId + " step=" + stepId + " message=" + messageId + " tool=" + toolCallId + " START ---\n"
+                + "ARGUMENTS\n" + (args ?? "") + "\nRESULT\n" + (result ?? "")
+                + "\n--- TOOL " + toolName + " END ---");
         }
 
-        private static string TruncateForLog(string text, int maxLen)
+        public static void LogAudit(string kind, string taskId, string stepId, string messageId, string toolCallId, string body)
         {
-            if (string.IsNullOrEmpty(text)) return "";
-            text = text.Replace("\r\n", " ").Replace("\n", " ");
-            return text.Length <= maxLen ? text : text.Substring(0, maxLen) + "...";
+            if (string.IsNullOrEmpty(body)) return;
+            AddEntry(LogLevel.Info,
+                $"[Audit] {kind} task={taskId} step={stepId} message={messageId} tool={toolCallId} ({body.Length} chars)");
+            WriteRawToFile(
+                "--- AUDIT " + kind + " task=" + taskId + " step=" + stepId + " message=" + messageId + " tool=" + toolCallId + " START ---\n"
+                + body
+                + "\n--- AUDIT " + kind + " END ---");
         }
 
         public static void Clear()

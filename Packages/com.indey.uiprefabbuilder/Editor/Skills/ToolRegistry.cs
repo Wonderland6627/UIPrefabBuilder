@@ -21,6 +21,11 @@ namespace Indey.UIPrefabBuilder.Skills
             }
         }
 
+        public void BeginTask()
+        {
+            _executor.BeginTask();
+        }
+
         public void Rebuild()
         {
             _cachedDefinitions = ToolDefinitions.BuildAll();
@@ -36,14 +41,16 @@ namespace Indey.UIPrefabBuilder.Skills
 
         public JArray DefinitionsFor(PrefabWorkflowMode mode)
         {
-            var all = Definitions;
-            if (mode == PrefabWorkflowMode.Modify) return all;
-
             var filtered = new JArray();
-            foreach (var tool in all)
+            foreach (var tool in Definitions)
             {
                 var name = tool["function"]?["name"]?.ToString();
-                if (string.Equals(name, "apply_prefab", StringComparison.OrdinalIgnoreCase)) continue;
+                if (mode != PrefabWorkflowMode.Modify
+                    && string.Equals(name, "apply_prefab", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (mode != PrefabWorkflowMode.New
+                    && string.Equals(name, "request_prefab_edit", StringComparison.OrdinalIgnoreCase))
+                    continue;
                 filtered.Add(tool.DeepClone());
             }
             return filtered;

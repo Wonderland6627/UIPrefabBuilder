@@ -220,44 +220,147 @@ namespace Indey.UIPrefabBuilder.Core
             try
             {
                 var obj = Newtonsoft.Json.Linq.JObject.Parse(result);
+                StripLargeStringFields(obj);
 
                 var compactVisualResult = CompactVisualSearchResult(obj, maxChars);
                 if (compactVisualResult != null)
                     return compactVisualResult;
 
-                var assetsArr = obj["assets"] as Newtonsoft.Json.Linq.JArray;
-                if (assetsArr != null && assetsArr.Count > 20)
-                {
-                    int totalCount = assetsArr.Count;
-                    var trimmed = new Newtonsoft.Json.Linq.JArray();
-                    for (int i = 0; i < 20; i++) trimmed.Add(assetsArr[i]);
-                    obj["assets"] = trimmed;
-                    obj["_truncated"] = $"Showing 20 of {totalCount} results";
-                    if (obj["count"] != null) obj["count"] = totalCount;
-                    return obj.ToString(Newtonsoft.Json.Formatting.None);
-                }
-
-                var elementsArr = obj["elements"] as Newtonsoft.Json.Linq.JArray;
-                if (elementsArr != null && elementsArr.Count > 20)
-                {
-                    int totalCount = elementsArr.Count;
-                    var trimmed = new Newtonsoft.Json.Linq.JArray();
-                    for (int i = 0; i < 20; i++) trimmed.Add(elementsArr[i]);
-                    obj["elements"] = trimmed;
-                    obj["_truncated"] = $"Showing 20 of {totalCount} results";
-                    return obj.ToString(Newtonsoft.Json.Formatting.None);
-                }
+                TrimJsonArray(obj, "assets", 20);
+                TrimJsonArray(obj, "elements", 20);
+                TrimJsonArray(obj, "names", 200);
 
                 var hierarchy = obj["hierarchy"]?.ToString();
                 if (hierarchy != null && hierarchy.Length > maxChars / 2)
-                {
                     obj["hierarchy"] = hierarchy.Substring(0, maxChars / 2) + "\n... (truncated)";
-                    return obj.ToString(Newtonsoft.Json.Formatting.None);
-                }
-            }
-            catch { }
 
-            return result.Substring(0, maxChars) + "... (truncated)";
+                var json = obj.ToString(Newtonsoft.Json.Formatting.None);
+                if (json.Length <= maxChars) return json;
+
+                var preserved = PreserveStructuredPayload(obj);
+                if (preserved != null) return preserved;
+
+                return SummarizeOversized(obj);
+            }
+            catch
+            {
+                return "{\"_truncated\":true,\"message\":\"Tool result was not valid JSON and was too long to keep.\"}";
+            }
+        }
+
+        /// <summary>
+        /// Drops base64 and other oversized string fields so a later compact step still emits valid JSON.
+        /// A raw Substring cut used to hide filePath and every region after the first few.
+        /// </summary>
+        private static void StripLargeStringFields(Newtonsoft.Json.Linq.JObject obj)
+        {
+            var drop = new List<string>();
+            foreach (var prop in obj.Properties())
+            {
+                if (prop.Value.Type != Newtonsoft.Json.Linq.JTokenType.String) continue;
+                var text = prop.Value.ToString();
+                if (text.Length < 400) continue;
+                var name = prop.Name;
+                var looksEncoded = name.IndexOf("base64", StringComparison.OrdinalIgnoreCase) >= 0
+                    || name == "_images"
+                    || name == "imageBase64"
+                    || (text.Length > 1500 && text.IndexOf(' ') < 0 && text.IndexOf('\n') < 0);
+                if (looksEncoded) drop.Add(name);
+            }
+            if (drop.Count == 0) return;
+            foreach (var name in drop) obj.Remove(name);
+            obj["_stripped"] = "Removed oversized field(s): " + string.Join(", ", drop);
+        }
+
+        private static void TrimJsonArray(Newtonsoft.Json.Linq.JObject obj, string name, int keep)
+        {
+            var arr = obj[name] as Newtonsoft.Json.Linq.JArray;
+            if (arr == null || arr.Count <= keep) return;
+            int totalCount = arr.Count;
+            var trimmed = new Newtonsoft.Json.Linq.JArray();
+            for (int i = 0; i < keep; i++) trimmed.Add(arr[i]);
+            obj[name] = trimmed;
+            obj["_truncated"] = $"Showing {keep} of {totalCount} {name}";
+            if (obj["count"] != null && name != "names") obj["count"] = totalCount;
+            if (obj["total"] == null) obj["total"] = totalCount;
+        }
+
+        /// <summary>
+        /// Directory name pages and mapped rects are the payload. Dropping them left the model
+        /// with a summary and no coordinates, which made it call the same tool again.
+        /// </summary>
+        private static string PreserveStructuredPayload(Newtonsoft.Json.Linq.JObject obj)
+        {
+            if (obj["names"] is Newtonsoft.Json.Linq.JArray names && names.Count > 0)
+            {
+                var listing = new Newtonsoft.Json.Linq.JObject();
+                CopyJsonField(listing, obj, "success");
+                CopyJsonField(listing, obj, "count");
+                CopyJsonField(listing, obj, "total");
+                CopyJsonField(listing, obj, "offset");
+                CopyJsonField(listing, obj, "nextOffset");
+                CopyJsonField(listing, obj, "directory");
+                CopyJsonField(listing, obj, "_hint");
+                listing["names"] = names;
+                return listing.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            if (obj["results"] is Newtonsoft.Json.Linq.JArray results && HasMappedRects(results))
+            {
+                var mapped = new Newtonsoft.Json.Linq.JObject();
+                CopyJsonField(mapped, obj, "success");
+                CopyJsonField(mapped, obj, "total");
+                CopyJsonField(mapped, obj, "mapped");
+                CopyJsonField(mapped, obj, "failed");
+                CopyJsonField(mapped, obj, "scale");
+                CopyJsonField(mapped, obj, "imagePixelSize");
+                CopyJsonField(mapped, obj, "canvasDesignResolution");
+                CopyJsonField(mapped, obj, "hint");
+                CopyJsonField(mapped, obj, "_hint");
+                mapped["results"] = results;
+                return mapped.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            return null;
+        }
+
+        private static bool HasMappedRects(Newtonsoft.Json.Linq.JArray results)
+        {
+            foreach (var token in results)
+            {
+                if (token is Newtonsoft.Json.Linq.JObject item && item["anchoredPosition"] != null)
+                    return true;
+            }
+            return false;
+        }
+
+        private static string SummarizeOversized(Newtonsoft.Json.Linq.JObject obj)
+        {
+            var summary = new Newtonsoft.Json.Linq.JObject();
+            CopyJsonField(summary, obj, "success");
+            CopyJsonField(summary, obj, "error");
+            CopyJsonField(summary, obj, "message");
+            CopyJsonField(summary, obj, "filePath");
+            CopyJsonField(summary, obj, "width");
+            CopyJsonField(summary, obj, "height");
+            CopyJsonField(summary, obj, "captureId");
+            CopyJsonField(summary, obj, "validCapture");
+            CopyJsonField(summary, obj, "count");
+            CopyJsonField(summary, obj, "total");
+            CopyJsonField(summary, obj, "offset");
+            CopyJsonField(summary, obj, "nextOffset");
+            CopyJsonField(summary, obj, "_hint");
+            CopyJsonField(summary, obj, "_stripped");
+            summary["_truncated"] = "Result exceeded the context limit. Large fields were removed; the fields above are intact.";
+            var message = summary["message"]?.ToString();
+            if (message != null && message.Length > 500)
+                summary["message"] = message.Substring(0, 500);
+            return summary.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        private static void CopyJsonField(Newtonsoft.Json.Linq.JObject dest, Newtonsoft.Json.Linq.JObject source, string name)
+        {
+            if (source[name] != null) dest[name] = source[name].DeepClone();
         }
 
         /// <summary>

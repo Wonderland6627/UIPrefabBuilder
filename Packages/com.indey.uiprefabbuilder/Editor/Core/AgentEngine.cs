@@ -133,6 +133,7 @@ namespace Indey.UIPrefabBuilder.Core
             _pendingMessage = msg;
             ResetStepCounters();
             PrefabWorkflowContext.Begin(mode, msg, selected);
+            _toolRegistry.BeginTask();
             DesignImageContext.BeginTextTask();
             RebuildSystemPrompt();
 
@@ -175,6 +176,7 @@ namespace Indey.UIPrefabBuilder.Core
             _pendingMessage = textContent;
             ResetStepCounters();
             PrefabWorkflowContext.Begin(mode, textContent, selected);
+            _toolRegistry.BeginTask();
             RebuildSystemPrompt();
 
             var effectiveMax = EffectiveMaxSteps;
@@ -345,17 +347,45 @@ namespace Indey.UIPrefabBuilder.Core
             bool running = _state == AgentState.Thinking || _state == AgentState.CallingTool
                 || _state == AgentState.WaitingForLLM || _state == AgentState.BuildingContext
                 || _state == AgentState.Compiling || _state == AgentState.Executing
-                || _state == AgentState.ObservingResult || _state == AgentState.ExtractingCode;
+                || _state == AgentState.ObservingResult || _state == AgentState.ExtractingCode
+                || _state == AgentState.WaitingConfirmation;
             _cts?.Cancel();
             if (running)
                 ConsoleLogger.Log("Task stopped by user");
+            PrefabWorkflowContext.ClearPendingEdit();
             TransitionTo(AgentState.Idle);
         }
 
-        public void Confirm() => TransitionTo(AgentState.Idle);
+        public void Confirm()
+        {
+            if (_state != AgentState.WaitingConfirmation || !PrefabWorkflowContext.HasPendingEdit)
+            {
+                TransitionTo(AgentState.Idle);
+                return;
+            }
+
+            var path = PrefabWorkflowContext.GrantPendingEdit();
+            _history.AddUser(
+                "The user confirmed. You may now save_as_prefab over the existing prefab '" + path +
+                "' only. Do not modify any other existing prefab.");
+            ConsoleLogger.Log("[Agent] User allowed prefab edit: " + path);
+            TransitionTo(AgentState.Thinking);
+        }
 
         public void Rollback()
         {
+            if (_state == AgentState.WaitingConfirmation && PrefabWorkflowContext.HasPendingEdit)
+            {
+                var path = PrefabWorkflowContext.PendingEditPath;
+                PrefabWorkflowContext.ClearPendingEdit();
+                _history.AddUser(
+                    "The user refused editing '" + path + "'. Do not modify that prefab. " +
+                    "Save the UI with save_as_prefab at a path that does not already exist.");
+                ConsoleLogger.Log("[Agent] User refused prefab edit: " + path);
+                TransitionTo(AgentState.Thinking);
+                return;
+            }
+
             _txManager.RollbackLast();
             TransitionTo(AgentState.Idle);
         }
@@ -474,7 +504,8 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine("- `apply_prefab` on the confirmed instance once the scene edits are done. Do not `save_as_prefab` over that existing asset.");
                         break;
                     case PrefabWorkflowMode.New:
-                        sb.AppendLine("- `save_as_prefab` only when the user wants a new prefab, and only at a path that does not already exist.");
+                        sb.AppendLine("- When the UI is done you MAY `save_as_prefab` to an Assets path that does not already exist. A second user message is not required to create that new prefab.");
+                        sb.AppendLine("- Do NOT modify an existing prefab. If that file should be updated, call `request_prefab_edit` and stop. Wait for Confirm. Do not overwrite, delete, or apply it yourself.");
                         break;
                     default:
                         sb.AppendLine("- `save_as_prefab` if the user asked for a new prefab at an unused path. Do not write back to an existing prefab.");
@@ -539,6 +570,7 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine("- Fall back to `search_assets`/`search_assets_glob` only for exact filename-based lookups.");
                         sb.AppendLine("- Use `get_index_status` to check index health.");
                         sb.AppendLine("- **`lowConfidence: true` / `_hint` on a match result means the best candidate probably does NOT visually resemble the target** (it only passed the minimum filter, not a real similarity bar). Do NOT silently apply it as if it were correct — use a plain color-tinted Image instead and explicitly say in your final summary that no confident sprite was found for that element, so the user knows to review/supply one.");
+                        sb.AppendLine("- A score at or above 0.72 only means the embedding is close. A magnifying-glass sprite can still score very high for a document icon. If the filename does not match the element's role, you may list ONE likely folder with `search_assets_glob` pattern `*` (sprite file names, then `offset` for the next page). Do not use `execute_code` or `AssetDatabase.FindAssets` to list files, and do not re-list that folder under a new pattern.");
                     }
                     else
                     {
@@ -639,6 +671,7 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("**ActionResult API**: `ActionResult.Ok(\"message\")` for success, `ActionResult.Fail(\"message\")` for failure. Do NOT use `ActionResult.Error()` — it does not exist.");
             sb.AppendLine("APIs: UnityEngine, UnityEngine.UI, UnityEditor, System.Linq, TMPro.");
             sb.AppendLine("Use for 10+ repetitive items (grid cells, slot arrays).");
+            sb.AppendLine("Do NOT use `execute_code` to list asset files (`AssetDatabase.FindAssets`, `Directory.GetFiles`). List one folder with `search_assets_glob` pattern `*` and page with `offset`.");
             sb.AppendLine("**Common compile pitfalls**: a bare `Object` identifier is ambiguous (`CS0104`) once both `System` and `UnityEngine` are in scope — use `GameObject`, `Component`, or the full `UnityEngine.Object` instead. " +
                 "For text/graphic outline or shadow effects, prefer the `add_outline`/`add_outline_batch` tools instead of hand-writing `Outline`/`Shadow` field access.");
             sb.AppendLine();
@@ -647,7 +680,7 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("## SAFETY");
             sb.AppendLine("- Never delete files or assets. Never quit Unity.");
             sb.AppendLine("- **Prefab protection (CRITICAL)**:");
-            sb.AppendLine("  - `save_as_prefab` only creates a brand-new prefab and will refuse if the path already exists — never try to work around this by deleting the existing asset first.");
+            sb.AppendLine("  - `save_as_prefab` creates a brand-new prefab. If the path already exists it refuses. In New mode, call `request_prefab_edit` and wait for the user before any overwrite. Never delete the existing asset to work around the refusal.");
             sb.AppendLine("  - `apply_prefab` is allowed only in Modify mode, and only for the one confirmed target prefab. Auto and New modes must not write an existing prefab asset.");
             sb.AppendLine("  - Do NOT call `PrefabUtility.ApplyPrefabInstance`, `PrefabUtility.SaveAsPrefabAsset`, or `PrefabUtility.SaveAsPrefabAssetAndConnect` from `execute_code`. Those calls are rejected. Use `apply_prefab` or `save_as_prefab`.");
             sb.AppendLine("  - If a task is read-only/analysis-only (e.g. \"分析这个设计稿\", \"这个UI是什么结构\"), do NOT create/build/save/modify any GameObject or asset — just answer with your analysis and stop. " +
@@ -680,7 +713,8 @@ namespace Indey.UIPrefabBuilder.Core
                 case PrefabWorkflowMode.New:
                     sb.AppendLine("Mode: NEW. Build a new UI root. Do not start from an existing prefab.");
                     sb.AppendLine("- Do NOT call `instantiate_prefab` or `apply_prefab`.");
-                    sb.AppendLine("- Do NOT overwrite an existing prefab. `save_as_prefab` is only for a path that does not already exist, and only when the user wants the result saved.");
+                    sb.AppendLine("- You MAY `save_as_prefab` to an Assets path that does not already exist, including at the end of the build without a separate save request.");
+                    sb.AppendLine("- Do NOT modify an existing prefab. To update one, call `request_prefab_edit` with its path and a reason, then stop and wait. Confirm allows `save_as_prefab` to overwrite that exact path. Undo means save a new prefab elsewhere.");
                     sb.AppendLine("- Ignore any instruction to instantiate a project prefab, including Prefab Mapping.");
                     break;
                 case PrefabWorkflowMode.Modify:
@@ -1105,6 +1139,7 @@ namespace Indey.UIPrefabBuilder.Core
 
             bool stepHasBuildTool = false;
             bool stepHasSearchOnly = true;
+            bool pauseForPrefabEdit = false;
 
             foreach (var call in toolCalls)
             {
@@ -1448,6 +1483,17 @@ namespace Indey.UIPrefabBuilder.Core
                 }
                 catch { }
 
+                if (call.Name == "request_prefab_edit")
+                {
+                    try
+                    {
+                        var editObj = JObject.Parse(result);
+                        if (editObj["awaitingConfirmation"]?.Value<bool>() == true)
+                            pauseForPrefabEdit = true;
+                    }
+                    catch { }
+                }
+
                 ConsoleLogger.LogToolCall(call.Name, call.Arguments, result);
                 _history.AddToolResult(call.Id, call.Name, result);
                 OnToolCall?.Invoke(call.Name, call.Arguments, result);
@@ -1505,11 +1551,23 @@ namespace Indey.UIPrefabBuilder.Core
                 ConsoleLogger.Log($"[Agent] Injected vision user message with {pendingImageParts.Count} image(s).");
             }
 
-            if (!_cts.IsCancellationRequested)
+            if (_cts.IsCancellationRequested) return;
+
+            if (pauseForPrefabEdit && PrefabWorkflowContext.HasPendingEdit)
             {
-                InjectSearchBudgetNudgeIfNeeded();
-                TransitionTo(AgentState.Thinking);
+                var question = PrefabWorkflowContext.PendingEditQuestion;
+                if (!string.IsNullOrEmpty(question))
+                {
+                    _history.AddAssistant(question);
+                    OnComplete?.Invoke(question);
+                }
+                ConsoleLogger.Log("[Agent] Waiting for confirmation to edit " + PrefabWorkflowContext.PendingEditPath);
+                TransitionTo(AgentState.WaitingConfirmation);
+                return;
             }
+
+            InjectSearchBudgetNudgeIfNeeded();
+            TransitionTo(AgentState.Thinking);
         }
 
         private void InjectSearchBudgetNudgeIfNeeded()

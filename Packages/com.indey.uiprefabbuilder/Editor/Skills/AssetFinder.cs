@@ -25,9 +25,12 @@ namespace Indey.UIPrefabBuilder.Skills
         }
 
         public static List<string> FindByGlob(string pattern, string directory = "Assets",
-            string extensions = null, int limit = 50)
+            string extensions = null, int limit = 50, int offset = 0)
         {
             var results = new List<string>();
+            if (limit <= 0) return results;
+            if (offset < 0) offset = 0;
+
             var extSet = ParseExtensions(extensions);
             var regex = GlobToRegex(pattern);
 
@@ -40,9 +43,9 @@ namespace Indey.UIPrefabBuilder.Skills
 
             if (!Directory.Exists(dir)) return results;
 
+            int matched = 0;
             foreach (var file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
             {
-                if (results.Count >= limit) break;
                 if (file.EndsWith(".meta")) continue;
 
                 var fileName = Path.GetFileName(file);
@@ -50,7 +53,10 @@ namespace Indey.UIPrefabBuilder.Skills
                     continue;
                 if (!regex.IsMatch(fileName)) continue;
 
-                results.Add("Assets" + file.Substring(Application.dataPath.Length).Replace('\\', '/'));
+                if (matched >= offset && results.Count < limit)
+                    results.Add("Assets" + file.Substring(Application.dataPath.Length).Replace('\\', '/'));
+                matched++;
+                if (limit != int.MaxValue && matched >= offset + limit) break;
             }
             return results;
         }

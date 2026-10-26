@@ -22,13 +22,23 @@ namespace Indey.UIPrefabBuilder.Skills
         /// </summary>
         public static string Create(GameObject source, string path)
         {
+            return Save(source, path, false);
+        }
+
+        /// <summary>
+        /// Writes a prefab asset. <paramref name="allowOverwrite"/> is only for the single path the
+        /// user confirmed in New mode; every other caller must pass false.
+        /// </summary>
+        public static string Save(GameObject source, string path, bool allowOverwrite)
+        {
             if (source == null || string.IsNullOrEmpty(path)) return null;
-            if (ExistsAtPath(path)) return null;
+            var exists = ExistsAtPath(path);
+            if (exists && !allowOverwrite) return null;
             var dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
             var prefab = PrefabUtility.SaveAsPrefabAssetAndConnect(source, path, InteractionMode.UserAction);
             if (prefab == null) return null;
-            SessionAssetChanges.Record(path, SessionAssetChangeKind.Added);
+            SessionAssetChanges.Record(path, exists ? SessionAssetChangeKind.Modified : SessionAssetChangeKind.Added);
             return path;
         }
 

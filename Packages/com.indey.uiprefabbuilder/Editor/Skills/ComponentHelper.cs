@@ -34,8 +34,11 @@ namespace Indey.UIPrefabBuilder.Skills
 
             var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
             if (tex != null)
-                return $"Asset at '{path}' exists but is NOT imported as a Sprite (its TextureImporter textureType is not 'Sprite'). Change the importer to Sprite, or choose a Sprite asset.";
-            return $"No Sprite found at asset path '{path}'. Verify the path is correct and the asset exists/imported.";
+                return $"Asset at '{path}' exists but is NOT imported as a Sprite (its TextureImporter textureType is not 'Sprite'). " +
+                    "Change the importer to Sprite, or choose a Sprite asset. Do not invent another filename. " +
+                    "A thin divider or line should use spritePath=\"\" plus a solid color.";
+            return $"No Sprite found at asset path '{path}'. Do not invent another filename. " +
+                "A thin divider or line should use spritePath=\"\" plus a solid color. Search once more only for a real icon.";
         }
 
         public static string SetImageSprite(GameObject go, string path)

@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace Indey.UIPrefabBuilder.Core
 {
     /// <summary>
@@ -18,6 +21,22 @@ namespace Indey.UIPrefabBuilder.Core
         /// </summary>
         public static int MappedRegionCount { get; private set; }
 
+        /// <summary>Fit of the mockup into the canvas, recorded by the last successful map.</summary>
+        public static float LastScale { get; private set; }
+        public static float LastCanvasWidth { get; private set; }
+        public static float LastCanvasHeight { get; private set; }
+        public static float LastImageWidth { get; private set; }
+        public static float LastImageHeight { get; private set; }
+
+        private static readonly List<MappedRect> MappedRects = new List<MappedRect>();
+
+        public struct MappedRect
+        {
+            public string Label;
+            public float X, Y, W, H;
+            public float AnchoredX, AnchoredY, SizeW, SizeH;
+        }
+
         /// <summary>
         /// True while the current task is "reproduce this freshly attached mockup", which is when
         /// building before measuring is a real mistake. A follow-up text-only turn keeps the image
@@ -29,6 +48,12 @@ namespace Indey.UIPrefabBuilder.Core
         {
             MappedRegionCount = 0;
             RequiresMeasurement = true;
+            LastScale = 0;
+            LastCanvasWidth = 0;
+            LastCanvasHeight = 0;
+            LastImageWidth = 0;
+            LastImageHeight = 0;
+            MappedRects.Clear();
         }
 
         public static void BeginTextTask()
@@ -39,6 +64,59 @@ namespace Indey.UIPrefabBuilder.Core
         public static void RegisterMappedRegions(int count)
         {
             if (count > 0) MappedRegionCount += count;
+        }
+
+        public static void NoteFit(float scale, float canvasW, float canvasH, float imageW, float imageH)
+        {
+            LastScale = scale;
+            LastCanvasWidth = canvasW;
+            LastCanvasHeight = canvasH;
+            LastImageWidth = imageW;
+            LastImageHeight = imageH;
+        }
+
+        public static bool TryGetMapped(string label, float x, float y, float w, float h, out MappedRect hit)
+        {
+            for (int i = 0; i < MappedRects.Count; i++)
+            {
+                var entry = MappedRects[i];
+                if (!SameLabel(entry.Label, label)) continue;
+                if (!Near(entry.X, x) || !Near(entry.Y, y) || !Near(entry.W, w) || !Near(entry.H, h)) continue;
+                hit = entry;
+                return true;
+            }
+            hit = default;
+            return false;
+        }
+
+        public static void Remember(string label, float x, float y, float w, float h,
+            float anchoredX, float anchoredY, float sizeW, float sizeH)
+        {
+            var entry = new MappedRect
+            {
+                Label = label,
+                X = x, Y = y, W = w, H = h,
+                AnchoredX = anchoredX, AnchoredY = anchoredY, SizeW = sizeW, SizeH = sizeH
+            };
+            for (int i = 0; i < MappedRects.Count; i++)
+            {
+                var existing = MappedRects[i];
+                if (!SameLabel(existing.Label, label)) continue;
+                if (!Near(existing.X, x) || !Near(existing.Y, y) || !Near(existing.W, w) || !Near(existing.H, h)) continue;
+                MappedRects[i] = entry;
+                return;
+            }
+            MappedRects.Add(entry);
+        }
+
+        private static bool SameLabel(string left, string right)
+        {
+            return string.Equals(left ?? "", right ?? "", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool Near(float left, float right)
+        {
+            return Math.Abs(left - right) <= 0.0005f;
         }
 
         /// <summary>Pixel width of the design mockup, or 0 if unknown.</summary>
@@ -56,6 +134,12 @@ namespace Indey.UIPrefabBuilder.Core
             Height = 0;
             MappedRegionCount = 0;
             RequiresMeasurement = false;
+            LastScale = 0;
+            LastCanvasWidth = 0;
+            LastCanvasHeight = 0;
+            LastImageWidth = 0;
+            LastImageHeight = 0;
+            MappedRects.Clear();
         }
 
         public static void SetFromTexture(string assetPath, UnityEngine.Texture2D tex)

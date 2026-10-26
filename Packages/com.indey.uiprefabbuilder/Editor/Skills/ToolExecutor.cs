@@ -18,6 +18,16 @@ namespace Indey.UIPrefabBuilder.Skills
     public class ToolExecutor
     {
         private readonly DynamicCompiler _compiler = new DynamicCompiler();
+        private readonly Dictionary<string, int> _missingSpriteStrikes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private string _previousVerdictPath;
+        private List<Rect> _previousVerdictBoxes;
+
+        public void BeginTask()
+        {
+            _missingSpriteStrikes.Clear();
+            _previousVerdictPath = null;
+            _previousVerdictBoxes = null;
+        }
 
         // Every scene edit bumps the revision; each capture remembers the revision it was taken at.
         // Without this a verdict can be recorded against a screenshot that predates the last edit —
@@ -188,6 +198,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 // Scene & Prefab
                 case "save_scene": return DoSaveScene();
                 case "save_as_prefab": return DoSaveAsPrefab(args);
+                case "request_prefab_edit": return DoRequestPrefabEdit(args);
                 case "instantiate_prefab": return DoInstantiatePrefab(args);
                 case "apply_prefab": return DoApplyPrefab(args);
                 case "find_prefab_instances": return DoFindPrefabInstances(args);
@@ -232,10 +243,51 @@ namespace Indey.UIPrefabBuilder.Skills
             var pattern = Str(args, "pattern");
             var directory = Str(args, "directory", "Assets");
             var extensions = Str(args, "extensions", null);
+            var offset = Math.Max(0, Int(args, "offset", 0));
+            if (IsDirectoryListing(pattern))
+                return ListSpriteDirectory(pattern, directory, extensions, offset);
+
             var limit = Int(args, "limit", 50);
-            var results = AssetFinder.FindByGlob(pattern, directory, extensions, limit);
+            var results = AssetFinder.FindByGlob(pattern, directory, extensions, limit, offset);
             var arr = new JArray(results.Select(p => (JToken)p));
             return new JObject { ["success"] = true, ["count"] = results.Count, ["assets"] = arr }.ToString();
+        }
+
+        private static bool IsDirectoryListing(string pattern)
+        {
+            return pattern == "*" || pattern == "*.*" || pattern == "*.png";
+        }
+
+        /// <summary>
+        /// One folder, sprite file names only, 200 per page. The next page uses offset — not a new pattern.
+        /// </summary>
+        private static string ListSpriteDirectory(string pattern, string directory, string extensions, int offset)
+        {
+            const int pageSize = 200;
+            if (string.IsNullOrEmpty(extensions)) extensions = ".png";
+            var all = AssetFinder.FindByGlob(pattern, directory, extensions, int.MaxValue, 0);
+            var page = all.Skip(offset).Take(pageSize).Select(Path.GetFileName).ToList();
+            var next = offset + page.Count;
+            var obj = new JObject
+            {
+                ["success"] = true,
+                ["count"] = page.Count,
+                ["total"] = all.Count,
+                ["offset"] = offset,
+                ["directory"] = directory,
+                ["names"] = new JArray(page.Select(n => (JToken)n))
+            };
+            if (next < all.Count)
+            {
+                obj["nextOffset"] = next;
+                obj["_hint"] = $"Showing names {offset}..{next - 1} of {all.Count}. " +
+                    $"Call search_assets_glob again with the same pattern and directory and offset={next}. Do not change the pattern.";
+            }
+            else
+            {
+                obj["_hint"] = "This page finishes the directory. Do not search the same directory again with a different pattern.";
+            }
+            return obj.ToString();
         }
 
         private string DoSearchAssetsGlobBatch(JObject args)
@@ -736,7 +788,10 @@ namespace Indey.UIPrefabBuilder.Skills
             Color? color = null;
             if (args["r"] != null || args["g"] != null || args["b"] != null)
                 color = new Color(Float(args, "r", 1), Float(args, "g", 1), Float(args, "b", 1), Float(args, "a", 1));
-            var spriteError = ComponentHelper.SetImageProperties(go, ReadSpritePathArg(args["spritePath"]), Str(args, "type", null),
+            var spritePath = ReadSpritePathArg(args["spritePath"]);
+            var repeatedMiss = CheckMissingSpriteStrike(GetHierarchyPath(go), spritePath);
+            if (repeatedMiss != null) return Error(repeatedMiss);
+            var spriteError = ComponentHelper.SetImageProperties(go, spritePath, Str(args, "type", null),
                 Str(args, "fillMethod", null), NullFloat(args, "fillAmount"), NullBool(args, "preserveAspect"), color,
                 out var missingImage, out var spriteCleared);
             if (missingImage) return Error(NoImageComponentError(go));
@@ -775,6 +830,13 @@ namespace Indey.UIPrefabBuilder.Skills
                             item["b"] != null ? (float)item["b"] : 1f,
                             item["a"] != null ? (float)item["a"] : 1f);
                     var spritePath = ReadSpritePathArg(item["spritePath"]);
+                    var repeatedMiss = CheckMissingSpriteStrike(GetHierarchyPath(go), spritePath);
+                    if (repeatedMiss != null)
+                    {
+                        results.Add(ItemFail(target ?? go.name, repeatedMiss));
+                        fail++;
+                        continue;
+                    }
                     var type = item["type"]?.ToString();
                     var fillMethod = item["fillMethod"]?.ToString();
                     float? fillAmount = item["fillAmount"] != null ? (float?)item["fillAmount"] : null;
@@ -810,6 +872,34 @@ namespace Indey.UIPrefabBuilder.Skills
             => token == null || token.Type == JTokenType.Null ? null : token.ToString();
 
         /// <summary>
+        /// The first missing path is a warning from LoadSpriteOrError. A second invented path on the
+        /// same node is refused so the model stops guessing filenames and uses a flat color.
+        /// Returns a refusal message, or null when the call may proceed.
+        /// </summary>
+        private string CheckMissingSpriteStrike(string targetKey, string spritePath)
+        {
+            if (string.IsNullOrEmpty(targetKey)) targetKey = "(unknown)";
+            if (spritePath == null) return null;
+            if (spritePath.Trim().Length == 0)
+            {
+                _missingSpriteStrikes.Remove(targetKey);
+                return null;
+            }
+            if (AssetDatabase.LoadAssetAtPath<Sprite>(spritePath) != null)
+            {
+                _missingSpriteStrikes.Remove(targetKey);
+                return null;
+            }
+
+            _missingSpriteStrikes.TryGetValue(targetKey, out var strikes);
+            strikes++;
+            _missingSpriteStrikes[targetKey] = strikes;
+            if (strikes < 2) return null;
+            return $"Refused: '{spritePath}' is not a Sprite, and '{targetKey}' already missed a sprite path. " +
+                "Stop guessing filenames. Set spritePath to an empty string and a solid color for a divider or line.";
+        }
+
+        /// <summary>
         /// Toggle/Button 这类容器自身常常没有 Image（图形在 Background 子节点上）。只回一句
         /// "has no Image component" 会让模型靠 inspect_hierarchy 猜路径，所以这里直接把候选节点报出来。
         /// </summary>
@@ -839,7 +929,10 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
-            var spriteError = ComponentHelper.SetImageSprite(go, Str(args, "spritePath"));
+            var spritePath = Str(args, "spritePath");
+            var repeatedMiss = CheckMissingSpriteStrike(GetHierarchyPath(go), spritePath);
+            if (repeatedMiss != null) return Error(repeatedMiss);
+            var spriteError = ComponentHelper.SetImageSprite(go, spritePath);
             if (!string.IsNullOrEmpty(spriteError)) return Error(spriteError);
             return Ok($"Sprite set on '{go.name}'.");
         }
@@ -1597,14 +1690,53 @@ namespace Indey.UIPrefabBuilder.Skills
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
             var path = Str(args, "path");
-            if (PrefabHelper.ExistsAtPath(path))
+            var granted = PrefabWorkflowContext.Mode == PrefabWorkflowMode.New
+                && PrefabWorkflowContext.PathsMatch(path, PrefabWorkflowContext.GrantedEditPath);
+            if (PrefabHelper.ExistsAtPath(path) && !granted)
             {
-                return Error($"Refused: a prefab asset already exists at '{path}'. " +
-                    "Overwriting existing project prefabs is not allowed — choose a different path for a new prefab, " +
-                    "or if you only needed to update objects already placed in the scene, that's done (no need to save/overwrite the source prefab).");
+                return Error($"Refused: a prefab asset already exists at '{path}'. This existing prefab was not modified. " +
+                    "Call request_prefab_edit with this path and a short reason, then wait for the user. " +
+                    "Do not pick a different path to sneak past this, and do not delete the asset.");
             }
-            var result = PrefabHelper.Create(go, path);
+            var result = PrefabHelper.Save(go, path, granted);
             return result != null ? Ok($"Prefab saved to '{result}'.") : Error("Failed to save prefab.");
+        }
+
+        private string DoRequestPrefabEdit(JObject args)
+        {
+            if (PrefabWorkflowContext.Mode != PrefabWorkflowMode.New)
+            {
+                return Error(PrefabWorkflowContext.Mode == PrefabWorkflowMode.Modify
+                    ? "Modify mode already writes the confirmed prefab with apply_prefab. Do not call request_prefab_edit."
+                    : "request_prefab_edit is only available in New mode. Auto mode must not overwrite an existing prefab.");
+            }
+
+            var path = PrefabWorkflowContext.Normalize(Str(args, "path"));
+            if (string.IsNullOrEmpty(path) || !path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)
+                || !path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+            {
+                return Error("path must be an Assets/...prefab path.");
+            }
+            if (!PrefabHelper.ExistsAtPath(path))
+            {
+                return Error($"No prefab exists at '{path}'. save_as_prefab can create it directly. " +
+                    "Do not ask to modify a file that is not there.");
+            }
+
+            var reason = Str(args, "reason");
+            if (string.IsNullOrWhiteSpace(reason))
+                return Error("Missing reason. Say what you want to change on this existing prefab.");
+
+            var question = $"This would modify the existing prefab '{path}'. {reason.Trim()} " +
+                "Confirm to allow that write, or Undo to keep the file unchanged and save a new prefab instead.";
+            PrefabWorkflowContext.SetPendingEdit(path, question);
+            return new JObject
+            {
+                ["success"] = true,
+                ["awaitingConfirmation"] = true,
+                ["path"] = path,
+                ["message"] = question
+            }.ToString();
         }
 
         private string DoInstantiatePrefab(JObject args)
@@ -2073,9 +2205,6 @@ namespace Indey.UIPrefabBuilder.Skills
                     ["capturePath"] = capturePath
                 };
 
-                if (BuilderSettings.Get().SupportsVision)
-                    result["base64"] = Convert.ToBase64String(bytes);
-
                 return result.ToString();
             }
             catch (Exception e)
@@ -2238,6 +2367,12 @@ namespace Indey.UIPrefabBuilder.Skills
                     "or drop the entries if they are not real differences.");
             }
 
+            if (matches && BoxesCopiedFromPrevious(path, claims))
+            {
+                return Error("matches=true is rejected: every visibleElements box matches the previous verdict within 0.01. " +
+                    "Look at THIS screenshot and give new boxes. matches=false is still accepted when you are reporting real differences.");
+            }
+
             var unsubstantiated = FindUnsubstantiatedClaims(Path.Combine(projectRoot, path), claims);
             if (unsubstantiated.Count > 0)
             {
@@ -2287,7 +2422,36 @@ namespace Indey.UIPrefabBuilder.Skills
                   "Fix ONLY these items — do not rebuild the UI from scratch — " +
                   "then take_screenshot → analyze_screenshot → report_visual_verdict again.";
 
+            _previousVerdictPath = path;
+            _previousVerdictBoxes = claims.Select(c => c.Region).ToList();
             return result.ToString();
+        }
+
+        private bool BoxesCopiedFromPrevious(string path, List<VisibleClaim> claims)
+        {
+            if (_previousVerdictBoxes == null || _previousVerdictBoxes.Count == 0) return false;
+            if (string.Equals(path, _previousVerdictPath, StringComparison.OrdinalIgnoreCase)) return false;
+            if (claims.Count != _previousVerdictBoxes.Count) return false;
+
+            var used = new bool[_previousVerdictBoxes.Count];
+            foreach (var claim in claims)
+            {
+                int hit = -1;
+                for (int i = 0; i < _previousVerdictBoxes.Count; i++)
+                {
+                    if (used[i]) continue;
+                    var previous = _previousVerdictBoxes[i];
+                    if (Mathf.Abs(previous.x - claim.Region.x) > 0.01f) continue;
+                    if (Mathf.Abs(previous.y - claim.Region.y) > 0.01f) continue;
+                    if (Mathf.Abs(previous.width - claim.Region.width) > 0.01f) continue;
+                    if (Mathf.Abs(previous.height - claim.Region.height) > 0.01f) continue;
+                    hit = i;
+                    break;
+                }
+                if (hit < 0) return false;
+                used[hit] = true;
+            }
+            return true;
         }
 
         private struct VisibleClaim
@@ -2425,6 +2589,8 @@ namespace Indey.UIPrefabBuilder.Skills
 
                     var size = img.rectTransform.rect.size;
                     if (size.x <= 1f || size.y <= 1f) continue;
+                    if (Mathf.Min(size.x, size.y) <= 8f) continue;
+                    if (IsHairlineName(img.gameObject.name)) continue;
                     if (size.x > iconMaxSize || size.y > iconMaxSize) continue;
 
                     names.Add(GetHierarchyPath(img.gameObject));
@@ -2440,6 +2606,13 @@ namespace Indey.UIPrefabBuilder.Skills
         /// it had just (correctly) removed, so backgrounds are judged by the button-background check
         /// instead — that one only fires on untouched default colours.
         /// </summary>
+        private static bool IsHairlineName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            var flat = name.ToLowerInvariant().Replace("outline", "");
+            return flat.Contains("divider") || flat.Contains("line");
+        }
+
         private static bool IsLegitimateFlatBackground(Image img)
         {
             var selectable = img.GetComponentInParent<Selectable>();
@@ -3017,6 +3190,14 @@ namespace Indey.UIPrefabBuilder.Skills
                     "Disable the behaviour instead, or fix the layout with the dedicated UI tools.";
             }
 
+            if (code.IndexOf("FindAssets", StringComparison.Ordinal) >= 0
+                || code.IndexOf("Directory.GetFiles", StringComparison.Ordinal) >= 0
+                || code.IndexOf("Directory.EnumerateFiles", StringComparison.Ordinal) >= 0)
+            {
+                return "execute_code must not list asset files. Use search_assets_glob on one directory " +
+                    "(pattern '*', then offset for the next page). Do not change the pattern to page through the same folder.";
+            }
+
             var prefabWrites = new[] { "ApplyPrefabInstance", "SaveAsPrefabAsset", "ApplyPrefab", "DeleteAsset" };
             foreach (var call in prefabWrites)
             {
@@ -3193,6 +3374,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 Str(args, "label", null),
                 out var error);
             if (mapped == null) return Error(error);
+            RememberMapped(mapped);
             DesignImageContext.RegisterMappedRegions(1);
             return mapped.ToString();
         }
@@ -3212,7 +3394,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 return Error("Missing 'regions' array.");
 
             var results = new JArray();
-            int success = 0, fail = 0;
+            int success = 0, fail = 0, cacheHits = 0;
             foreach (var item in regions)
             {
                 if (!(item is JObject obj))
@@ -3221,36 +3403,100 @@ namespace Indey.UIPrefabBuilder.Skills
                     fail++;
                     continue;
                 }
-                var mapped = MapDesignRectInternal(
-                    obj["x"] != null ? (float)obj["x"] : 0f,
-                    obj["y"] != null ? (float)obj["y"] : 0f,
-                    obj["width"] != null ? (float)obj["width"] : 0f,
-                    obj["height"] != null ? (float)obj["height"] : 0f,
-                    obj["label"]?.ToString(),
-                    out var error);
+
+                var label = obj["label"]?.ToString();
+                float x = obj["x"] != null ? (float)obj["x"] : 0f;
+                float y = obj["y"] != null ? (float)obj["y"] : 0f;
+                float w = obj["width"] != null ? (float)obj["width"] : 0f;
+                float h = obj["height"] != null ? (float)obj["height"] : 0f;
+                if (DesignImageContext.TryGetMapped(label, x, y, w, h, out var cached))
+                {
+                    results.Add(CompactMappedRect(cached.Label, cached.AnchoredX, cached.AnchoredY, cached.SizeW, cached.SizeH));
+                    cacheHits++;
+                    success++;
+                    continue;
+                }
+
+                var mapped = MapDesignRectInternal(x, y, w, h, label, out var error);
                 if (mapped == null)
                 {
                     results.Add(new JObject { ["success"] = false, ["error"] = error, ["label"] = obj["label"] });
                     fail++;
+                    continue;
                 }
-                else
-                {
-                    results.Add(mapped);
-                    success++;
-                }
+
+                RememberMapped(mapped);
+                var pos = mapped["anchoredPosition"] as JObject;
+                var size = mapped["sizeDelta"] as JObject;
+                results.Add(CompactMappedRect(
+                    label,
+                    pos?["x"]?.Value<float>() ?? 0f,
+                    pos?["y"]?.Value<float>() ?? 0f,
+                    size?["width"]?.Value<float>() ?? 0f,
+                    size?["height"]?.Value<float>() ?? 0f));
+                success++;
             }
 
-            DesignImageContext.RegisterMappedRegions(success);
+            var fresh = success - cacheHits;
+            if (fresh > 0) DesignImageContext.RegisterMappedRegions(fresh);
 
-            return new JObject
+            var allCached = regions.Count > 0 && cacheHits == regions.Count && fail == 0;
+            var envelope = new JObject
             {
                 ["success"] = fail == 0,
                 ["total"] = regions.Count,
                 ["mapped"] = success,
                 ["failed"] = fail,
                 ["results"] = results,
+                ["scale"] = Math.Round(DesignImageContext.LastScale, 6),
+                ["imagePixelSize"] = new JObject
+                {
+                    ["width"] = DesignImageContext.LastImageWidth,
+                    ["height"] = DesignImageContext.LastImageHeight
+                },
+                ["canvasDesignResolution"] = new JObject
+                {
+                    ["width"] = DesignImageContext.LastCanvasWidth,
+                    ["height"] = DesignImageContext.LastCanvasHeight
+                },
+                ["hint"] = "Use anchoredPosition/sizeDelta with anchorMin=anchorMax=(0.5,0.5). Each result is only label, anchoredPosition and sizeDelta.",
                 ["message"] = $"Mapped {success}/{regions.Count} regions. Use anchoredPosition/sizeDelta with anchorMin=anchorMax=(0.5,0.5)."
-            }.ToString();
+            };
+            if (allCached)
+            {
+                envelope["_hint"] = "These regions were already mapped. Use the coordinates below and do not call map_design_rect_batch again for them.";
+            }
+            return envelope.ToString();
+        }
+
+        private static void RememberMapped(JObject mapped)
+        {
+            var norm = mapped?["normalized"] as JObject;
+            var pos = mapped?["anchoredPosition"] as JObject;
+            var size = mapped?["sizeDelta"] as JObject;
+            if (norm == null || pos == null || size == null) return;
+            DesignImageContext.Remember(
+                mapped["label"]?.ToString(),
+                norm["x"]?.Value<float>() ?? 0f,
+                norm["y"]?.Value<float>() ?? 0f,
+                norm["width"]?.Value<float>() ?? 0f,
+                norm["height"]?.Value<float>() ?? 0f,
+                pos["x"]?.Value<float>() ?? 0f,
+                pos["y"]?.Value<float>() ?? 0f,
+                size["width"]?.Value<float>() ?? 0f,
+                size["height"]?.Value<float>() ?? 0f);
+        }
+
+        private static JObject CompactMappedRect(string label, float anchoredX, float anchoredY, float sizeW, float sizeH)
+        {
+            var result = new JObject
+            {
+                ["success"] = true,
+                ["anchoredPosition"] = new JObject { ["x"] = Math.Round(anchoredX, 2), ["y"] = Math.Round(anchoredY, 2) },
+                ["sizeDelta"] = new JObject { ["width"] = Math.Round(sizeW, 2), ["height"] = Math.Round(sizeH, 2) }
+            };
+            if (!string.IsNullOrEmpty(label)) result["label"] = label;
+            return result;
         }
 
         private static JObject MapDesignRectInternal(float nx, float ny, float nw, float nh, string label, out string error)
@@ -3317,6 +3563,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 result["label"] = label;
             if (!DesignImageContext.HasSize)
                 result["warning"] = "Design image pixel size unknown — assumed equal to canvas design resolution.";
+            DesignImageContext.NoteFit(scale, canvasW, canvasH, imgW, imgH);
             return result;
         }
 

@@ -165,7 +165,8 @@ namespace Indey.UIPrefabBuilder.UI
             var state = _agent?.State ?? AgentState.Idle;
             return state == AgentState.Thinking || state == AgentState.CallingTool
                 || state == AgentState.WaitingForLLM || state == AgentState.BuildingContext
-                || state == AgentState.Compiling || state == AgentState.Executing;
+                || state == AgentState.Compiling || state == AgentState.Executing
+                || state == AgentState.WaitingConfirmation;
         }
 
         private void DrawHeader()

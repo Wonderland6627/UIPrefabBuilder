@@ -24,12 +24,13 @@ namespace Indey.UIPrefabBuilder.Skills
                 )),
 
             Def("search_assets_glob",
-                "Search project assets by filename glob pattern. More flexible than search_assets for finding files by name. Supports * (any chars) and ? (single char) wildcards.",
+                "Search project assets by filename glob pattern. More flexible than search_assets for finding files by name. Supports * (any chars) and ? (single char) wildcards. pattern='*' lists one directory as sprite file names (up to 200 per page) plus offset/nextOffset — page with offset, do not change the pattern.",
                 Props(
-                    P("pattern", "string", "Glob pattern for filename, e.g. '*popup*', 'btn_*_lg*', '*dialog*.png'", true),
+                    P("pattern", "string", "Glob pattern for filename, e.g. '*popup*', 'btn_*_lg*', '*dialog*.png', or '*' to list a directory", true),
                     P("directory", "string", "Directory to search in, e.g. 'Assets/Sprites'. Default: Assets", false, "Assets"),
-                    P("extensions", "string", "Comma-separated file extensions, e.g. '.png,.jpg'. Default: all", false),
-                    P("limit", "integer", "Maximum results", false, 50)
+                    P("extensions", "string", "Comma-separated file extensions, e.g. '.png,.jpg'. Default: all, or .png when pattern is '*'", false),
+                    P("limit", "integer", "Maximum results for a non-'*' pattern", false, 50),
+                    P("offset", "integer", "Skip this many matches. For pattern='*' use nextOffset from the previous page. Do not change the pattern between pages.", false, 0)
                 )),
 
             Def("search_assets_glob_batch",
@@ -607,10 +608,17 @@ namespace Indey.UIPrefabBuilder.Skills
                 Props()),
 
             Def("save_as_prefab",
-                "Save a scene GameObject as a NEW Prefab asset. Fails if a prefab already exists at the given path — overwriting existing project prefabs is not allowed. Use a fresh/unused path (e.g. add a suffix) if the target already exists.",
+                "Save a scene GameObject as a Prefab asset under Assets. A path that does not exist is created. An existing prefab is refused unless New mode already received user confirmation via request_prefab_edit for that exact path. Do not delete an existing prefab to make this succeed.",
                 Props(
                     P("target", "string", "Name of the source GameObject in the scene", true),
-                    P("path", "string", "Asset path for the NEW prefab (must not already exist), e.g. 'Assets/Prefabs/MyDialog.prefab'", true)
+                    P("path", "string", "Asset path, e.g. 'Assets/Prefabs/MyDialog.prefab'. Must not already exist unless the user confirmed that exact path.", true)
+                )),
+
+            Def("request_prefab_edit",
+                "Ask the user before modifying one existing prefab. New mode only. Does not write the asset. Call this when the right prefab already exists and should be updated, then stop and wait for Confirm or Undo. Do not delete the asset or pick another path to get around the refusal.",
+                Props(
+                    P("path", "string", "Existing prefab asset path, e.g. 'Assets/Prefabs/MyDialog.prefab'", true),
+                    P("reason", "string", "What would change on that prefab, shown to the user", true)
                 )),
 
             Def("instantiate_prefab",

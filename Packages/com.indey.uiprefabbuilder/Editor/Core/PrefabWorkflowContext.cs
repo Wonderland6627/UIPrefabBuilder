@@ -32,7 +32,18 @@ namespace Indey.UIPrefabBuilder.Core
         /// <summary>The only existing prefab asset Modify mode may write. Null when the user must be asked.</summary>
         public static string ApplyTargetPath { get; private set; }
 
+        /// <summary>Existing prefab New mode wants to overwrite. Set until the user confirms or refuses.</summary>
+        public static string PendingEditPath { get; private set; }
+
+        /// <summary>Question shown to the user while <see cref="PendingEditPath"/> is set.</summary>
+        public static string PendingEditQuestion { get; private set; }
+
+        /// <summary>The one existing prefab path the user allowed New mode to overwrite.</summary>
+        public static string GrantedEditPath { get; private set; }
+
         public static bool HasApplyTarget => !string.IsNullOrEmpty(ApplyTargetPath);
+
+        public static bool HasPendingEdit => !string.IsNullOrEmpty(PendingEditPath);
 
         public static void Begin(PrefabWorkflowMode mode, string userText, GameObject selected)
         {
@@ -41,8 +52,32 @@ namespace Indey.UIPrefabBuilder.Core
             SelectedAssetPath = null;
             SelectedHierarchyPath = null;
             SelectedInstanceId = 0;
+            PendingEditPath = null;
+            PendingEditQuestion = null;
+            GrantedEditPath = null;
             CaptureSelection(selected);
             ApplyTargetPath = !string.IsNullOrEmpty(ExplicitAssetPath) ? ExplicitAssetPath : SelectedAssetPath;
+        }
+
+        public static void SetPendingEdit(string path, string question)
+        {
+            PendingEditPath = Normalize(path);
+            PendingEditQuestion = question;
+        }
+
+        /// <summary>Moves the pending path to the granted path and clears the question.</summary>
+        public static string GrantPendingEdit()
+        {
+            GrantedEditPath = PendingEditPath;
+            PendingEditPath = null;
+            PendingEditQuestion = null;
+            return GrantedEditPath;
+        }
+
+        public static void ClearPendingEdit()
+        {
+            PendingEditPath = null;
+            PendingEditQuestion = null;
         }
 
         public static bool PathsMatch(string left, string right)

@@ -58,6 +58,11 @@ namespace Indey.UIPrefabBuilder.Core
         /// Used for design mockup images that need to remain visible throughout the session.
         /// </summary>
         public bool PinImage;
+        /// <summary>
+        /// User-role text the agent inserted (design meta, search nudges, verification gates).
+        /// The model still receives it as a user turn; the chat view draws it as a directive.
+        /// </summary>
+        public bool Injected;
 
         public bool HasMultimodalContent => ContentParts != null && ContentParts.Count > 0;
 
@@ -150,18 +155,19 @@ namespace Indey.UIPrefabBuilder.Core
             _messages.Insert(0, msg);
         }
 
-        public ChatMessage AddUser(string content)
+        public ChatMessage AddUser(string content, bool injected = false)
         {
             if (string.IsNullOrWhiteSpace(content)) return null;
             var msg = new ChatMessage(ChatRole.User, content);
             msg.ArchiveContent = content;
+            msg.Injected = injected;
             Stamp(msg);
             _messages.Add(msg);
             Trim();
             return msg;
         }
 
-        public void AddUserMultimodal(List<ContentPart> parts, bool pinImage = false)
+        public void AddUserMultimodal(List<ContentPart> parts, bool pinImage = false, bool injected = false)
         {
             if (parts == null || parts.Count == 0) return;
             var textContent = parts.FirstOrDefault(p => p.Type == "text")?.Text ?? "";
@@ -171,6 +177,7 @@ namespace Indey.UIPrefabBuilder.Core
                 Content = textContent,
                 ContentParts = parts,
                 PinImage = pinImage,
+                Injected = injected,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
             });
             Stamp(_messages[_messages.Count - 1]);
@@ -253,7 +260,7 @@ namespace Indey.UIPrefabBuilder.Core
         public void AddToolResult(string content)
         {
             var text = "[Execution Result]\n" + content;
-            var msg = new ChatMessage(ChatRole.User, text) { ArchiveContent = text };
+            var msg = new ChatMessage(ChatRole.User, text) { ArchiveContent = text, Injected = true };
             Stamp(msg);
             _messages.Add(msg);
             Trim();

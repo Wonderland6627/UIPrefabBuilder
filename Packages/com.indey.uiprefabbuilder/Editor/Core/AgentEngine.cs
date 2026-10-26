@@ -103,6 +103,7 @@ namespace Indey.UIPrefabBuilder.Core
         public event Action<string> OnError;
         public event Action<ActionResult> OnExecuted;
         public event Action<string, string, string> OnToolCall;
+        public event Action<string> OnDirective;
 
         public AgentEngine(BuilderSettings settings)
         {
@@ -229,17 +230,16 @@ namespace Indey.UIPrefabBuilder.Core
             RebuildSystemPrompt(); // refresh with design-mockup-aware Verify / Analysis sections
             ConsoleLogger.LogBlock("SYSTEM_PROMPT", _history.Messages.Count > 0 && _history.Messages[0].Role == ChatRole.System ? _history.Messages[0].Content : "(none)");
 
-            var meta = BuildDesignImageMetaBlock();
-            if (!string.IsNullOrEmpty(meta))
-            {
-                textContent = textContent + "\n\n" + meta;
-                parts[0].Text = textContent;
-                ConsoleLogger.LogBlock("DESIGN_META", meta);
-            }
-
             _history.AddUserMultimodal(parts, pinImage: true);
             if (_history.Count > 0)
                 LogMessageAudit("user", _history.Messages[_history.Count - 1]);
+
+            var meta = BuildDesignImageMetaBlock();
+            if (!string.IsNullOrEmpty(meta))
+            {
+                ConsoleLogger.LogBlock("DESIGN_META", meta);
+                InjectDirective(meta);
+            }
             _txManager.Begin("AI Agent Task");
             TransitionTo(AgentState.Thinking);
         }
@@ -373,7 +373,7 @@ namespace Indey.UIPrefabBuilder.Core
             }
 
             var path = PrefabWorkflowContext.GrantPendingEdit();
-            _history.AddUser(
+            InjectDirective(
                 "The user confirmed. You may now save_as_prefab over the existing prefab '" + path +
                 "' only. Do not modify any other existing prefab.");
             ConsoleLogger.Log("[Agent] User allowed prefab edit: " + path);
@@ -386,7 +386,7 @@ namespace Indey.UIPrefabBuilder.Core
             {
                 var path = PrefabWorkflowContext.PendingEditPath;
                 PrefabWorkflowContext.ClearPendingEdit();
-                _history.AddUser(
+                InjectDirective(
                     "The user refused editing '" + path + "'. Do not modify that prefab. " +
                     "Save the UI with save_as_prefab at a path that does not already exist.");
                 ConsoleLogger.Log("[Agent] User refused prefab edit: " + path);
@@ -968,7 +968,7 @@ namespace Indey.UIPrefabBuilder.Core
                     if (isProtocolNudge) _protocolNudgeCount++;
                     else _consecutiveFixNudges++;
                     LogMessageAudit("assistant", _history.AddAssistant(response.Content, response));
-                    LogMessageAudit("user", _history.AddUser(gateNudge));
+                    InjectDirective(gateNudge);
                     ConsoleLogger.Log($"[Agent] Visual gate ({(isProtocolNudge ? $"protocol {_protocolNudgeCount}/{MaxProtocolNudges}" : $"fix round {_verdictFixRounds}/{MaxVerdictFixRounds}")}): {gateNudge}");
                     TransitionTo(AgentState.Thinking);
                     return;
@@ -980,10 +980,10 @@ namespace Indey.UIPrefabBuilder.Core
                 if (string.IsNullOrWhiteSpace(response.Content) && _emptyResponseNudgeCount < MaxEmptyResponseNudges)
                 {
                     _emptyResponseNudgeCount++;
-                    LogMessageAudit("user", _history.AddUser(
+                    InjectDirective(
                         "Your last message was EMPTY (no tool calls, no text). This is not a valid way to finish. " +
                         "If the task is NOT complete, continue with the next tool call now. " +
-                        "If it IS complete, reply with a brief text summary of what you built and any known issues."));
+                        "If it IS complete, reply with a brief text summary of what you built and any known issues.");
                     ConsoleLogger.Log($"[Agent] Empty response nudge #{_emptyResponseNudgeCount} (no tools, no content).");
                     TransitionTo(AgentState.Thinking);
                     return;
@@ -1629,9 +1629,10 @@ namespace Indey.UIPrefabBuilder.Core
                     Text = pendingAnalysisPrompt ?? "Please analyze the provided screenshot(s)."
                 });
                 parts.AddRange(pendingImageParts);
-                _history.AddUserMultimodal(parts);
+                _history.AddUserMultimodal(parts, injected: true);
                 if (_history.Count > 0)
                     LogMessageAudit("vision_prompt", _history.Messages[_history.Count - 1]);
+                OnDirective?.Invoke(parts[0].Text);
                 ConsoleLogger.Log($"[Agent] Injected vision user message with {pendingImageParts.Count} image(s).");
             }
 
@@ -1654,12 +1655,19 @@ namespace Indey.UIPrefabBuilder.Core
             TransitionTo(AgentState.Thinking);
         }
 
+        private void InjectDirective(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content)) return;
+            LogMessageAudit("directive", _history.AddUser(content, true));
+            OnDirective?.Invoke(content);
+        }
+
         private void InjectSearchBudgetNudgeIfNeeded()
         {
             if (_totalBuildSteps > 0 && _postBuildSearchSteps >= PostBuildSearchBudget && !_postBuildNudgeInjected)
             {
                 _postBuildNudgeInjected = true;
-                _history.AddUser(
+                InjectDirective(
                     "You have been searching for a while after already creating elements. " +
                     "Please continue styling with the assets you have. Use color tints as fallback for missing assets.");
                 ConsoleLogger.Log($"[Agent] Post-build search nudge ({_postBuildSearchSteps} search steps after build).");
@@ -1670,7 +1678,7 @@ namespace Indey.UIPrefabBuilder.Core
             if (_consecutiveSingleSearchCalls >= MaxConsecutiveSingleSearchBeforeNudge && !_batchSearchNudgeInjected)
             {
                 _batchSearchNudgeInjected = true;
-                _history.AddUser(
+                InjectDirective(
                     "You are making many individual search calls. Use batch tools instead: " +
                     "`search_assets_glob_batch` for multiple filename patterns, " +
                     "`search_sprites_by_text_batch` for multiple text queries. " +
@@ -1683,7 +1691,7 @@ namespace Indey.UIPrefabBuilder.Core
             if (_lastStepWasAnalyzeScreenshot && _postAnalyzeExecuteCodeCount >= MaxPostAnalyzeExecuteCode)
             {
                 _lastStepWasAnalyzeScreenshot = false;
-                _history.AddUser(
+                InjectDirective(
                     "STOP using execute_code to debug rendering. You have used execute_code " + _postAnalyzeExecuteCodeCount +
                     " times after analyze_screenshot without fixing UI layout. " +
                     "The issue is in UI layout, NOT the camera or render pipeline. " +
@@ -1698,7 +1706,7 @@ namespace Indey.UIPrefabBuilder.Core
             if (_totalSearchSteps >= SearchBudgetHard)
             {
                 _searchBudgetWarningInjected = true;
-                _history.AddUser(
+                InjectDirective(
                     "You have spent many steps searching. Please start building now with the assets you found. " +
                     "Use plain Images with color tint for anything missing.");
                 ConsoleLogger.Log($"[Agent] Search budget hard limit reached ({_totalSearchSteps} steps).");
@@ -1706,7 +1714,7 @@ namespace Indey.UIPrefabBuilder.Core
             else if (_totalSearchSteps >= SearchBudgetSoft)
             {
                 _searchBudgetWarningInjected = true;
-                _history.AddUser(
+                InjectDirective(
                     "You have enough information to start building. " +
                     "Please begin creating UI elements now. Use fallback colors for assets you couldn't find.");
                 ConsoleLogger.Log($"[Agent] Search budget soft limit reached ({_totalSearchSteps} steps).");

@@ -62,6 +62,8 @@ namespace Indey.UIPrefabBuilder.UI
         public int PromptTokens;
         public int CompletionTokens;
         public int ReasoningTokens;
+        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public bool Injected;
         public List<SerializedToolCall> ToolCalls;
         public List<SerializedImageRef> ImageRefs;
     }
@@ -337,7 +339,7 @@ namespace Indey.UIPrefabBuilder.UI
                         .Where(path => !string.IsNullOrEmpty(path))
                         .ToList();
                     if (string.IsNullOrWhiteSpace(text) && (files == null || files.Count == 0)) continue;
-                    bubbles.Add(new ChatBubble { Type = BubbleType.User, Content = text, AttachedFilePaths = files });
+                    AppendUserTurn(bubbles, text, files, message.Injected);
                     continue;
                 }
 
@@ -365,6 +367,66 @@ namespace Indey.UIPrefabBuilder.UI
                 if (bubble == null || !Enum.TryParse<BubbleType>(bubble.Type, out var type) || type != BubbleType.Error) continue;
                 bubbles.Add(new ChatBubble { Type = type, Content = bubble.Content });
             }
+        }
+
+        static void AppendUserTurn(List<ChatBubble> bubbles, string text, List<string> files, bool injected)
+        {
+            if (TrySplitDesignMeta(text, out var userText, out var meta))
+            {
+                if (!string.IsNullOrWhiteSpace(userText) || (files != null && files.Count > 0))
+                    bubbles.Add(new ChatBubble { Type = BubbleType.User, Content = userText, AttachedFilePaths = files });
+                if (!string.IsNullOrWhiteSpace(meta))
+                    bubbles.Add(new ChatBubble { Type = BubbleType.Directive, Content = meta });
+                return;
+            }
+
+            var type = injected || IsStandaloneDirective(text) ? BubbleType.Directive : BubbleType.User;
+            bubbles.Add(new ChatBubble { Type = type, Content = text, AttachedFilePaths = files });
+        }
+
+        static bool TrySplitDesignMeta(string text, out string userText, out string meta)
+        {
+            userText = text;
+            meta = null;
+            if (string.IsNullOrEmpty(text)) return false;
+            const string marker = "[DesignImageMeta]";
+            var index = text.IndexOf(marker, StringComparison.Ordinal);
+            if (index < 0) return false;
+            userText = text.Substring(0, index).Trim();
+            meta = text.Substring(index).Trim();
+            return meta.Length > 0;
+        }
+
+        static bool IsStandaloneDirective(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            var trimmed = text.TrimStart();
+            string[] prefixes =
+            {
+                "You are making many individual search calls.",
+                "You have been searching for a while",
+                "You have spent many steps searching.",
+                "You have enough information to start building.",
+                "STOP using execute_code",
+                "Your last message was EMPTY",
+                "VISUAL VERIFICATION REQUIRED",
+                "VISUAL VERIFICATION INCOMPLETE",
+                "Your own verdict says",
+                "Stop building:",
+                "The user confirmed.",
+                "The user refused editing",
+                "Please analyze the provided screenshot",
+                "Compare the current UI build",
+                "Analyze this UI screenshot",
+                "Cropped region (",
+                "[Execution Result]"
+            };
+            for (int i = 0; i < prefixes.Length; i++)
+            {
+                if (trimmed.StartsWith(prefixes[i], StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
         }
 
         static string FormatToolBubble(string name, string result)
@@ -407,6 +469,7 @@ namespace Indey.UIPrefabBuilder.UI
                 PromptTokens = message.PromptTokens,
                 CompletionTokens = message.CompletionTokens,
                 ReasoningTokens = message.ReasoningTokens,
+                Injected = message.Injected,
                 ImageRefs = CollectImageRefs(message)
             };
             if (message.ToolCalls != null && message.ToolCalls.Count > 0)
@@ -445,6 +508,7 @@ namespace Indey.UIPrefabBuilder.UI
                 PromptTokens = message.PromptTokens,
                 CompletionTokens = message.CompletionTokens,
                 ReasoningTokens = message.ReasoningTokens,
+                Injected = message.Injected,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
             };
             if (message.ToolCalls != null)
@@ -629,6 +693,11 @@ namespace Indey.UIPrefabBuilder.UI
                 {
                     case BubbleType.User:
                         sb.AppendLine("## User");
+                        sb.AppendLine(b.Content);
+                        sb.AppendLine();
+                        break;
+                    case BubbleType.Directive:
+                        sb.AppendLine("## Agent Directive");
                         sb.AppendLine(b.Content);
                         sb.AppendLine();
                         break;

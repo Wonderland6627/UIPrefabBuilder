@@ -17,7 +17,6 @@ namespace Indey.UIPrefabBuilder.UI
         private AgentEngine _agent;
         private string _input = "";
         private Vector2 _chatScroll, _inputScroll, _historyScroll;
-        private readonly Dictionary<int, Vector2> _bubbleScroll = new Dictionary<int, Vector2>();
         private bool _needsRepaint;
         private float _lastRepaint;
 
@@ -39,7 +38,9 @@ namespace Indey.UIPrefabBuilder.UI
 
         // Styles
         private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble, _errorBubble, _toolCallBubble;
+        private GUIStyle _directiveBubble, _directiveTitle, _directiveBody;
         private GUIStyle _toolCallLabel;
+        private float _centerWidth;
         private GUIStyle _markdownBody, _codeBlockStyle;
         private GUIStyle _inputStyle, _statusLabel;
         private bool _stylesInit;
@@ -91,6 +92,7 @@ namespace Indey.UIPrefabBuilder.UI
                 if (result != null)
                     AddBubble(BubbleType.ToolCall, FormatToolCall(name, args, result));
             };
+            _agent.OnDirective += text => AddBubble(BubbleType.Directive, text);
 
             _sessions = new SessionManager();
             _settingsPanel = new SettingsPanel();
@@ -202,6 +204,7 @@ namespace Indey.UIPrefabBuilder.UI
         #region Center Panel (Chat)
         private void DrawCenterPanel(Rect rect)
         {
+            _centerWidth = rect.width;
             GUILayout.BeginArea(rect);
 
             if (_showHistory)
@@ -225,18 +228,18 @@ namespace Indey.UIPrefabBuilder.UI
             _chatScroll = EditorGUILayout.BeginScrollView(_chatScroll, GUILayout.ExpandHeight(true));
 
             for (int i = 0; i < _bubbles.Count; i++)
-                DrawBubble(_bubbles[i], i);
+                DrawBubble(_bubbles[i]);
 
             // Thinking stream (real-time)
             if (_isThinking && !string.IsNullOrEmpty(_thinkingStreamBuffer))
             {
-                DrawBubble(new ChatBubble { Type = BubbleType.Thinking, Content = _thinkingStreamBuffer }, -1);
+                DrawBubble(new ChatBubble { Type = BubbleType.Thinking, Content = _thinkingStreamBuffer });
             }
 
             // Content stream (real-time)
             if (_isStreaming && !string.IsNullOrEmpty(_streamBuffer))
             {
-                DrawBubble(new ChatBubble { Type = BubbleType.AIStream, Content = _streamBuffer }, -2);
+                DrawBubble(new ChatBubble { Type = BubbleType.AIStream, Content = _streamBuffer });
             }
 
             EditorGUILayout.EndScrollView();
@@ -277,8 +280,14 @@ namespace Indey.UIPrefabBuilder.UI
             EditorGUILayout.EndVertical();
         }
 
-        private void DrawBubble(ChatBubble b, int scrollKey)
+        private void DrawBubble(ChatBubble b)
         {
+            if (b.Type == BubbleType.Directive)
+            {
+                DrawDirective(b);
+                return;
+            }
+
             bool isUser = b.Type == BubbleType.User;
             GUIStyle style;
             switch (b.Type)
@@ -312,7 +321,7 @@ namespace Indey.UIPrefabBuilder.UI
             if (b.Type == BubbleType.Thinking)
             {
                 GUILayout.Label("Thinking...", EditorStyles.miniBoldLabel);
-                DrawScrollableText(b.Content, EditorStyles.wordWrappedMiniLabel, maxBubbleWidth - 24f, scrollKey);
+                DrawWrappedText(b.Content, EditorStyles.wordWrappedMiniLabel, maxBubbleWidth - 24f);
             }
             else if (b.Type == BubbleType.Code)
             {
@@ -325,7 +334,7 @@ namespace Indey.UIPrefabBuilder.UI
             }
             else if (b.Type == BubbleType.ToolCall)
             {
-                DrawScrollableText(b.Content, _toolCallLabel, maxBubbleWidth - 24f, scrollKey);
+                DrawWrappedText(b.Content, _toolCallLabel, maxBubbleWidth - 24f);
             }
             else if (b.Type == BubbleType.AI || b.Type == BubbleType.AIStream)
             {
@@ -333,7 +342,7 @@ namespace Indey.UIPrefabBuilder.UI
             }
             else
             {
-                DrawScrollableText(b.Content, EditorStyles.wordWrappedLabel, maxBubbleWidth - 24f, scrollKey);
+                DrawWrappedText(b.Content, EditorStyles.wordWrappedLabel, maxBubbleWidth - 24f);
             }
 
             if (b.AttachedFilePaths != null && b.AttachedFilePaths.Count > 0)
@@ -359,21 +368,84 @@ namespace Indey.UIPrefabBuilder.UI
             GUILayout.Space(4);
         }
 
-        private void DrawScrollableText(string content, GUIStyle style, float width, int scrollKey)
+        private void DrawDirective(ChatBubble b)
         {
-            if (string.IsNullOrEmpty(content)) return;
-            var height = Mathf.Max(18f, style.CalcHeight(new GUIContent(content), Mathf.Max(40f, width)));
-            if (height <= 160f)
+            var body = FormatDirectiveBody(b.Content);
+            var textWidth = Mathf.Max(140f, _centerWidth - 64f);
+            var bodyHeight = string.IsNullOrEmpty(body)
+                ? 0f
+                : Mathf.Max(16f, _directiveBody.CalcHeight(new GUIContent(body), textWidth));
+
+            EditorGUILayout.BeginVertical(_directiveBubble);
+            EditorGUILayout.BeginHorizontal();
+            var accentHeight = 16f + bodyHeight;
+            var accent = GUILayoutUtility.GetRect(3f, accentHeight, GUILayout.Width(3f), GUILayout.Height(accentHeight));
+            if (Event.current.type == EventType.Repaint)
+                EditorGUI.DrawRect(accent, BuilderStyles.DirectiveAccent);
+            GUILayout.Space(8f);
+            EditorGUILayout.BeginVertical();
+            GUILayout.Label(DirectiveHeading(b.Content), _directiveTitle, GUILayout.Width(textWidth));
+            if (!string.IsNullOrEmpty(body))
+                GUILayout.Label(body, _directiveBody, GUILayout.Width(textWidth), GUILayout.Height(bodyHeight));
+            GUILayout.Space(6f);
+            EditorGUILayout.EndVertical();
+            EditorGUILayout.EndHorizontal();
+
+            if (b.AttachedFilePaths != null)
             {
-                GUILayout.Label(content, style, GUILayout.Width(width));
-                return;
+                foreach (var fp in b.AttachedFilePaths)
+                {
+                    if (string.IsNullOrEmpty(fp)) continue;
+                    GUILayout.Label("附图  " + Path.GetFileName(fp), _directiveBody);
+                }
             }
 
-            if (!_bubbleScroll.TryGetValue(scrollKey, out var scroll))
-                scroll = Vector2.zero;
-            _bubbleScroll[scrollKey] = EditorGUILayout.BeginScrollView(scroll, GUILayout.Height(220f), GUILayout.Width(width));
-            GUILayout.Label(content, style, GUILayout.Width(width - 20f));
-            EditorGUILayout.EndScrollView();
+            EditorGUILayout.EndVertical();
+            GUILayout.Space(4);
+        }
+
+        private static string DirectiveHeading(string content)
+        {
+            var trimmed = (content ?? "").TrimStart();
+            if (trimmed.StartsWith("[DesignImageMeta]", StringComparison.Ordinal))
+                return "AGENT · 设计稿参数";
+            if (trimmed.StartsWith("Compare the current UI", StringComparison.Ordinal)
+                || trimmed.StartsWith("Analyze this UI screenshot", StringComparison.Ordinal)
+                || trimmed.StartsWith("Please analyze the provided screenshot", StringComparison.Ordinal)
+                || trimmed.StartsWith("Cropped region (", StringComparison.Ordinal))
+                return "AGENT · 看图指令";
+            if (trimmed.StartsWith("VISUAL VERIFICATION", StringComparison.Ordinal)
+                || trimmed.StartsWith("Your own verdict", StringComparison.Ordinal)
+                || trimmed.StartsWith("Stop building:", StringComparison.Ordinal))
+                return "AGENT · 校验指令";
+            if (trimmed.StartsWith("The user confirmed.", StringComparison.Ordinal)
+                || trimmed.StartsWith("The user refused editing", StringComparison.Ordinal))
+                return "AGENT · 确认指令";
+            if (trimmed.StartsWith("You are making many individual search calls.", StringComparison.Ordinal)
+                || trimmed.StartsWith("You have been searching", StringComparison.Ordinal)
+                || trimmed.StartsWith("You have spent many steps searching.", StringComparison.Ordinal)
+                || trimmed.StartsWith("You have enough information to start building.", StringComparison.Ordinal))
+                return "AGENT · 搜索指令";
+            return "AGENT · 流程指令";
+        }
+
+        private static string FormatDirectiveBody(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return "";
+            var trimmed = content.Trim();
+            const string marker = "[DesignImageMeta]";
+            if (!trimmed.StartsWith(marker, StringComparison.Ordinal))
+                return trimmed;
+            var rest = trimmed.Substring(marker.Length).Trim();
+            return string.IsNullOrEmpty(rest) ? trimmed : rest;
+        }
+
+        private void DrawWrappedText(string content, GUIStyle style, float width)
+        {
+            if (string.IsNullOrEmpty(content)) return;
+            var layoutWidth = Mathf.Max(40f, width);
+            var height = Mathf.Max(18f, style.CalcHeight(new GUIContent(content), layoutWidth));
+            GUILayout.Label(content, style, GUILayout.Width(layoutWidth), GUILayout.Height(height));
         }
 
         private void DrawMarkdownContent(string content, float contentWidth)
@@ -933,8 +1005,11 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void InitStyles()
         {
-            if (_stylesInit && _markdownBody != null && _codeBlockStyle != null)
+            if (_stylesInit && _markdownBody != null && _codeBlockStyle != null && _directiveBubble != null)
+            {
+                ApplyDirectiveMetrics();
                 return;
+            }
             _stylesInit = true;
             BuilderStyles.EnsureStyles();
             _headerStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 13, alignment = TextAnchor.MiddleLeft };
@@ -945,6 +1020,21 @@ namespace Indey.UIPrefabBuilder.UI
             _resultBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleResult);
             _errorBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleError);
             _toolCallBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleToolCall);
+            _directiveBubble = BuilderStyles.CreateBubbleStyle(BuilderStyles.BubbleDirective);
+            ApplyDirectiveMetrics();
+            _directiveTitle = new GUIStyle(EditorStyles.miniBoldLabel)
+            {
+                fontSize = 10,
+                wordWrap = false,
+                normal = { textColor = BuilderStyles.DirectiveTitle }
+            };
+            _directiveBody = new GUIStyle(EditorStyles.wordWrappedMiniLabel)
+            {
+                fontSize = 11,
+                wordWrap = true,
+                richText = false,
+                normal = { textColor = BuilderStyles.DirectiveBody }
+            };
             _toolCallLabel = new GUIStyle(EditorStyles.wordWrappedMiniLabel)
             {
                 richText = false,
@@ -964,10 +1054,19 @@ namespace Indey.UIPrefabBuilder.UI
             _inputStyle = BuilderStyles.CreateInputStyle();
             _statusLabel = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleLeft };
         }
+
+        private void ApplyDirectiveMetrics()
+        {
+            if (_directiveBubble == null) return;
+            _directiveBubble.border = new RectOffset(0, 0, 0, 0);
+            _directiveBubble.overflow = new RectOffset(0, 0, 0, 0);
+            _directiveBubble.padding = new RectOffset(10, 12, 8, 14);
+            _directiveBubble.margin = new RectOffset(4, 10, 2, 4);
+        }
         #endregion
     }
 
-    public enum BubbleType { User, AI, AIStream, Thinking, Code, Result, Error, ToolCall }
+    public enum BubbleType { User, AI, AIStream, Thinking, Code, Result, Error, ToolCall, Directive }
 
     public class ChatBubble
     {

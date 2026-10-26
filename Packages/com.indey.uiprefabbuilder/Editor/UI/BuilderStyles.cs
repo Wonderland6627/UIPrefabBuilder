@@ -35,6 +35,10 @@ namespace Indey.UIPrefabBuilder.UI
         public static readonly Color BubbleResult = new Color(0.1f, 0.5f, 0.2f, 0.25f);
         public static readonly Color BubbleError = new Color(0.55f, 0.15f, 0.15f, 0.35f);
         public static readonly Color BubbleToolCall = new Color(0.12f, 0.3f, 0.45f, 0.25f);
+        public static readonly Color BubbleDirective = new Color(0.34f, 0.25f, 0.08f, 0.55f);
+        public static readonly Color DirectiveAccent = new Color(0.95f, 0.72f, 0.28f, 1f);
+        public static readonly Color DirectiveTitle = new Color(0.98f, 0.82f, 0.42f);
+        public static readonly Color DirectiveBody = new Color(0.90f, 0.84f, 0.70f);
 
         public static readonly Color StateIdle = Color.gray;
         public static readonly Color StateThinking = Accent;

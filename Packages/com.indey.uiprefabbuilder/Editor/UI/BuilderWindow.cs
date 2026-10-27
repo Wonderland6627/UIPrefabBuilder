@@ -39,7 +39,8 @@ namespace Indey.UIPrefabBuilder.UI
         // Styles
         private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble, _errorBubble, _toolCallBubble;
         private GUIStyle _directiveBubble, _directiveTitle, _directiveBody;
-        private GUIStyle _toolCallLabel;
+        private GUIStyle _toolCallLabel, _toolCallHeader;
+        private GUIStyle _codeTitle, _codeBody, _codeNote;
         private float _centerWidth;
         private GUIStyle _markdownBody, _codeBlockStyle;
         private GUIStyle _inputStyle, _statusLabel;
@@ -89,8 +90,9 @@ namespace Indey.UIPrefabBuilder.UI
             _agent.OnExecuted += r => { };
             _agent.OnToolCall += (name, args, result) =>
             {
-                if (result != null)
-                    AddBubble(BubbleType.ToolCall, FormatToolCall(name, args, result));
+                if (result == null) return;
+                var presented = ToolCallPresenter.Present(name, args, result);
+                AddBubble(presented.Type, presented.Content, null, presented.Title, presented.Note);
             };
             _agent.OnDirective += text => AddBubble(BubbleType.Directive, text);
 
@@ -287,6 +289,11 @@ namespace Indey.UIPrefabBuilder.UI
                 DrawDirective(b);
                 return;
             }
+            if (b.Type == BubbleType.Code)
+            {
+                DrawCodeBubble(b);
+                return;
+            }
 
             bool isUser = b.Type == BubbleType.User;
             GUIStyle style;
@@ -295,14 +302,15 @@ namespace Indey.UIPrefabBuilder.UI
                 case BubbleType.User: style = _userBubble; break;
                 case BubbleType.AI: case BubbleType.AIStream: style = _aiBubble; break;
                 case BubbleType.Thinking: style = _thinkBubble; break;
-                case BubbleType.Code: style = _codeBubble; break;
                 case BubbleType.Result: style = _resultBubble; break;
                 case BubbleType.Error: style = _errorBubble; break;
                 case BubbleType.ToolCall: style = _toolCallBubble; break;
                 default: style = _aiBubble; break;
             }
 
-            float maxBubbleWidth = position.width * 0.55f;
+            float maxBubbleWidth = b.Type == BubbleType.ToolCall
+                ? Mathf.Clamp(_centerWidth - 28f, 260f, 560f)
+                : position.width * 0.55f;
 
             EditorGUILayout.BeginHorizontal();
 
@@ -323,18 +331,9 @@ namespace Indey.UIPrefabBuilder.UI
                 GUILayout.Label("Thinking...", EditorStyles.miniBoldLabel);
                 DrawWrappedText(b.Content, EditorStyles.wordWrappedMiniLabel, maxBubbleWidth - 24f);
             }
-            else if (b.Type == BubbleType.Code)
-            {
-                GUILayout.Label("Generated Code:", EditorStyles.boldLabel);
-                EditorGUILayout.SelectableLabel(b.Content, EditorStyles.textArea, GUILayout.MinHeight(60));
-                EditorGUILayout.BeginHorizontal();
-                if (GUILayout.Button("Copy", EditorStyles.miniButton, GUILayout.Width(50)))
-                    EditorGUIUtility.systemCopyBuffer = b.Content;
-                EditorGUILayout.EndHorizontal();
-            }
             else if (b.Type == BubbleType.ToolCall)
             {
-                DrawWrappedText(b.Content, _toolCallLabel, maxBubbleWidth - 24f);
+                DrawToolCall(b.Content, maxBubbleWidth - 24f);
             }
             else if (b.Type == BubbleType.AI || b.Type == BubbleType.AIStream)
             {
@@ -364,6 +363,84 @@ namespace Indey.UIPrefabBuilder.UI
                 GUILayout.FlexibleSpace();
             }
 
+            EditorGUILayout.EndHorizontal();
+            GUILayout.Space(4);
+        }
+
+        private void DrawToolCall(string content, float width)
+        {
+            var text = content ?? "";
+            var split = text.IndexOf('\n');
+            var header = split < 0 ? text : text.Substring(0, split);
+            var details = split < 0 ? "" : text.Substring(split + 1);
+            var layoutWidth = Mathf.Max(40f, width);
+            GUILayout.Label(header, _toolCallHeader, GUILayout.Width(layoutWidth));
+            if (!string.IsNullOrEmpty(details))
+            {
+                var flowed = ToolCallPresenter.Flow(details, Mathf.Max(8f, layoutWidth - 4f), text => _toolCallLabel.CalcSize(new GUIContent(text)).x);
+                DrawWrappedText(flowed, _toolCallLabel, layoutWidth);
+            }
+        }
+
+        private void DrawCodeBubble(ChatBubble b)
+        {
+            float width = Mathf.Max(280f, _centerWidth - 20f);
+            var viewWidth = Mathf.Max(160f, width - 56f);
+            var code = string.IsNullOrEmpty(b.Content) ? " " : b.Content;
+            int sourceLines = 1;
+            for (int i = 0; i < code.Length; i++)
+                if (code[i] == '\n') sourceLines++;
+            float lineBased = sourceLines * (Mathf.Max(12, _codeBody.fontSize) + 3) + 8f;
+            var codeHeight = Mathf.Max(lineBased, _codeBody.CalcHeight(new GUIContent(code), viewWidth));
+            const float maxView = 440f;
+            var viewHeight = Mathf.Min(codeHeight, maxView);
+            float noteHeight = 0f;
+            var note = "";
+            if (!string.IsNullOrEmpty(b.Note))
+            {
+                note = ToolCallPresenter.Flow(b.Note, Mathf.Max(8f, viewWidth - 4f), text => _codeNote.CalcSize(new GUIContent(text)).x);
+                noteHeight = Mathf.Max(16f, _codeNote.CalcHeight(new GUIContent(note), viewWidth));
+            }
+            float blockHeight = 22f + viewHeight + (noteHeight > 0f ? noteHeight + 8f : 0f) + 6f;
+
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Space(4);
+            EditorGUILayout.BeginHorizontal(_codeBubble, GUILayout.MaxWidth(width));
+
+            var bar = GUILayoutUtility.GetRect(3f, blockHeight, GUILayout.Width(3f), GUILayout.Height(blockHeight));
+            if (Event.current.type == EventType.Repaint)
+                EditorGUI.DrawRect(bar, BuilderStyles.CodeAccent);
+            GUILayout.Space(8f);
+
+            EditorGUILayout.BeginVertical();
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Label(string.IsNullOrEmpty(b.Title) ? "\u2699 code" : b.Title, _codeTitle);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("Copy", EditorStyles.miniButton, GUILayout.Width(48)))
+                EditorGUIUtility.systemCopyBuffer = b.Content ?? "";
+            EditorGUILayout.EndHorizontal();
+
+            if (codeHeight <= maxView)
+            {
+                EditorGUILayout.SelectableLabel(code, _codeBody, GUILayout.Width(viewWidth), GUILayout.Height(codeHeight));
+            }
+            else
+            {
+                b.CodeScroll = EditorGUILayout.BeginScrollView(b.CodeScroll, GUILayout.Height(maxView));
+                EditorGUILayout.SelectableLabel(code, _codeBody, GUILayout.Width(viewWidth), GUILayout.Height(codeHeight));
+                EditorGUILayout.EndScrollView();
+            }
+
+            if (!string.IsNullOrEmpty(note))
+            {
+                GUILayout.Space(2f);
+                GUILayout.Label(note, _codeNote, GUILayout.Width(viewWidth), GUILayout.Height(noteHeight));
+            }
+
+            GUILayout.Space(4f);
+            EditorGUILayout.EndVertical();
+            EditorGUILayout.EndHorizontal();
+            GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
             GUILayout.Space(4);
         }
@@ -964,33 +1041,20 @@ namespace Indey.UIPrefabBuilder.UI
         #endregion
 
         #region Helpers
-        private void AddBubble(BubbleType type, string content, List<string> attachedFiles = null)
+        private void AddBubble(BubbleType type, string content, List<string> attachedFiles = null, string title = null, string note = null)
         {
-            if (string.IsNullOrWhiteSpace(content) && (attachedFiles == null || attachedFiles.Count == 0)) return;
-            _bubbles.Add(new ChatBubble { Type = type, Content = content ?? "", AttachedFilePaths = attachedFiles });
+            if (string.IsNullOrWhiteSpace(content) && string.IsNullOrWhiteSpace(title) && (attachedFiles == null || attachedFiles.Count == 0)) return;
+            _bubbles.Add(new ChatBubble
+            {
+                Type = type,
+                Content = content ?? "",
+                AttachedFilePaths = attachedFiles,
+                Title = title,
+                Note = note
+            });
             _chatScroll.y = float.MaxValue;
             _needsRepaint = true;
             PersistSession();
-        }
-
-        private static string FormatToolCall(string name, string args, string result)
-        {
-            var sb = new StringBuilder();
-            sb.Append($"\u2699 {name}");
-            try
-            {
-                var resObj = Newtonsoft.Json.Linq.JObject.Parse(result);
-                var success = (bool)(resObj["success"] ?? false);
-                var msg = resObj["message"]?.ToString() ?? resObj["error"]?.ToString();
-                sb.Append(success ? " \u2714" : " \u2716");
-                if (!string.IsNullOrEmpty(msg)) sb.Append($" {msg}");
-            }
-            catch
-            {
-                if (result.Length > 120) sb.Append($": {result.Substring(0, 120)}...");
-                else sb.Append($": {result}");
-            }
-            return sb.ToString();
         }
 
         private void HandleKeyboard()
@@ -1005,7 +1069,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void InitStyles()
         {
-            if (_stylesInit && _markdownBody != null && _codeBlockStyle != null && _directiveBubble != null)
+            if (_stylesInit && _markdownBody != null && _codeBlockStyle != null && _directiveBubble != null && _codeBody != null)
             {
                 ApplyDirectiveMetrics();
                 return;
@@ -1035,11 +1099,46 @@ namespace Indey.UIPrefabBuilder.UI
                 richText = false,
                 normal = { textColor = BuilderStyles.DirectiveBody }
             };
-            _toolCallLabel = new GUIStyle(EditorStyles.wordWrappedMiniLabel)
+            _toolCallHeader = new GUIStyle(EditorStyles.miniBoldLabel)
             {
+                fontSize = 11,
+                wordWrap = true,
                 richText = false,
                 normal = { textColor = BuilderStyles.ToolCallText }
             };
+            _toolCallLabel = new GUIStyle(EditorStyles.wordWrappedMiniLabel)
+            {
+                fontSize = 11,
+                wordWrap = false,
+                richText = false,
+                normal = { textColor = BuilderStyles.ToolCallDetail }
+            };
+            _codeTitle = new GUIStyle(EditorStyles.miniBoldLabel)
+            {
+                fontSize = 11,
+                wordWrap = false,
+                richText = false,
+                normal = { textColor = BuilderStyles.CodeTitle }
+            };
+            _codeNote = new GUIStyle(EditorStyles.wordWrappedMiniLabel)
+            {
+                fontSize = 11,
+                richText = false,
+                wordWrap = false,
+                normal = { textColor = BuilderStyles.CodeNote }
+            };
+            _codeBody = new GUIStyle(EditorStyles.textArea)
+            {
+                wordWrap = true,
+                richText = false,
+                fontSize = 12,
+                padding = new RectOffset(6, 6, 4, 4)
+            };
+            var codeText = new Color(0.84f, 0.9f, 0.84f);
+            _codeBody.normal = new GUIStyleState { textColor = codeText };
+            _codeBody.focused = new GUIStyleState { textColor = codeText };
+            _codeBody.hover = new GUIStyleState { textColor = codeText };
+            _codeBody.active = new GUIStyleState { textColor = codeText };
             _markdownBody = new GUIStyle(EditorStyles.wordWrappedLabel)
             {
                 richText = true,
@@ -1051,8 +1150,29 @@ namespace Indey.UIPrefabBuilder.UI
                 richText = false,
                 fontSize = 11
             };
+            var codeFont = LoadCodeFont();
+            if (codeFont != null)
+            {
+                _codeBody.font = codeFont;
+                _codeBlockStyle.font = codeFont;
+            }
             _inputStyle = BuilderStyles.CreateInputStyle();
             _statusLabel = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleLeft };
+        }
+
+        private static Font LoadCodeFont()
+        {
+            try
+            {
+                var font = Font.CreateDynamicFontFromOSFont(new[] { "Cascadia Mono", "Consolas", "Courier New" }, 12);
+                if (font == null) return null;
+                font.hideFlags = HideFlags.HideAndDontSave;
+                return font;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void ApplyDirectiveMetrics()
@@ -1072,6 +1192,9 @@ namespace Indey.UIPrefabBuilder.UI
     {
         public BubbleType Type;
         public string Content;
+        public string Title;
+        public string Note;
+        public Vector2 CodeScroll;
         public bool Expanded;
         public List<string> AttachedFilePaths;
     }

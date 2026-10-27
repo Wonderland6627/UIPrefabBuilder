@@ -351,7 +351,14 @@ namespace Indey.UIPrefabBuilder.UI
                     {
                         results.TryGetValue(call.Id ?? "", out var result);
                         var body = result?.ArchiveContent ?? result?.Content;
-                        bubbles.Add(new ChatBubble { Type = BubbleType.ToolCall, Content = FormatToolBubble(call.Name, body) });
+                        var presented = ToolCallPresenter.Present(call.Name, call.Arguments, body);
+                        bubbles.Add(new ChatBubble
+                        {
+                            Type = presented.Type,
+                            Title = presented.Title,
+                            Content = presented.Content,
+                            Note = presented.Note
+                        });
                     }
                 }
                 if (!string.IsNullOrWhiteSpace(message.Content))
@@ -427,26 +434,6 @@ namespace Indey.UIPrefabBuilder.UI
                     return true;
             }
             return false;
-        }
-
-        static string FormatToolBubble(string name, string result)
-        {
-            var text = "\u2699 " + name;
-            if (string.IsNullOrEmpty(result)) return text;
-            try
-            {
-                var obj = Newtonsoft.Json.Linq.JObject.Parse(result);
-                var success = (bool)(obj["success"] ?? false);
-                var message = obj["message"]?.ToString() ?? obj["error"]?.ToString();
-                text += success ? " \u2714" : " \u2716";
-                if (!string.IsNullOrEmpty(message))
-                    text += " " + (message.Length > 180 ? message.Substring(0, 180) + "..." : message);
-            }
-            catch
-            {
-                text += result.Length > 120 ? ": " + result.Substring(0, 120) + "..." : ": " + result;
-            }
-            return text;
         }
 
         static SerializedMessage ToSerializedMessage(ChatMessage message)
@@ -716,15 +703,22 @@ namespace Indey.UIPrefabBuilder.UI
                         sb.AppendLine();
                         break;
                     case BubbleType.Code:
-                        sb.AppendLine("## Generated Code");
+                        sb.AppendLine("## " + (string.IsNullOrEmpty(b.Title) ? "Code" : b.Title));
                         sb.AppendLine("```csharp");
                         sb.AppendLine(b.Content);
                         sb.AppendLine("```");
+                        if (!string.IsNullOrEmpty(b.Note))
+                        {
+                            sb.AppendLine();
+                            sb.AppendLine(ToolCallPresenter.ToPlain(b.Note));
+                        }
                         sb.AppendLine();
                         break;
                     case BubbleType.ToolCall:
                         sb.AppendLine("## Tool Call");
-                        sb.AppendLine($"> {b.Content}");
+                        var toolLines = ToolCallPresenter.ToPlain(b.Content).Split('\n');
+                        for (int li = 0; li < toolLines.Length; li++)
+                            sb.AppendLine("> " + toolLines[li]);
                         sb.AppendLine();
                         break;
                     case BubbleType.Result:

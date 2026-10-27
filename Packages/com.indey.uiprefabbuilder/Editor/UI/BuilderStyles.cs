@@ -27,11 +27,15 @@ namespace Indey.UIPrefabBuilder.UI
         public static readonly Color LogTimestamp = new Color(0.5f, 0.5f, 0.5f);
         public static readonly Color LogInfo = new Color(0.78f, 0.78f, 0.78f);
         public static readonly Color ToolCallText = new Color(0.6f, 0.8f, 0.9f);
+        public static readonly Color ToolCallDetail = new Color(0.68f, 0.78f, 0.82f);
 
         public static readonly Color BubbleUser = new Color(0.15f, 0.38f, 0.75f, 0.35f);
         public static readonly Color BubbleAI = new Color(0.22f, 0.22f, 0.28f, 0.35f);
         public static readonly Color BubbleThink = new Color(0.5f, 0.4f, 0.7f, 0.2f);
-        public static readonly Color BubbleCode = new Color(0.1f, 0.1f, 0.15f, 0.4f);
+        public static readonly Color BubbleCode = new Color(0.07f, 0.12f, 0.09f, 0.88f);
+        public static readonly Color CodeAccent = new Color(0.45f, 0.82f, 0.58f, 1f);
+        public static readonly Color CodeTitle = new Color(0.78f, 0.93f, 0.82f);
+        public static readonly Color CodeNote = new Color(0.62f, 0.74f, 0.66f);
         public static readonly Color BubbleResult = new Color(0.1f, 0.5f, 0.2f, 0.25f);
         public static readonly Color BubbleError = new Color(0.55f, 0.15f, 0.15f, 0.35f);
         public static readonly Color BubbleToolCall = new Color(0.12f, 0.3f, 0.45f, 0.25f);

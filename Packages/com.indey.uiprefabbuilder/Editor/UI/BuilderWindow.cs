@@ -36,6 +36,20 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _ignoreStream;
         private double _lastSessionPersist;
 
+        [NonSerialized] private double _turnStartedAt;
+        [NonSerialized] private double _turnElapsed;
+        [NonSerialized] private bool _turnTiming;
+        [NonSerialized] private bool _turnVisible;
+        [NonSerialized] private double _responseStartedAt;
+        [NonSerialized] private double _thinkingStartedAt;
+        [NonSerialized] private double _thinkingEndedAt;
+        [NonSerialized] private double _contentStartedAt;
+        [NonSerialized] private float _unstampedThinking = -1f;
+        [NonSerialized] private int _thinkingStampIndex;
+        [NonSerialized] private int _responseHistoryCount;
+        [NonSerialized] private bool _awaitingContent;
+        [NonSerialized] private ChatBubble _openTool;
+
         // Styles
         private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble, _errorBubble, _toolCallBubble;
         private GUIStyle _directiveBubble, _directiveTitle, _directiveBody;
@@ -43,7 +57,7 @@ namespace Indey.UIPrefabBuilder.UI
         private GUIStyle _codeTitle, _codeBody, _codeNote;
         private float _centerWidth;
         private GUIStyle _markdownBody, _codeBlockStyle;
-        private GUIStyle _inputStyle, _statusLabel;
+        private GUIStyle _inputStyle, _statusLabel, _elapsedLabel;
         private bool _stylesInit;
         private bool _markdownFailed;
 
@@ -66,13 +80,24 @@ namespace Indey.UIPrefabBuilder.UI
             _agent = new AgentEngine(settings);
             _agent.OnStateChanged += s =>
             {
+                FlushUnstampedThinking();
                 if (s == AgentState.Thinking || s == AgentState.CallingTool)
                     FinalizeContentStream();
+                if (s == AgentState.Thinking)
+                {
+                    _responseStartedAt = EditorApplication.timeSinceStartup;
+                    _awaitingContent = true;
+                    _responseHistoryCount = _agent?.History?.Count ?? 0;
+                }
+                if (_turnTiming && !IsAgentRunning())
+                    FreezeTurnTimer();
                 _needsRepaint = true;
             };
             _agent.OnStreamToken += t =>
             {
                 if (_ignoreStream) return;
+                if (_contentStartedAt <= 0)
+                    _contentStartedAt = EditorApplication.timeSinceStartup;
                 _streamBuffer += t;
                 _isStreaming = true;
                 _needsRepaint = true;
@@ -80,20 +105,23 @@ namespace Indey.UIPrefabBuilder.UI
             _agent.OnThinkingToken += t =>
             {
                 if (_ignoreStream) return;
+                if (_thinkingStartedAt <= 0)
+                    _thinkingStartedAt = EditorApplication.timeSinceStartup;
                 _thinkingStreamBuffer += t;
                 _isThinking = true;
                 _needsRepaint = true;
             };
             _agent.OnThinking += t => { FinalizeThinkingStream(t); };
             _agent.OnComplete += full => { FinishStream(full); };
-            _agent.OnError += e => { AddBubble(BubbleType.Error, e); _isStreaming = false; _isThinking = false; };
-            _agent.OnExecuted += r => { };
-            _agent.OnToolCall += (name, args, result) =>
+            _agent.OnError += e =>
             {
-                if (result == null) return;
-                var presented = ToolCallPresenter.Present(name, args, result);
-                AddBubble(presented.Type, presented.Content, null, presented.Title, presented.Note);
+                CloseOpenActivity();
+                AddBubble(BubbleType.Error, e);
+                _isStreaming = false;
+                _isThinking = false;
             };
+            _agent.OnExecuted += r => { };
+            _agent.OnToolCall += (name, args, result) => AcceptToolCall(name, args, result);
             _agent.OnDirective += text => AddBubble(BubbleType.Directive, text);
 
             _sessions = new SessionManager();
@@ -129,8 +157,10 @@ namespace Indey.UIPrefabBuilder.UI
             if ((_isStreaming || _isThinking) && EditorApplication.timeSinceStartup - _lastSessionPersist >= 1.0)
                 PersistSession();
 
-            if (!_needsRepaint) return;
-            if (Time.realtimeSinceStartup - _lastRepaint < 0.05f) return;
+            bool live = _turnTiming || _isThinking || _isStreaming || (_openTool != null && _openTool.TimingOpen);
+            if (!live && !_needsRepaint) return;
+            float minInterval = _needsRepaint ? 0.05f : 0.1f;
+            if (Time.realtimeSinceStartup - _lastRepaint < minInterval) return;
             _lastRepaint = Time.realtimeSinceStartup;
             _needsRepaint = false;
             Repaint();
@@ -235,13 +265,25 @@ namespace Indey.UIPrefabBuilder.UI
             // Thinking stream (real-time)
             if (_isThinking && !string.IsNullOrEmpty(_thinkingStreamBuffer))
             {
-                DrawBubble(new ChatBubble { Type = BubbleType.Thinking, Content = _thinkingStreamBuffer });
+                DrawBubble(new ChatBubble
+                {
+                    Type = BubbleType.Thinking,
+                    Content = _thinkingStreamBuffer,
+                    TimingOpen = true,
+                    StartedAt = _thinkingStartedAt > 0 ? _thinkingStartedAt : EditorApplication.timeSinceStartup
+                });
             }
 
             // Content stream (real-time)
             if (_isStreaming && !string.IsNullOrEmpty(_streamBuffer))
             {
-                DrawBubble(new ChatBubble { Type = BubbleType.AIStream, Content = _streamBuffer });
+                DrawBubble(new ChatBubble
+                {
+                    Type = BubbleType.AIStream,
+                    Content = _streamBuffer,
+                    TimingOpen = true,
+                    StartedAt = _contentStartedAt > 0 ? _contentStartedAt : EditorApplication.timeSinceStartup
+                });
             }
 
             EditorGUILayout.EndScrollView();
@@ -328,7 +370,7 @@ namespace Indey.UIPrefabBuilder.UI
 
             if (b.Type == BubbleType.Thinking)
             {
-                GUILayout.Label("Thinking...", EditorStyles.miniBoldLabel);
+                GUILayout.Label(ThinkingTitle(b.TimingOpen), EditorStyles.miniBoldLabel);
                 DrawWrappedText(b.Content, EditorStyles.wordWrappedMiniLabel, maxBubbleWidth - 24f);
             }
             else if (b.Type == BubbleType.ToolCall)
@@ -351,6 +393,7 @@ namespace Indey.UIPrefabBuilder.UI
                     GUILayout.Label("\ud83d\uddbc " + Path.GetFileName(fp), EditorStyles.miniLabel);
             }
 
+            DrawElapsedFooter(b);
             EditorGUILayout.EndVertical();
 
             if (isUser)
@@ -401,7 +444,8 @@ namespace Indey.UIPrefabBuilder.UI
                 note = ToolCallPresenter.Flow(b.Note, Mathf.Max(8f, viewWidth - 4f), text => _codeNote.CalcSize(new GUIContent(text)).x);
                 noteHeight = Mathf.Max(16f, _codeNote.CalcHeight(new GUIContent(note), viewWidth));
             }
-            float blockHeight = 22f + viewHeight + (noteHeight > 0f ? noteHeight + 8f : 0f) + 6f;
+            float elapsedExtra = ElapsedText(b) != null ? 16f : 0f;
+            float blockHeight = 22f + viewHeight + (noteHeight > 0f ? noteHeight + 8f : 0f) + elapsedExtra + 6f;
 
             EditorGUILayout.BeginHorizontal();
             GUILayout.Space(4);
@@ -437,6 +481,7 @@ namespace Indey.UIPrefabBuilder.UI
                 GUILayout.Label(note, _codeNote, GUILayout.Width(viewWidth), GUILayout.Height(noteHeight));
             }
 
+            DrawElapsedFooter(b);
             GUILayout.Space(4f);
             EditorGUILayout.EndVertical();
             EditorGUILayout.EndHorizontal();
@@ -767,9 +812,21 @@ namespace Indey.UIPrefabBuilder.UI
             var state = _agent?.State ?? AgentState.Idle;
             var (label, color) = GetStateInfo(state);
 
+            bool thinkingLabel = state == AgentState.Thinking || state == AgentState.WaitingForLLM;
+            if (thinkingLabel)
+                label = "Thinking" + ThinkingDots();
+
             EditorGUILayout.BeginHorizontal();
             BuilderStyles.ColoredLabel("\u25cf", color, EditorStyles.label, GUILayout.Width(12));
-            GUILayout.Label(label, _statusLabel, GUILayout.Width(90));
+            if (thinkingLabel)
+                GUILayout.Label(label, _statusLabel, GUILayout.Width(96));
+            else
+                GUILayout.Label(label, _statusLabel);
+            if (_turnVisible)
+            {
+                GUILayout.Space(6);
+                GUILayout.Label(FormatDuration(TurnSeconds()), _statusLabel);
+            }
             GUILayout.FlexibleSpace();
             GUILayout.Label($"Msgs: {_agent?.History?.Count ?? 0}", _statusLabel);
             GUILayout.Space(4);
@@ -837,6 +894,8 @@ namespace Indey.UIPrefabBuilder.UI
 
             var workflowMode = _workflowMode;
             var selected = Selection.activeGameObject;
+            FlushUnstampedThinking();
+            BeginTurnTimer();
 
             if (hasFiles)
             {
@@ -869,6 +928,7 @@ namespace Indey.UIPrefabBuilder.UI
                         settings.SupportsVision = false;
                         settings.AutoDisableVisualVerification();
                         settings.Save();
+                        FreezeTurnTimer();
                         var reason = result?.Reason ?? "Unknown failure.";
                         AddBubble(BubbleType.Error,
                             "Task aborted: vision probe failed. Supports Vision has been turned off.\n\n" + reason);
@@ -882,6 +942,7 @@ namespace Indey.UIPrefabBuilder.UI
                 return;
             }
 
+            ResetActivityClocks();
             AddBubble(BubbleType.User, displayText, null);
             _ignoreStream = false;
             _agent?.StartTask(text, workflowMode, selected);
@@ -889,15 +950,12 @@ namespace Indey.UIPrefabBuilder.UI
             PersistSession();
             _input = "";
             _attachedFiles.Clear();
-            _streamBuffer = "";
-            _thinkingStreamBuffer = "";
-            _isStreaming = false;
-            _isThinking = false;
             GUI.FocusControl(null);
         }
 
         private void BeginImageTask(string userText, List<string> files, string bubbleText, PrefabWorkflowMode mode, GameObject selected)
         {
+            ResetActivityClocks();
             AddBubble(BubbleType.User, bubbleText, new List<string>(files));
             _ignoreStream = false;
             _agent?.StartTask(userText, files, mode, selected);
@@ -905,38 +963,69 @@ namespace Indey.UIPrefabBuilder.UI
             PersistSession();
             _input = "";
             _attachedFiles.Clear();
-            _streamBuffer = "";
-            _thinkingStreamBuffer = "";
-            _isStreaming = false;
-            _isThinking = false;
             GUI.FocusControl(null);
             _needsRepaint = true;
         }
 
         private void FinalizeThinkingStream(string fullThinking)
         {
+            string text = null;
             if (!string.IsNullOrWhiteSpace(_thinkingStreamBuffer))
-                AddBubble(BubbleType.Thinking, _thinkingStreamBuffer);
+                text = _thinkingStreamBuffer;
             else if (!string.IsNullOrWhiteSpace(fullThinking))
-                AddBubble(BubbleType.Thinking, fullThinking);
+                text = fullThinking;
+
+            if (text != null)
+            {
+                if (_thinkingStartedAt <= 0)
+                    _thinkingStartedAt = _responseStartedAt > 0 ? _responseStartedAt : EditorApplication.timeSinceStartup;
+                var duration = Math.Max(0, EditorApplication.timeSinceStartup - _thinkingStartedAt);
+                var bubble = AddBubble(BubbleType.Thinking, text);
+                if (bubble != null)
+                    bubble.DurationSeconds = duration;
+                _unstampedThinking = (float)duration;
+                _thinkingStampIndex = _agent?.History?.Count ?? 0;
+                _thinkingEndedAt = EditorApplication.timeSinceStartup;
+            }
+
             _thinkingStreamBuffer = "";
             _isThinking = false;
+            _thinkingStartedAt = 0;
         }
 
         private void FinalizeContentStream()
         {
             if (!string.IsNullOrWhiteSpace(_streamBuffer))
-                AddBubble(BubbleType.AI, _streamBuffer);
+            {
+                var duration = ContentDuration();
+                StampAssistantContent((float)duration);
+                var bubble = AddBubble(BubbleType.AI, _streamBuffer);
+                if (bubble != null)
+                    bubble.DurationSeconds = duration;
+                _awaitingContent = false;
+            }
             _streamBuffer = "";
             _isStreaming = false;
+            _contentStartedAt = 0;
         }
 
         private void FinishStream(string full)
         {
+            FlushUnstampedThinking();
             _isStreaming = false;
             if (!string.IsNullOrWhiteSpace(full))
-                AddBubble(BubbleType.AI, full);
+            {
+                var timed = _awaitingContent || _contentStartedAt > 0;
+                var duration = timed ? ContentDuration() : -1;
+                if (timed)
+                    StampAssistantContent((float)duration);
+                var bubble = AddBubble(BubbleType.AI, full);
+                if (bubble != null && timed)
+                    bubble.DurationSeconds = duration;
+            }
             _streamBuffer = "";
+            _contentStartedAt = 0;
+            _awaitingContent = false;
             PersistSession();
         }
 
@@ -944,13 +1033,25 @@ namespace Indey.UIPrefabBuilder.UI
         {
             _ignoreStream = true;
             var partial = _streamBuffer;
+            CloseOpenActivity();
             _agent?.Cancel();
             FinalizeThinkingStream(null);
             FinalizeContentStream();
             _isStreaming = false;
             _isThinking = false;
             if (!string.IsNullOrWhiteSpace(partial))
-                _agent?.History?.AddAssistant(partial);
+            {
+                var message = _agent?.History?.AddAssistant(partial);
+                if (message != null && message.ContentSeconds < 0)
+                {
+                    for (int i = _bubbles.Count - 1; i >= 0; i--)
+                    {
+                        if (_bubbles[i].Type != BubbleType.AI || _bubbles[i].DurationSeconds < 0) continue;
+                        message.ContentSeconds = (float)_bubbles[i].DurationSeconds;
+                        break;
+                    }
+                }
+            }
             PersistSession();
         }
 
@@ -1007,10 +1108,8 @@ namespace Indey.UIPrefabBuilder.UI
             _agent.History.Clear();
             _agent.Refresh();
             _sessions.NewSession();
-            _streamBuffer = "";
-            _thinkingStreamBuffer = "";
-            _isStreaming = false;
-            _isThinking = false;
+            ResetTurnTimer();
+            ResetActivityClocks();
             ConsoleLogger.LogVolatile("New chat session created");
         }
 
@@ -1019,10 +1118,8 @@ namespace Indey.UIPrefabBuilder.UI
             _bubbles.Clear();
             _agent?.History?.Clear();
             _agent?.Refresh();
-            _streamBuffer = "";
-            _thinkingStreamBuffer = "";
-            _isStreaming = false;
-            _isThinking = false;
+            ResetTurnTimer();
+            ResetActivityClocks();
         }
 
         private void ExportChat()
@@ -1041,20 +1138,231 @@ namespace Indey.UIPrefabBuilder.UI
         #endregion
 
         #region Helpers
-        private void AddBubble(BubbleType type, string content, List<string> attachedFiles = null, string title = null, string note = null)
+        private ChatBubble AddBubble(BubbleType type, string content, List<string> attachedFiles = null, string title = null, string note = null, bool timingOpen = false)
         {
-            if (string.IsNullOrWhiteSpace(content) && string.IsNullOrWhiteSpace(title) && (attachedFiles == null || attachedFiles.Count == 0)) return;
-            _bubbles.Add(new ChatBubble
+            if (string.IsNullOrWhiteSpace(content) && string.IsNullOrWhiteSpace(title) && (attachedFiles == null || attachedFiles.Count == 0)) return null;
+            var bubble = new ChatBubble
             {
                 Type = type,
                 Content = content ?? "",
                 AttachedFilePaths = attachedFiles,
                 Title = title,
-                Note = note
-            });
+                Note = note,
+                TimingOpen = timingOpen,
+                StartedAt = timingOpen ? EditorApplication.timeSinceStartup : 0,
+                DurationSeconds = -1
+            };
+            _bubbles.Add(bubble);
             _chatScroll.y = float.MaxValue;
             _needsRepaint = true;
             PersistSession();
+            return bubble;
+        }
+
+        private void AcceptToolCall(string name, string args, string result)
+        {
+            if (result == null)
+            {
+                if (_openTool != null && _openTool.TimingOpen)
+                {
+                    _openTool.DurationSeconds = Math.Max(0, EditorApplication.timeSinceStartup - _openTool.StartedAt);
+                    _openTool.TimingOpen = false;
+                    StampLatestTool((float)_openTool.DurationSeconds);
+                }
+                var presented = ToolCallPresenter.Present(name, args, null);
+                _openTool = AddBubble(presented.Type, presented.Content, null, presented.Title, presented.Note, true);
+                return;
+            }
+
+            var done = ToolCallPresenter.Present(name, args, result);
+            var bubble = _openTool;
+            _openTool = null;
+            if (bubble == null)
+            {
+                bubble = AddBubble(done.Type, done.Content, null, done.Title, done.Note);
+            }
+            else
+            {
+                bubble.Type = done.Type;
+                bubble.Content = done.Content ?? "";
+                bubble.Title = done.Title;
+                bubble.Note = done.Note;
+                _chatScroll.y = float.MaxValue;
+                _needsRepaint = true;
+            }
+
+            if (bubble == null || !bubble.TimingOpen) return;
+            bubble.DurationSeconds = Math.Max(0, EditorApplication.timeSinceStartup - bubble.StartedAt);
+            bubble.TimingOpen = false;
+            StampLatestTool((float)bubble.DurationSeconds);
+            PersistSession();
+        }
+
+        private void BeginTurnTimer()
+        {
+            _turnStartedAt = EditorApplication.timeSinceStartup;
+            _turnElapsed = 0;
+            _turnTiming = true;
+            _turnVisible = true;
+            _needsRepaint = true;
+        }
+
+        private void FreezeTurnTimer()
+        {
+            if (!_turnTiming) return;
+            _turnElapsed = Math.Max(0, EditorApplication.timeSinceStartup - _turnStartedAt);
+            _turnTiming = false;
+        }
+
+        private void ResetTurnTimer()
+        {
+            _turnTiming = false;
+            _turnVisible = false;
+            _turnElapsed = 0;
+            _turnStartedAt = 0;
+        }
+
+        private double TurnSeconds()
+        {
+            if (_turnTiming)
+                return Math.Max(0, EditorApplication.timeSinceStartup - _turnStartedAt);
+            return Math.Max(0, _turnElapsed);
+        }
+
+        private void ResetActivityClocks()
+        {
+            _responseStartedAt = 0;
+            _thinkingStartedAt = 0;
+            _thinkingEndedAt = 0;
+            _contentStartedAt = 0;
+            _unstampedThinking = -1f;
+            _thinkingStampIndex = 0;
+            _responseHistoryCount = _agent?.History?.Count ?? 0;
+            _awaitingContent = false;
+            _openTool = null;
+            _streamBuffer = "";
+            _thinkingStreamBuffer = "";
+            _isStreaming = false;
+            _isThinking = false;
+        }
+
+        private void CloseOpenActivity()
+        {
+            if (_openTool == null || !_openTool.TimingOpen) return;
+            _openTool.DurationSeconds = Math.Max(0, EditorApplication.timeSinceStartup - _openTool.StartedAt);
+            _openTool.TimingOpen = false;
+            StampLatestTool((float)_openTool.DurationSeconds);
+            _openTool = null;
+        }
+
+        private double ContentDuration()
+        {
+            double start;
+            if (_contentStartedAt > 0)
+                start = _contentStartedAt;
+            else if (_thinkingEndedAt > 0)
+                start = _thinkingEndedAt;
+            else
+                start = _responseStartedAt;
+            if (start <= 0) return 0;
+            return Math.Max(0, EditorApplication.timeSinceStartup - start);
+        }
+
+        private void FlushUnstampedThinking()
+        {
+            if (_unstampedThinking < 0 || _agent?.History == null) return;
+            var messages = _agent.History.Messages;
+            for (int i = messages.Count - 1; i >= _thinkingStampIndex && i >= 0; i--)
+            {
+                if (messages[i].Role != ChatRole.Assistant) continue;
+                if (messages[i].ThinkingSeconds < 0)
+                    messages[i].ThinkingSeconds = _unstampedThinking;
+                _unstampedThinking = -1f;
+                return;
+            }
+        }
+
+        private void StampAssistantContent(float seconds)
+        {
+            var messages = _agent?.History?.Messages;
+            if (messages == null) return;
+            for (int i = messages.Count - 1; i >= _responseHistoryCount && i >= 0; i--)
+            {
+                if (messages[i].Role != ChatRole.Assistant) continue;
+                messages[i].ContentSeconds = seconds;
+                return;
+            }
+        }
+
+        private void StampLatestTool(float seconds)
+        {
+            var messages = _agent?.History?.Messages;
+            if (messages == null) return;
+            for (int i = messages.Count - 1; i >= 0; i--)
+            {
+                if (messages[i].Role != ChatRole.Tool) continue;
+                messages[i].ToolSeconds = seconds;
+                return;
+            }
+        }
+
+        private void DrawElapsedFooter(ChatBubble b)
+        {
+            var text = ElapsedText(b);
+            if (text == null || _elapsedLabel == null) return;
+            GUILayout.Space(2f);
+            GUILayout.Label(text, _elapsedLabel, GUILayout.ExpandWidth(true));
+        }
+
+        private static string ElapsedText(ChatBubble b)
+        {
+            if (b == null || !ShowsElapsed(b.Type)) return null;
+            if (b.TimingOpen)
+            {
+                var start = b.StartedAt > 0 ? b.StartedAt : EditorApplication.timeSinceStartup;
+                return FormatDuration(Math.Max(0, EditorApplication.timeSinceStartup - start));
+            }
+            if (b.DurationSeconds < 0) return null;
+            return FormatDuration(b.DurationSeconds);
+        }
+
+        private static bool ShowsElapsed(BubbleType type)
+        {
+            return type == BubbleType.Thinking
+                || type == BubbleType.AI
+                || type == BubbleType.AIStream
+                || type == BubbleType.ToolCall
+                || type == BubbleType.Code;
+        }
+
+        private static string FormatDuration(double seconds)
+        {
+            if (seconds < 0 || double.IsNaN(seconds) || double.IsInfinity(seconds))
+                seconds = 0;
+            if (seconds < 0.05)
+                return "0s";
+            if (seconds < 60)
+                return seconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "s";
+            int total = (int)seconds;
+            int hours = total / 3600;
+            int minutes = (total % 3600) / 60;
+            int secs = total % 60;
+            if (hours > 0)
+                return hours + "h " + minutes.ToString("00") + "m " + secs.ToString("00") + "s";
+            return minutes + "m " + secs.ToString("00") + "s";
+        }
+
+        private static string ThinkingTitle(bool animate)
+        {
+            return animate ? "Thinking" + ThinkingDots() : "Thinking...";
+        }
+
+        private static string ThinkingDots()
+        {
+            int step = (int)(EditorApplication.timeSinceStartup / 0.45d) % 3;
+            if (step <= 0) return ".";
+            if (step == 1) return "..";
+            return "...";
         }
 
         private void HandleKeyboard()
@@ -1069,7 +1377,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void InitStyles()
         {
-            if (_stylesInit && _markdownBody != null && _codeBlockStyle != null && _directiveBubble != null && _codeBody != null)
+            if (_stylesInit && _markdownBody != null && _codeBlockStyle != null && _directiveBubble != null && _codeBody != null && _elapsedLabel != null)
             {
                 ApplyDirectiveMetrics();
                 return;
@@ -1158,6 +1466,18 @@ namespace Indey.UIPrefabBuilder.UI
             }
             _inputStyle = BuilderStyles.CreateInputStyle();
             _statusLabel = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleLeft };
+            _elapsedLabel = new GUIStyle(EditorStyles.miniLabel)
+            {
+                alignment = TextAnchor.MiddleRight,
+                fontSize = 10,
+                padding = new RectOffset(0, 2, 0, 0),
+                normal =
+                {
+                    textColor = EditorGUIUtility.isProSkin
+                        ? new Color(0.68f, 0.68f, 0.68f)
+                        : new Color(0.35f, 0.35f, 0.35f)
+                }
+            };
         }
 
         private static Font LoadCodeFont()
@@ -1197,5 +1517,8 @@ namespace Indey.UIPrefabBuilder.UI
         public Vector2 CodeScroll;
         public bool Expanded;
         public List<string> AttachedFilePaths;
+        public double StartedAt;
+        public double DurationSeconds = -1;
+        public bool TimingOpen;
     }
 }

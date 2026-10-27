@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -62,6 +63,15 @@ namespace Indey.UIPrefabBuilder.UI
         public int PromptTokens;
         public int CompletionTokens;
         public int ReasoningTokens;
+        [DefaultValue(-1f)]
+        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public float ThinkingSeconds = -1f;
+        [DefaultValue(-1f)]
+        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public float ContentSeconds = -1f;
+        [DefaultValue(-1f)]
+        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public float ToolSeconds = -1f;
         [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
         public bool Injected;
         public List<SerializedToolCall> ToolCalls;
@@ -181,12 +191,11 @@ namespace Indey.UIPrefabBuilder.UI
                     Ticks = a.Ticks
                 }).ToList()
             };
-            var liveStem = ConsoleLogger.SessionStem;
             WriteSession(session, previousStem);
             var desired = session.StorageName;
             SessionImageArchive.RewriteHistory(history, previous?.StorageName, desired);
             SessionImageArchive.RewriteHistory(history, previousStem, desired);
-            SessionImageArchive.RewriteHistory(history, liveStem, desired);
+            SessionImageArchive.RewriteHistory(history, _currentId, desired);
             EditorPrefs.SetString("UIPrefabBuilder_LastSession", _currentId);
         }
 
@@ -353,7 +362,7 @@ namespace Indey.UIPrefabBuilder.UI
                 }
 
                 if (!string.IsNullOrWhiteSpace(message.Thinking))
-                    bubbles.Add(new ChatBubble { Type = BubbleType.Thinking, Content = message.Thinking });
+                    bubbles.Add(new ChatBubble { Type = BubbleType.Thinking, Content = message.Thinking, DurationSeconds = message.ThinkingSeconds });
                 if (message.ToolCalls != null)
                 {
                     foreach (var call in message.ToolCalls)
@@ -366,12 +375,13 @@ namespace Indey.UIPrefabBuilder.UI
                             Type = presented.Type,
                             Title = presented.Title,
                             Content = presented.Content,
-                            Note = presented.Note
+                            Note = presented.Note,
+                            DurationSeconds = result?.ToolSeconds ?? -1f
                         });
                     }
                 }
                 if (!string.IsNullOrWhiteSpace(message.Content))
-                    bubbles.Add(new ChatBubble { Type = BubbleType.AI, Content = message.ArchiveContent ?? message.Content });
+                    bubbles.Add(new ChatBubble { Type = BubbleType.AI, Content = message.ArchiveContent ?? message.Content, DurationSeconds = message.ContentSeconds });
             }
         }
 
@@ -465,6 +475,9 @@ namespace Indey.UIPrefabBuilder.UI
                 PromptTokens = message.PromptTokens,
                 CompletionTokens = message.CompletionTokens,
                 ReasoningTokens = message.ReasoningTokens,
+                ThinkingSeconds = message.ThinkingSeconds,
+                ContentSeconds = message.ContentSeconds,
+                ToolSeconds = message.ToolSeconds,
                 Injected = message.Injected,
                 ImageRefs = CollectImageRefs(message)
             };
@@ -504,6 +517,9 @@ namespace Indey.UIPrefabBuilder.UI
                 PromptTokens = message.PromptTokens,
                 CompletionTokens = message.CompletionTokens,
                 ReasoningTokens = message.ReasoningTokens,
+                ThinkingSeconds = message.ThinkingSeconds,
+                ContentSeconds = message.ContentSeconds,
+                ToolSeconds = message.ToolSeconds,
                 Injected = message.Injected,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
             };
@@ -801,14 +817,16 @@ namespace Indey.UIPrefabBuilder.UI
             var desired = ResolveUniqueStem(MakeStorageName(session.Title, session.SessionId), session.SessionId);
             var previousLogStem = FindLogStem(session.StorageName, previousFileStem, session.SessionId);
             var previousAttachmentStem = session.StorageName;
-            var liveAttachmentStem = ConsoleLogger.SessionStem;
             session.StorageName = desired;
+            // Only this session's own folder names. The logger stem can still be the
+            // previously open chat when a new session is created, and moving that
+            // folder would merge two chats into one attachment directory.
             SessionImageArchive.Move(previousAttachmentStem, desired);
-            SessionImageArchive.Move(liveAttachmentStem, desired);
             SessionImageArchive.Move(previousFileStem, desired);
+            SessionImageArchive.Move(session.SessionId, desired);
             RewriteImageRefs(session, previousAttachmentStem, desired);
-            RewriteImageRefs(session, liveAttachmentStem, desired);
             RewriteImageRefs(session, previousFileStem, desired);
+            RewriteImageRefs(session, session.SessionId, desired);
             var path = Path.Combine(SessionDir, desired + ".json");
             File.WriteAllText(path, JsonConvert.SerializeObject(session, Formatting.Indented));
             if (!string.IsNullOrEmpty(previousFileStem)

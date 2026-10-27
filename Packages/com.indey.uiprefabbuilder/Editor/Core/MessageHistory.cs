@@ -51,6 +51,12 @@ namespace Indey.UIPrefabBuilder.Core
         public int PromptTokens;
         public int CompletionTokens;
         public int ReasoningTokens;
+        /// <summary>Seconds spent producing <see cref="Thinking"/>. Negative means unknown.</summary>
+        public float ThinkingSeconds = -1f;
+        /// <summary>Seconds spent producing <see cref="Content"/>. Negative means unknown.</summary>
+        public float ContentSeconds = -1f;
+        /// <summary>Seconds spent running this tool call. Negative means unknown.</summary>
+        public float ToolSeconds = -1f;
         public List<ImageArchiveRef> ImageArchives;
         /// <summary>
         /// When true, images in this message are degraded to low-resolution

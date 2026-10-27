@@ -2219,9 +2219,8 @@ namespace Indey.UIPrefabBuilder.Skills
             var prompt = Str(args, "prompt", null);
             var refPath = Str(args, "referenceImagePath", null);
 
-            var projectRoot = Path.GetDirectoryName(Application.dataPath);
-            var fullPath = Path.Combine(projectRoot, path);
-            if (!File.Exists(fullPath))
+            var fullPath = SessionImageArchive.Resolve(path);
+            if (string.IsNullOrEmpty(fullPath))
                 return Error($"Screenshot not found: {path}");
 
             var stale = CheckCaptureFreshness(path, "analyze");
@@ -2257,16 +2256,18 @@ namespace Indey.UIPrefabBuilder.Skills
             var imageUrl = $"data:image/png;base64,{base64}";
 
             var images = new JArray { imageUrl };
+            var imagePaths = new JArray { path };
             bool hasRef = false;
             string framingNote = null;
 
             if (!string.IsNullOrEmpty(refPath))
             {
-                var refFullPath = Path.Combine(projectRoot, refPath);
-                if (File.Exists(refFullPath))
+                var refFullPath = SessionImageArchive.Resolve(refPath);
+                if (!string.IsNullOrEmpty(refFullPath))
                 {
                     var refBytes = File.ReadAllBytes(refFullPath);
                     images.Add($"data:image/png;base64,{Convert.ToBase64String(refBytes)}");
+                    imagePaths.Add(refPath);
                     hasRef = true;
                     framingNote = BuildFramingNote(bytes, refBytes);
                 }
@@ -2321,6 +2322,7 @@ namespace Indey.UIPrefabBuilder.Skills
                 ["message"] = message,
                 ["_multimodal"] = true,
                 ["_images"] = images,
+                ["_imagePaths"] = imagePaths,
                 ["validCapture"] = true,
                 ["_hint"] = "success=true only means the image was delivered — it is NOT a passing verdict. " +
                     "After you have looked at the image you MUST call `report_visual_verdict` for this exact screenshotPath."
@@ -2338,8 +2340,8 @@ namespace Indey.UIPrefabBuilder.Skills
             if (string.IsNullOrEmpty(path))
                 return Error("Missing 'screenshotPath'. Report the verdict for the screenshot you just analyzed.");
 
-            var projectRoot = Path.GetDirectoryName(Application.dataPath);
-            if (!File.Exists(Path.Combine(projectRoot, path)))
+            var fullPath = SessionImageArchive.Resolve(path);
+            if (string.IsNullOrEmpty(fullPath))
                 return Error($"Screenshot not found: {path}. Report the verdict for a screenshot that exists on disk.");
 
             var stale = CheckCaptureFreshness(path, "report the verdict for");
@@ -2373,7 +2375,7 @@ namespace Indey.UIPrefabBuilder.Skills
                     "Look at THIS screenshot and give new boxes. matches=false is still accepted when you are reporting real differences.");
             }
 
-            var unsubstantiated = FindUnsubstantiatedClaims(Path.Combine(projectRoot, path), claims);
+            var unsubstantiated = FindUnsubstantiatedClaims(fullPath, claims);
             if (unsubstantiated.Count > 0)
             {
                 return Error("These claimed elements are not detectable at the coordinates you gave — the region is " +
@@ -3274,9 +3276,8 @@ namespace Indey.UIPrefabBuilder.Skills
                 return null;
             }
 
-            var projectRoot = Path.GetDirectoryName(Application.dataPath);
-            var fullPath = Path.Combine(projectRoot, assetPath);
-            if (!File.Exists(fullPath))
+            var fullPath = SessionImageArchive.Resolve(assetPath);
+            if (string.IsNullOrEmpty(fullPath))
             {
                 error = $"Design mockup image not found on disk at: {assetPath}";
                 return null;
@@ -3586,13 +3587,16 @@ namespace Indey.UIPrefabBuilder.Skills
             if (pngBytes == null || pngBytes.Length == 0)
                 return Error("Crop produced an empty image. Check that x/y/width/height are within 0-1.");
 
+            string cropAssetPath = null;
             try
             {
                 var cropDir = Path.Combine(Application.dataPath, "Screenshots", "Crops");
                 if (!Directory.Exists(cropDir)) Directory.CreateDirectory(cropDir);
                 var safeLabel = new string(label.Where(ch => char.IsLetterOrDigit(ch) || ch == '_' || ch == '-').ToArray());
                 if (string.IsNullOrEmpty(safeLabel)) safeLabel = "crop";
-                File.WriteAllBytes(Path.Combine(cropDir, $"{safeLabel}_{DateTime.Now:HHmmssfff}.png"), pngBytes);
+                var cropFile = $"{safeLabel}_{DateTime.Now:HHmmssfff}.png";
+                File.WriteAllBytes(Path.Combine(cropDir, cropFile), pngBytes);
+                cropAssetPath = "Assets/Screenshots/Crops/" + cropFile;
                 AssetDatabase.Refresh();
             }
             catch { /* preview still works even if saving to disk fails */ }
@@ -3609,6 +3613,8 @@ namespace Indey.UIPrefabBuilder.Skills
             {
                 result["_multimodal"] = true;
                 result["_images"] = new JArray { $"data:image/png;base64,{Convert.ToBase64String(pngBytes)}" };
+                if (!string.IsNullOrEmpty(cropAssetPath))
+                    result["_imagePaths"] = new JArray { cropAssetPath };
             }
 
             return result.ToString();

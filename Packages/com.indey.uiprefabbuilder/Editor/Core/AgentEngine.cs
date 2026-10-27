@@ -132,12 +132,16 @@ namespace Indey.UIPrefabBuilder.Core
                 return;
             if (BlockResume()) return;
 
+            var keptDesign = DesignImageContext.CurrentAssetPath;
             _pendingMessage = msg;
             _history.BeginTask(Guid.NewGuid().ToString("N"));
             ResetStepCounters();
             PrefabWorkflowContext.Begin(mode, msg, selected);
             _toolRegistry.BeginTask();
             DesignImageContext.BeginTextTask();
+            if (!string.IsNullOrEmpty(keptDesign))
+                DesignImageContext.CurrentAssetPath = keptDesign;
+            SessionImageArchive.RestoreDesignContext();
             RebuildSystemPrompt();
 
             var effectiveMax = EffectiveMaxSteps;
@@ -202,12 +206,13 @@ namespace Indey.UIPrefabBuilder.Core
                 try
                 {
                     var bytes = File.ReadAllBytes(path);
+                    var archived = SessionImageArchive.Backup("user", path, bytes);
                     var b64 = Convert.ToBase64String(bytes);
                     var mime = GetMimeType(Path.GetExtension(path));
                     parts.Add(new ContentPart
                     {
                         Type = "image_url",
-                        SourcePath = path,
+                        SourcePath = string.IsNullOrEmpty(archived) ? path : archived,
                         ImageUrl = new ImageUrl
                         {
                             Url = $"data:{mime};base64,{b64}",
@@ -224,6 +229,7 @@ namespace Indey.UIPrefabBuilder.Core
 
             _designImagePath = imagePaths.Count > 0 ? imagePaths[0] : null;
             _designImageAssetPath = EnsureDesignImageAssetPath(_designImagePath);
+            RememberDesignArchiveAlias(_designImagePath, _designImageAssetPath);
             DesignImageContext.CurrentAssetPath = _designImageAssetPath;
             DesignImageContext.BeginImageTask();
             TryFillDesignImageSize(_designImagePath, _designImageAssetPath);
@@ -294,6 +300,25 @@ namespace Indey.UIPrefabBuilder.Core
             sb.AppendLine("coordHint=normalized(0-1,top-left) -> canvas pixels via map_design_rect / map_design_rect_batch");
             sb.Append("Do NOT guess approximate positions — call map_design_rect(_batch) before set_rect_transform_batch.");
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// The Assets copy and the original attachment are the same bytes. Record the Assets
+        /// path against the archive so tools can still open the mockup after that copy is deleted.
+        /// </summary>
+        private static void RememberDesignArchiveAlias(string rawPath, string assetPath)
+        {
+            if (string.IsNullOrEmpty(assetPath)) return;
+            try
+            {
+                var full = SessionImageArchive.Resolve(rawPath) ?? SessionImageArchive.Resolve(assetPath);
+                if (string.IsNullOrEmpty(full)) return;
+                SessionImageArchive.Backup("reference", assetPath, File.ReadAllBytes(full));
+            }
+            catch (Exception e)
+            {
+                ConsoleLogger.Error("[Archive] Failed to alias design image: " + e.Message);
+            }
         }
 
         /// <summary>
@@ -1052,6 +1077,20 @@ namespace Indey.UIPrefabBuilder.Core
             catch { return null; }
         }
 
+        private static string FallbackImageSource(string argumentsJson, int index)
+        {
+            if (index == 0) return ReadArgument(argumentsJson, "screenshotPath");
+            if (index == 1) return ReadArgument(argumentsJson, "referenceImagePath");
+            return null;
+        }
+
+        private static string ImageArchiveRole(string toolName, int index)
+        {
+            if (toolName == "crop_design_image") return "crop";
+            if (toolName == "analyze_screenshot") return index == 0 ? "screenshot" : "reference";
+            return index == 0 ? "screenshot" : "image";
+        }
+
         /// <summary>
         /// Returns the message to inject instead of completing, or null when the build may finish.
         /// The gate walks the chain capture → analyze → verdict, because a successful analyze_screenshot
@@ -1535,11 +1574,15 @@ namespace Indey.UIPrefabBuilder.Core
                     if (resultObj["_multimodal"]?.Value<bool>() == true)
                     {
                         var images = resultObj["_images"] as JArray;
+                        var declaredPaths = resultObj["_imagePaths"] as JArray;
                         if (images != null)
                         {
-                            foreach (var img in images)
+                            for (int imageIndex = 0; imageIndex < images.Count; imageIndex++)
                             {
-                                var imageUrl = img.ToString();
+                                var imageUrl = images[imageIndex]?.Type == JTokenType.String
+                                    ? images[imageIndex].Value<string>()
+                                    : images[imageIndex]?.ToString();
+                                if (string.IsNullOrEmpty(imageUrl)) continue;
                                 var imagePart = new ContentPart
                                 {
                                     Type = "image_url",
@@ -1550,16 +1593,25 @@ namespace Indey.UIPrefabBuilder.Core
                                     }
                                 };
                                 if (!imageUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                                {
                                     imagePart.SourcePath = imageUrl;
+                                }
                                 else
-                                    imagePart.SourcePath = ReadArgument(execArgs, "screenshotPath")
-                                        ?? ReadArgument(execArgs, "referenceImagePath");
+                                {
+                                    var sourcePath = declaredPaths != null && imageIndex < declaredPaths.Count
+                                        ? declaredPaths[imageIndex]?.ToString()
+                                        : FallbackImageSource(execArgs, imageIndex);
+                                    var archived = SessionImageArchive.BackupDataUrl(
+                                        ImageArchiveRole(call.Name, imageIndex), sourcePath, imageUrl);
+                                    imagePart.SourcePath = string.IsNullOrEmpty(archived) ? sourcePath : archived;
+                                }
                                 pendingImageParts.Add(imagePart);
                             }
                         }
                         pendingAnalysisPrompt = resultObj["message"]?.ToString();
 
                         resultObj.Remove("_images");
+                        resultObj.Remove("_imagePaths");
                         resultObj.Remove("_multimodal");
                         result = resultObj.ToString();
                     }

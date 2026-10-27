@@ -181,7 +181,12 @@ namespace Indey.UIPrefabBuilder.UI
                     Ticks = a.Ticks
                 }).ToList()
             };
+            var liveStem = ConsoleLogger.SessionStem;
             WriteSession(session, previousStem);
+            var desired = session.StorageName;
+            SessionImageArchive.RewriteHistory(history, previous?.StorageName, desired);
+            SessionImageArchive.RewriteHistory(history, previousStem, desired);
+            SessionImageArchive.RewriteHistory(history, liveStem, desired);
             EditorPrefs.SetString("UIPrefabBuilder_LastSession", _currentId);
         }
 
@@ -224,6 +229,7 @@ namespace Indey.UIPrefabBuilder.UI
                 _currentId = id;
                 EditorPrefs.SetString("UIPrefabBuilder_LastSession", id);
                 ConsoleLogger.SetSession(id, session.StorageName);
+                SessionImageArchive.RestoreDesignContext(session.StorageName);
             }
             catch (Exception e) { Debug.LogWarning("[UIPrefabBuilder] Failed to load session: " + e.Message); }
         }
@@ -262,6 +268,9 @@ namespace Indey.UIPrefabBuilder.UI
             }
             DeleteFileIfExists(LogPath(stem));
             DeleteFileIfExists(LogPath(id));
+            SessionImageArchive.Delete(stem);
+            if (!string.Equals(stem, id, StringComparison.OrdinalIgnoreCase))
+                SessionImageArchive.Delete(id);
             if (id == _currentId)
                 ConsoleLogger.RetargetLog(id);
         }
@@ -566,11 +575,15 @@ namespace Indey.UIPrefabBuilder.UI
                 }
                 catch { }
             }
-            else if (!string.IsNullOrEmpty(part.SourcePath) && File.Exists(part.SourcePath))
+            else
             {
-                var bytes = File.ReadAllBytes(part.SourcePath);
-                described.ByteLength = bytes.Length;
-                described.Sha256 = HashBytes(bytes);
+                var fullPath = SessionImageArchive.Resolve(part.SourcePath);
+                if (!string.IsNullOrEmpty(fullPath))
+                {
+                    var bytes = File.ReadAllBytes(fullPath);
+                    described.ByteLength = bytes.Length;
+                    described.Sha256 = HashBytes(bytes);
+                }
             }
             return described;
         }
@@ -589,11 +602,12 @@ namespace Indey.UIPrefabBuilder.UI
                     SourcePath = image.SourcePath,
                     ImageUrl = new ImageUrl { Detail = image.Detail ?? "low" }
                 };
-                if (!string.IsNullOrEmpty(image.SourcePath) && File.Exists(image.SourcePath))
+                var fullPath = SessionImageArchive.Resolve(image.SourcePath);
+                if (!string.IsNullOrEmpty(fullPath))
                 {
-                    var bytes = File.ReadAllBytes(image.SourcePath);
-                    var mime = image.SourcePath.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase)
-                        || image.SourcePath.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase)
+                    var bytes = File.ReadAllBytes(fullPath);
+                    var mime = fullPath.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase)
+                        || fullPath.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase)
                         ? "image/jpeg" : "image/png";
                     part.ImageUrl.Url = "data:" + mime + ";base64," + Convert.ToBase64String(bytes);
                     parts.Add(part);
@@ -786,7 +800,15 @@ namespace Indey.UIPrefabBuilder.UI
             Directory.CreateDirectory(SessionDir);
             var desired = ResolveUniqueStem(MakeStorageName(session.Title, session.SessionId), session.SessionId);
             var previousLogStem = FindLogStem(session.StorageName, previousFileStem, session.SessionId);
+            var previousAttachmentStem = session.StorageName;
+            var liveAttachmentStem = ConsoleLogger.SessionStem;
             session.StorageName = desired;
+            SessionImageArchive.Move(previousAttachmentStem, desired);
+            SessionImageArchive.Move(liveAttachmentStem, desired);
+            SessionImageArchive.Move(previousFileStem, desired);
+            RewriteImageRefs(session, previousAttachmentStem, desired);
+            RewriteImageRefs(session, liveAttachmentStem, desired);
+            RewriteImageRefs(session, previousFileStem, desired);
             var path = Path.Combine(SessionDir, desired + ".json");
             File.WriteAllText(path, JsonConvert.SerializeObject(session, Formatting.Indented));
             if (!string.IsNullOrEmpty(previousFileStem)
@@ -893,6 +915,22 @@ namespace Indey.UIPrefabBuilder.UI
         {
             if (string.IsNullOrEmpty(stem)) return null;
             return Path.Combine(DataDirectory, "Logs", stem + ".log");
+        }
+
+        static void RewriteImageRefs(ChatSession session, string oldStem, string newStem)
+        {
+            if (session?.Messages == null) return;
+            if (string.IsNullOrEmpty(oldStem) || string.Equals(oldStem, newStem, StringComparison.OrdinalIgnoreCase))
+                return;
+            foreach (var message in session.Messages)
+            {
+                if (message?.ImageRefs == null) continue;
+                foreach (var image in message.ImageRefs)
+                {
+                    if (image == null) continue;
+                    image.SourcePath = SessionImageArchive.RewritePrefix(image.SourcePath, oldStem, newStem);
+                }
+            }
         }
 
         private static void MoveLog(string oldStem, string newStem)

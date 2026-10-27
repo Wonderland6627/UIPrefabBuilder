@@ -253,7 +253,7 @@ namespace Indey.UIPrefabBuilder.UI
             EditorGUILayout.BeginHorizontal();
             GUILayout.Label("Chat History", BuilderStyles.SectionLabel);
             GUILayout.FlexibleSpace();
-            if (GUILayout.Button(new GUIContent("Open Folder", "打开 Sessions 目录。日志在旁边的 Logs 目录，两边文件名相同。"),
+            if (GUILayout.Button(new GUIContent("Open Folder", "打开 Sessions 目录。日志在旁边的 Logs 目录，附件在 Attachments 目录，文件名与会话相同。"),
                     EditorStyles.miniButton, GUILayout.Width(88)))
                 SessionManager.OpenDirectory(SessionManager.SessionDir);
             EditorGUILayout.EndHorizontal();

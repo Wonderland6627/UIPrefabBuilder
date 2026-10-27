@@ -23,9 +23,13 @@ namespace Indey.UIPrefabBuilder.Logging
         private static string _logFilePath;
         private static string _baseDirectory;
         private static string _currentSessionId;
+        private static string _sessionStem;
         private static bool _initialized;
 
         public static string BaseDirectory => _baseDirectory;
+
+        /// <summary>File stem shared by Sessions, Logs, and Attachments for the active chat.</summary>
+        public static string SessionStem => _sessionStem;
 
         public static IReadOnlyList<LogEntry> Entries
         {
@@ -43,6 +47,7 @@ namespace Indey.UIPrefabBuilder.Logging
             _baseDirectory = Path.Combine(projectRoot, "Library", "UIPrefabBuilder");
             Directory.CreateDirectory(Path.Combine(_baseDirectory, "Sessions"));
             Directory.CreateDirectory(Path.Combine(_baseDirectory, "Logs"));
+            Directory.CreateDirectory(Path.Combine(_baseDirectory, "Attachments"));
 
             LogVolatile($"Logger initialized. BaseDir: {_baseDirectory}");
         }
@@ -58,6 +63,7 @@ namespace Indey.UIPrefabBuilder.Logging
             bool same = string.Equals(_currentSessionId, sessionId, StringComparison.Ordinal)
                 && string.Equals(_logFilePath, newPath, StringComparison.OrdinalIgnoreCase);
             _currentSessionId = sessionId;
+            _sessionStem = stem;
             Directory.CreateDirectory(Path.GetDirectoryName(newPath));
             _logFilePath = newPath;
             if (!same)
@@ -73,6 +79,7 @@ namespace Indey.UIPrefabBuilder.Logging
             var logsDir = Path.Combine(_baseDirectory, "Logs");
             Directory.CreateDirectory(logsDir);
             _logFilePath = Path.Combine(logsDir, storageName + ".log");
+            _sessionStem = storageName;
         }
 
         public static void Log(string message) => AddEntry(LogLevel.Info, message);

@@ -30,6 +30,33 @@ namespace Indey.UIPrefabBuilder.UI
         public List<SerializedMessage> Messages = new List<SerializedMessage>();
         public List<SerializedBubble> Bubbles = new List<SerializedBubble>();
         public List<SerializedAssetChange> ChangedAssets = new List<SerializedAssetChange>();
+        /// <summary>Measured mockup regions, so a resumed task can still check them.</summary>
+        public SerializedDesignMeasurements DesignMeasurements;
+    }
+
+    [Serializable]
+    public class SerializedDesignMeasurements
+    {
+        public float Scale;
+        public float CanvasWidth;
+        public float CanvasHeight;
+        public float ImageWidth;
+        public float ImageHeight;
+        public List<SerializedMappedRect> Rects = new List<SerializedMappedRect>();
+    }
+
+    [Serializable]
+    public class SerializedMappedRect
+    {
+        public string Label;
+        public float X;
+        public float Y;
+        public float W;
+        public float H;
+        public float AnchoredX;
+        public float AnchoredY;
+        public float SizeW;
+        public float SizeH;
     }
 
     [Serializable]
@@ -189,7 +216,8 @@ namespace Indey.UIPrefabBuilder.UI
                     Path = a.Path,
                     Kind = a.Kind.ToString(),
                     Ticks = a.Ticks
-                }).ToList()
+                }).ToList(),
+                DesignMeasurements = CaptureDesignMeasurements()
             };
             WriteSession(session, previousStem);
             var desired = session.StorageName;
@@ -239,6 +267,7 @@ namespace Indey.UIPrefabBuilder.UI
                 EditorPrefs.SetString("UIPrefabBuilder_LastSession", id);
                 ConsoleLogger.SetSession(id, session.StorageName);
                 SessionImageArchive.RestoreDesignContext(session.StorageName);
+                ApplyDesignMeasurements(session.DesignMeasurements);
             }
             catch (Exception e) { Debug.LogWarning("[UIPrefabBuilder] Failed to load session: " + e.Message); }
         }
@@ -282,6 +311,57 @@ namespace Indey.UIPrefabBuilder.UI
                 SessionImageArchive.Delete(id);
             if (id == _currentId)
                 ConsoleLogger.RetargetLog(id);
+        }
+
+        private static SerializedDesignMeasurements CaptureDesignMeasurements()
+        {
+            var rects = DesignImageContext.CopyMappedRects();
+            if (rects.Count == 0) return null;
+            return new SerializedDesignMeasurements
+            {
+                Scale = DesignImageContext.LastScale,
+                CanvasWidth = DesignImageContext.LastCanvasWidth,
+                CanvasHeight = DesignImageContext.LastCanvasHeight,
+                ImageWidth = DesignImageContext.LastImageWidth,
+                ImageHeight = DesignImageContext.LastImageHeight,
+                Rects = rects.Select(rect => new SerializedMappedRect
+                {
+                    Label = rect.Label,
+                    X = rect.X,
+                    Y = rect.Y,
+                    W = rect.W,
+                    H = rect.H,
+                    AnchoredX = rect.AnchoredX,
+                    AnchoredY = rect.AnchoredY,
+                    SizeW = rect.SizeW,
+                    SizeH = rect.SizeH
+                }).ToList()
+            };
+        }
+
+        private static void ApplyDesignMeasurements(SerializedDesignMeasurements saved)
+        {
+            if (saved?.Rects == null || saved.Rects.Count == 0)
+            {
+                DesignImageContext.ReplaceMeasurements(0, 0, 0, 0, 0, null);
+                return;
+            }
+
+            var rects = saved.Rects.Select(rect => new DesignImageContext.MappedRect
+            {
+                Label = rect.Label,
+                X = rect.X,
+                Y = rect.Y,
+                W = rect.W,
+                H = rect.H,
+                AnchoredX = rect.AnchoredX,
+                AnchoredY = rect.AnchoredY,
+                SizeW = rect.SizeW,
+                SizeH = rect.SizeH
+            }).ToList();
+            DesignImageContext.ReplaceMeasurements(
+                saved.Scale, saved.CanvasWidth, saved.CanvasHeight, saved.ImageWidth, saved.ImageHeight, rects);
+            ConsoleLogger.Log($"[DesignImage] Restored {rects.Count} measured region(s).");
         }
 
         private static List<SessionAssetChange> ReadAssetChanges(ChatSession session)
@@ -357,7 +437,7 @@ namespace Indey.UIPrefabBuilder.UI
                         .Where(path => !string.IsNullOrEmpty(path))
                         .ToList();
                     if (string.IsNullOrWhiteSpace(text) && (files == null || files.Count == 0)) continue;
-                    AppendUserTurn(bubbles, text, files, message.Injected);
+                    AppendUserTurn(bubbles, text, files, message.Injected, message.ContentSeconds);
                     continue;
                 }
 
@@ -395,19 +475,22 @@ namespace Indey.UIPrefabBuilder.UI
             }
         }
 
-        static void AppendUserTurn(List<ChatBubble> bubbles, string text, List<string> files, bool injected)
+        static void AppendUserTurn(List<ChatBubble> bubbles, string text, List<string> files, bool injected, float durationSeconds)
         {
             if (TrySplitDesignMeta(text, out var userText, out var meta))
             {
                 if (!string.IsNullOrWhiteSpace(userText) || (files != null && files.Count > 0))
                     bubbles.Add(new ChatBubble { Type = BubbleType.User, Content = userText, AttachedFilePaths = files });
                 if (!string.IsNullOrWhiteSpace(meta))
-                    bubbles.Add(new ChatBubble { Type = BubbleType.Directive, Content = meta });
+                    bubbles.Add(new ChatBubble { Type = BubbleType.Directive, Content = meta, DurationSeconds = durationSeconds });
                 return;
             }
 
             var type = injected || IsStandaloneDirective(text) ? BubbleType.Directive : BubbleType.User;
-            bubbles.Add(new ChatBubble { Type = type, Content = text, AttachedFilePaths = files });
+            var bubble = new ChatBubble { Type = type, Content = text, AttachedFilePaths = files };
+            if (type == BubbleType.Directive)
+                bubble.DurationSeconds = durationSeconds;
+            bubbles.Add(bubble);
         }
 
         static bool TrySplitDesignMeta(string text, out string userText, out string meta)

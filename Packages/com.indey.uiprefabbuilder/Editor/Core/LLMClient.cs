@@ -417,6 +417,7 @@ namespace Indey.UIPrefabBuilder.Core
                 try
                 {
                     ct.ThrowIfCancellationRequested();
+                    _http.Timeout = TimeSpan.FromSeconds(Math.Max(15, _settings.RequestTimeoutSeconds));
                     var apiKey = _cachedApiKey;
                     if (string.IsNullOrEmpty(apiKey))
                         throw new InvalidOperationException("API Key not configured. Open Settings to set it.");
@@ -443,6 +444,8 @@ namespace Indey.UIPrefabBuilder.Core
                     var url = NormalizeUrl(baseUrl);
 
                     var maxRetries = _settings.MaxRetryCount > 0 ? _settings.MaxRetryCount : 3;
+                    const int maxTimeoutAttempts = 2;
+                    var timeoutAttempts = 0;
                     Exception lastEx = null;
                     LLMResponse result = null;
 
@@ -515,11 +518,13 @@ namespace Indey.UIPrefabBuilder.Core
                         {
                             lastEx = new TimeoutException($"Model request timed out after {Math.Max(15, _settings.RequestTimeoutSeconds)}s.");
                             ConsoleLogger.Warning("[Agent] " + lastEx.Message);
+                            if (++timeoutAttempts >= maxTimeoutAttempts) break;
                         }
                         catch (TimeoutException e)
                         {
                             lastEx = e;
                             ConsoleLogger.Warning("[Agent] " + e.Message);
+                            if (++timeoutAttempts >= maxTimeoutAttempts) break;
                         }
                         catch (InvalidOperationException) { throw; }
                         catch (Exception e)

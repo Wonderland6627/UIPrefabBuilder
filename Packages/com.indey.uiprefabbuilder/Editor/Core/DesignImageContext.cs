@@ -75,6 +75,79 @@ namespace Indey.UIPrefabBuilder.Core
             LastImageHeight = imageH;
         }
 
+        /// <summary>True once a design rect has been fitted into the canvas, so mockup boxes can be placed on a screenshot.</summary>
+        public static bool HasFit =>
+            LastScale > 0f
+            && LastCanvasWidth > 0f
+            && LastCanvasHeight > 0f
+            && LastImageWidth > 0f
+            && LastImageHeight > 0f;
+
+        public static List<MappedRect> CopyMappedRects()
+        {
+            return new List<MappedRect>(MappedRects);
+        }
+
+        /// <summary>
+        /// Replaces the in-memory measurements. An empty list clears them.
+        /// Used when a session is loaded, so a resumed task still knows what was measured.
+        /// </summary>
+        public static void ReplaceMeasurements(
+            float scale, float canvasW, float canvasH, float imageW, float imageH,
+            IList<MappedRect> rects)
+        {
+            MappedRects.Clear();
+            LastScale = 0;
+            LastCanvasWidth = 0;
+            LastCanvasHeight = 0;
+            LastImageWidth = 0;
+            LastImageHeight = 0;
+            MappedRegionCount = 0;
+            if (rects == null || rects.Count == 0) return;
+            if (scale > 0f && canvasW > 0f && canvasH > 0f && imageW > 0f && imageH > 0f)
+                NoteFit(scale, canvasW, canvasH, imageW, imageH);
+            for (int i = 0; i < rects.Count; i++)
+            {
+                var entry = rects[i];
+                Remember(entry.Label, entry.X, entry.Y, entry.W, entry.H,
+                    entry.AnchoredX, entry.AnchoredY, entry.SizeW, entry.SizeH);
+            }
+            MappedRegionCount = MappedRects.Count;
+        }
+
+        /// <summary>
+        /// True when a measured region with this label strictly contains another measured region.
+        /// The crop of that region is the parts inside it, not a sprite of the region itself.
+        /// </summary>
+        public static bool IsContainerLabel(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+            for (int i = 0; i < MappedRects.Count; i++)
+            {
+                if (!SameLabel(MappedRects[i].Label, name)) continue;
+                for (int j = 0; j < MappedRects.Count; j++)
+                {
+                    if (i == j) continue;
+                    if (ContainsStrictly(MappedRects[i], MappedRects[j])) return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>True when <paramref name="inner"/> sits strictly inside <paramref name="outer"/> and is smaller.</summary>
+        public static bool ContainsStrictly(MappedRect outer, MappedRect inner)
+        {
+            const float slop = 0.002f;
+            if (inner.W <= 0f || inner.H <= 0f || outer.W <= 0f || outer.H <= 0f) return false;
+            float innerArea = inner.W * inner.H;
+            float outerArea = outer.W * outer.H;
+            if (innerArea >= outerArea * 0.98f) return false;
+            return inner.X >= outer.X - slop
+                && inner.Y >= outer.Y - slop
+                && inner.X + inner.W <= outer.X + outer.W + slop
+                && inner.Y + inner.H <= outer.Y + outer.H + slop;
+        }
+
         public static bool TryGetMapped(string label, float x, float y, float w, float h, out MappedRect hit)
         {
             for (int i = 0; i < MappedRects.Count; i++)

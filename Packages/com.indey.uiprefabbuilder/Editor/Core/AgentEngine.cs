@@ -499,7 +499,7 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine("- matches=true is also rejected while icon-sized Images still have no sprite. A flat green/pink/blue square is a PLACEHOLDER, not the mockup's check mark or gender icon — say so instead of counting it as done.");
                         sb.AppendLine("- matches=true is rejected as well while the scene still carries factory defaults: empty text, one font size for every label, untextured button backgrounds, an unwired InputField, an input field showing neither text nor placeholder, a tab/option with no selected-state difference, a Slider without Fill/Handle graphics, or an icon sitting on top of its own button's label. Those are read from the scene, not the pixels, so they cannot be talked around.");
                         sb.AppendLine("- Before reporting matches=true, re-check the PROJECT RULES section: if a rule mandates exact sizes or font sizes, the scene must still have those values — a later layout polish that drifted away from them is a mismatch you must fix, not report as done.");
-                        sb.AppendLine("- EVERY verdict round must re-compare the WHOLE image against the mockup — tab shape, font sizes, text colour and outline, input field, icon spacing, button size, overall proportions — not just the items you listed last round. Your first verdict's mismatch list is a starting point, never the full set.");
+                        sb.AppendLine("- EVERY verdict round must walk every measured part again, not only the items you listed last round. A parent region does not stand in for the parts inside it, and the parts inside a frame do not stand in for the frame. Judge the frame's own edge, fill and corners. Your first verdict's mismatch list is a starting point, never the full set.");
                         sb.AppendLine("- Fix issues in place and repeat the chain. Do NOT delete and rebuild the UI: every rebuild so far has lost artwork and made the result worse. Missing icons almost always mean a failed sprite assignment, a zero-size RectTransform, or an element covered by a later sibling — inspect before re-styling.");
                         sb.AppendLine("- ANY scene edit invalidates the current capture: `analyze_screenshot` and `report_visual_verdict` are REJECTED for a screenshot taken before your last edit. Take a new one after every fix.");
                         sb.AppendLine("- When a verdict is rejected, change ONLY the nodes it names. Do not revert your own earlier fix (a sprite you cleared on purpose is not a defect) and do not restyle elements that already matched — that is how a build that was nearly right becomes worse.");
@@ -595,6 +595,7 @@ namespace Indey.UIPrefabBuilder.Core
                         sb.AppendLine("  - You need to find sprites by visual appearance from a text description → use `search_sprites_by_text`");
                         sb.AppendLine("  - You want to understand what sprites look like → use `search_sprites_by_text`");
                         sb.AppendLine("- `match_sprite_by_region_batch`: give normalized bounding boxes (x, y, width, height in 0-1, top-left origin) directly on the ATTACHED design mockup image — no need to crop or encode images yourself. The tool crops the region server-side and matches it by visual similarity (CLIP embedding) against the indexed sprites. **ALWAYS prefer this over multiple single calls** when matching 2+ regions.");
+                        sb.AppendLine("- A box that contains other regions in the same call, or regions already measured with `map_design_rect`, is not a sprite. The tool returns no matches for it, because the crop is the parts inside. Match those parts, or send a box that is only the frame edge. Do not stretch a sliced sprite and tint it to imitate texture, a border, or corner art on that region — a color only changes color.");
                         sb.AppendLine("- **When a design mockup is attached/available in this session, call `match_sprite_by_region_batch` FIRST for every visually distinct element (backgrounds, buttons, checkboxes, icons) BEFORE falling back to `search_sprites_by_text_batch`.** Text-only search often returns a sprite that merely matches the description in words but looks visually wrong (e.g. a round checkbox instead of a square one) — actual pixel/CLIP matching against the mockup avoids that.");
                         sb.AppendLine("- `match_sprite_by_region`: same as above for a single bounding box.");
                         sb.AppendLine("- `crop_design_image`: optional — crop and preview a region of the design mockup (returns the cropped image to you) if you want to double-check a bounding box before matching.");
@@ -633,7 +634,7 @@ namespace Indey.UIPrefabBuilder.Core
                         var idxForMockup = AssetIndexer.Instance;
                         if (idxForMockup.IsReady && idxForMockup.IndexedCount > 0)
                         {
-                            sb.AppendLine("   - **PREFERRED for precise matching**: `match_sprite_by_region_batch` with the normalized bounding box (0-1, top-left origin) of EACH element on the mockup — this compares actual pixels via CLIP image similarity instead of guessing from a text description.");
+                            sb.AppendLine("   - **PREFERRED for precise matching**: `match_sprite_by_region_batch` with the normalized bounding box (0-1, top-left origin) of EACH element on the mockup — this compares actual pixels via CLIP image similarity instead of guessing from a text description. Skip any box that contains other boxes in that call; match the parts inside it, or a box that is only the frame edge.");
                             sb.AppendLine("   - **Alternative**: `search_sprites_by_text_batch` with ALL visual descriptions at once (e.g. 'green ribbon header', 'gray stone button', 'gold coin icon' — batch them in one call) when a bounding box is impractical.");
                         }
                         else
@@ -856,7 +857,6 @@ namespace Indey.UIPrefabBuilder.Core
             // means a follow-up turn that doesn't re-attach an image simply has no reference image.
             _designImagePath = null;
             _designImageAssetPath = null;
-            DesignImageContext.Clear();
             LatestCode = "";
             LatestThinking = "";
         }
@@ -1126,8 +1126,7 @@ namespace Indey.UIPrefabBuilder.Core
                     "do NOT rebuild the UI from scratch, earlier rebuilds made the result worse. " +
                     "Touch ONLY the nodes named in the issue list: reverting a change you made deliberately (e.g. re-assigning a sprite you had cleared) " +
                     "or restyling elements that already matched is how a good intermediate build gets ruined. " +
-                    "Then re-examine the WHOLE mockup once more, not just this list: tab structure and selected state, font sizes and colours, " +
-                    "text outline, the input field, icon spacing, button size and overall proportions. " +
+                    "On the next pass, walk every measured part again, not only this list. A parent region does not stand in for the parts inside it, and the parts inside a frame do not stand in for the frame. " +
                     "Missing icons usually mean the sprite failed to load, the element has zero size, or it is behind another element. " +
                     "Then `take_screenshot` → `analyze_screenshot` → `report_visual_verdict` again.";
             }
@@ -1159,7 +1158,8 @@ namespace Indey.UIPrefabBuilder.Core
             if (!string.Equals(_latestScreenshotPath, _verdictScreenshotPath, StringComparison.OrdinalIgnoreCase))
             {
                 return $"VISUAL VERIFICATION INCOMPLETE: you analyzed '{_latestScreenshotPath}' but never recorded an accepted verdict. " +
-                    "Call `report_visual_verdict` for that exact path, giving each visible element its bounding box on the screenshot. " +
+                    "Call `report_visual_verdict` for that exact path, giving each visible part its own bounding box on the screenshot. " +
+                    "A box that covers several measured parts does not count as those parts being checked, and a box on the parts inside a frame does not count as the frame being checked. " +
                     "An element you created but cannot see in the image is MISSING, not visible.";
             }
 

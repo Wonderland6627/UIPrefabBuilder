@@ -91,8 +91,6 @@ namespace Indey.UIPrefabBuilder.Core
         private const int SoftLimit = 50;
         private const int MaxToolResultChars = 2000;
         private const int ProtectRecentMessages = 18;
-        private const int ImageDegradeAfterMessages = 16;
-        private bool _imagesDegraded;
 
         public IReadOnlyList<ChatMessage> Messages => _messages;
         public int Count => _messages.Count;
@@ -107,7 +105,6 @@ namespace Indey.UIPrefabBuilder.Core
         public void Clear()
         {
             _messages.Clear();
-            _imagesDegraded = false;
             ResumeBlockedReason = null;
             _taskId = null;
             _stepId = null;
@@ -116,7 +113,6 @@ namespace Indey.UIPrefabBuilder.Core
         public void RestoreMessages(List<ChatMessage> messages)
         {
             _messages.Clear();
-            _imagesDegraded = false;
             if (messages != null)
                 _messages.AddRange(messages);
             ResumeBlockedReason = EvaluateResume(_messages);
@@ -188,6 +184,7 @@ namespace Indey.UIPrefabBuilder.Core
             });
             Stamp(_messages[_messages.Count - 1]);
             _messages[_messages.Count - 1].ArchiveContent = textContent;
+            DegradeOldImages();
             Trim();
         }
 
@@ -295,62 +292,67 @@ namespace Indey.UIPrefabBuilder.Core
         }
 
         /// <summary>
-        /// Replace base64 image data with a text placeholder in old messages
-        /// to prevent unbounded payload growth. Called automatically when
-        /// message count exceeds ImageDegradeAfterMessages.
+        /// Drop base64 screenshots from earlier rounds. The pinned design mockup stays,
+        /// and so does the newest comparison image. Runs on every history update so a
+        /// previous capture does not keep riding along after the next one is attached.
         /// </summary>
         private void DegradeOldImages()
         {
-            if (_imagesDegraded) return;
-            if (_messages.Count < ImageDegradeAfterMessages) return;
-
-            _imagesDegraded = true;
-            int degraded = 0;
-            int downscaled = 0;
-
-            int protectFrom = Math.Max(0, _messages.Count - ProtectRecentMessages);
-            for (int i = 0; i < protectFrom; i++)
+            int latestScreenshot = -1;
+            for (int i = _messages.Count - 1; i >= 0; i--)
             {
-                var msg = _messages[i];
-                if (!msg.HasMultimodalContent) continue;
-
-                if (msg.PinImage)
-                {
-                    foreach (var part in msg.ContentParts)
-                    {
-                        if (part.Type != "image_url" || part.ImageUrl?.Url == null
-                            || !part.ImageUrl.Url.StartsWith("data:"))
-                            continue;
-                        if (part.ImageUrl.Detail == "low") continue;
-                        part.ImageUrl.Detail = "low";
-                        downscaled++;
-                    }
-                    continue;
-                }
-
-                var newParts = new List<ContentPart>();
-                foreach (var part in msg.ContentParts)
-                {
-                    if (part.Type == "image_url" && part.ImageUrl?.Url != null
-                        && part.ImageUrl.Url.StartsWith("data:"))
-                    {
-                        newParts.Add(new ContentPart
-                        {
-                            Type = "text",
-                            Text = "[Image was provided earlier and has been analyzed. Refer to your earlier analysis for design details.]"
-                        });
-                        degraded++;
-                    }
-                    else
-                    {
-                        newParts.Add(part);
-                    }
-                }
-                msg.ContentParts = newParts;
+                if (_messages[i].PinImage || !HasDataImage(_messages[i])) continue;
+                latestScreenshot = i;
+                break;
             }
 
-            if (degraded > 0 || downscaled > 0)
-                Logging.ConsoleLogger.Log($"[MessageHistory] Degraded {degraded} image(s) to text, downscaled {downscaled} pinned image(s) to low detail.");
+            int degraded = 0;
+            for (int i = 0; i < _messages.Count; i++)
+            {
+                if (i == latestScreenshot || _messages[i].PinImage) continue;
+                if (ReplaceDataImages(_messages[i])) degraded++;
+            }
+
+            if (degraded > 0)
+                Logging.ConsoleLogger.Log($"[MessageHistory] Replaced {degraded} earlier screenshot message(s) with a text note. The design mockup and the latest capture stay.");
+        }
+
+        private static bool HasDataImage(ChatMessage msg)
+        {
+            if (msg?.ContentParts == null) return false;
+            foreach (var part in msg.ContentParts)
+            {
+                if (part.Type == "image_url" && part.ImageUrl?.Url != null
+                    && part.ImageUrl.Url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool ReplaceDataImages(ChatMessage msg)
+        {
+            if (msg?.ContentParts == null) return false;
+            var replaced = false;
+            var newParts = new List<ContentPart>();
+            foreach (var part in msg.ContentParts)
+            {
+                if (part.Type == "image_url" && part.ImageUrl?.Url != null
+                    && part.ImageUrl.Url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    newParts.Add(new ContentPart
+                    {
+                        Type = "text",
+                        Text = "[Image was provided earlier and has been analyzed. Refer to your earlier analysis for design details.]"
+                    });
+                    replaced = true;
+                }
+                else
+                {
+                    newParts.Add(part);
+                }
+            }
+            if (replaced) msg.ContentParts = newParts;
+            return replaced;
         }
 
         #region Context Compression
@@ -531,9 +533,16 @@ namespace Indey.UIPrefabBuilder.Core
                 }
 
                 compact["results"] = compactResults;
-                if (results.OfType<Newtonsoft.Json.Linq.JObject>().Any(
-                    item => item["lowConfidence"] != null && (bool)item["lowConfidence"]))
+                bool lowConfidence = results.OfType<Newtonsoft.Json.Linq.JObject>().Any(
+                    item => item["lowConfidence"] != null && (bool)item["lowConfidence"]);
+                bool blockedSprite = results.OfType<Newtonsoft.Json.Linq.JObject>().Any(
+                    item => item["usableAsSprite"] != null && !(bool)item["usableAsSprite"]);
+                if (lowConfidence && blockedSprite)
+                    compact["_hint"] = "One or more best matches have low confidence. One or more regions contain other regions and returned no sprite — do not tint a sliced sprite onto those.";
+                else if (lowConfidence)
                     compact["_hint"] = "One or more best matches have low confidence; do not apply them as reliable visual matches.";
+                else if (blockedSprite)
+                    compact["_hint"] = "One or more regions contain other regions and returned no sprite. Do not tint a sliced sprite onto those.";
                 compact["_compacted"] = $"Preserved all {compactResults.Count} results with top {matchesPerItem} match(es) each.";
                 var json = compact.ToString(Newtonsoft.Json.Formatting.None);
                 if (json.Length <= maxChars) return json;
@@ -557,6 +566,13 @@ namespace Indey.UIPrefabBuilder.Core
             if (item["query"] != null) compact["query"] = item["query"];
             if (item["error"] != null) compact["error"] = item["error"];
             if (item["lowConfidence"] != null) compact["lowConfidence"] = item["lowConfidence"];
+            if (item["usableAsSprite"] != null) compact["usableAsSprite"] = item["usableAsSprite"];
+            if (item["contains"] != null) compact["contains"] = item["contains"].DeepClone();
+            if (item["message"] != null)
+            {
+                var message = item["message"].ToString();
+                compact["message"] = message.Length > 400 ? message.Substring(0, 400) : message;
+            }
 
             var matches = new Newtonsoft.Json.Linq.JArray();
             if (item["matches"] is Newtonsoft.Json.Linq.JArray sourceMatches)

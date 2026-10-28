@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using Indey.UIPrefabBuilder.Compiler;
 using Indey.UIPrefabBuilder.Config;
 using Indey.UIPrefabBuilder.Core;
@@ -27,6 +28,7 @@ namespace Indey.UIPrefabBuilder.Skills
             _missingSpriteStrikes.Clear();
             _previousVerdictPath = null;
             _previousVerdictBoxes = null;
+            TintableSpriteCache.Clear();
         }
 
         // Every scene edit bumps the revision; each capture remembers the revision it was taken at.
@@ -34,6 +36,7 @@ namespace Indey.UIPrefabBuilder.Skills
         // the pixel claims come from the stale image while the scene checks read the new scene.
         private static int _sceneRevision;
         private static readonly Dictionary<string, int> _captureRevisions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, bool> TintableSpriteCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
         public string Execute(string toolName, string argumentsJson)
         {
@@ -791,6 +794,8 @@ namespace Indey.UIPrefabBuilder.Skills
             var spritePath = ReadSpritePathArg(args["spritePath"]);
             var repeatedMiss = CheckMissingSpriteStrike(GetHierarchyPath(go), spritePath);
             if (repeatedMiss != null) return Error(repeatedMiss);
+            var tintRefusal = RefuseContainerTint(go, spritePath, color);
+            if (tintRefusal != null) return Error(tintRefusal);
             var spriteError = ComponentHelper.SetImageProperties(go, spritePath, Str(args, "type", null),
                 Str(args, "fillMethod", null), NullFloat(args, "fillAmount"), NullBool(args, "preserveAspect"), color,
                 out var missingImage, out var spriteCleared);
@@ -834,6 +839,13 @@ namespace Indey.UIPrefabBuilder.Skills
                     if (repeatedMiss != null)
                     {
                         results.Add(ItemFail(target ?? go.name, repeatedMiss));
+                        fail++;
+                        continue;
+                    }
+                    var tintRefusal = RefuseContainerTint(go, spritePath, color);
+                    if (tintRefusal != null)
+                    {
+                        results.Add(ItemFail(target ?? go.name, tintRefusal));
                         fail++;
                         continue;
                     }
@@ -900,6 +912,97 @@ namespace Indey.UIPrefabBuilder.Skills
         }
 
         /// <summary>
+        /// A region that contains other measured regions is not a sprite crop. Multiplying a color
+        /// onto artwork that already has its own hue does not add texture, a border, or corner art.
+        /// A near-gray sprite may still be tinted. A flat fill clears the sprite and sets a color.
+        /// Returns a refusal, or null when the call may proceed.
+        /// </summary>
+        private static string RefuseContainerTint(GameObject go, string spritePath, Color? requestedColor)
+        {
+            if (go == null || !DesignImageContext.IsContainerLabel(go.name)) return null;
+            if (spritePath != null && spritePath.Trim().Length == 0) return null;
+
+            var image = go.GetComponent<Image>();
+            Sprite sprite = null;
+            if (!string.IsNullOrEmpty(spritePath))
+                sprite = AssetDatabase.LoadAssetAtPath<Sprite>(spritePath);
+            else if (image != null)
+                sprite = image.sprite;
+            if (sprite == null) return null;
+
+            var color = requestedColor ?? (image != null ? image.color : Color.white);
+            if (IsNearWhite(color) || SpriteAllowsTint(sprite)) return null;
+
+            return $"Refused: '{go.name}' contains other measured parts, so this crop is not its sprite. " +
+                $"'{sprite.name}' already has its own color. A color multiply does not add texture, a border, or corner art. " +
+                "Apply the sprite without r/g/b, or pass spritePath=\"\" and a solid color for a flat fill.";
+        }
+
+        private static bool IsNearWhite(Color color)
+        {
+            return color.r >= 0.97f && color.g >= 0.97f && color.b >= 0.97f;
+        }
+
+        /// <summary>True when the sprite's opaque pixels are near gray, so a color multiply only sets the color.</summary>
+        private static bool SpriteAllowsTint(Sprite sprite)
+        {
+            if (sprite == null || sprite.texture == null) return true;
+            var path = AssetDatabase.GetAssetPath(sprite);
+            var key = string.IsNullOrEmpty(path) ? sprite.GetInstanceID().ToString() : path + "#" + sprite.name;
+            if (TintableSpriteCache.TryGetValue(key, out var cached)) return cached;
+
+            var allows = true;
+            try
+            {
+                var tex = sprite.texture;
+                var tr = sprite.textureRect;
+                if (tr.width >= 1f && tr.height >= 1f && tex.width > 0 && tex.height > 0)
+                {
+                    int rw = Mathf.Clamp(Mathf.RoundToInt(tr.width), 1, 32);
+                    int rh = Mathf.Clamp(Mathf.RoundToInt(tr.height), 1, 32);
+                    var rt = RenderTexture.GetTemporary(rw, rh, 0, RenderTextureFormat.ARGB32);
+                    var prev = RenderTexture.active;
+                    Texture2D sample = null;
+                    try
+                    {
+                        Graphics.Blit(tex, rt,
+                            new Vector2(tr.width / tex.width, tr.height / tex.height),
+                            new Vector2(tr.x / tex.width, tr.y / tex.height));
+                        RenderTexture.active = rt;
+                        sample = new Texture2D(rw, rh, TextureFormat.RGBA32, false);
+                        sample.ReadPixels(new Rect(0, 0, rw, rh), 0, 0);
+                        sample.Apply();
+                        var pixels = sample.GetPixels();
+                        float saturation = 0f;
+                        int count = 0;
+                        for (int i = 0; i < pixels.Length; i++)
+                        {
+                            if (pixels[i].a < 0.4f) continue;
+                            Color.RGBToHSV(pixels[i], out _, out var s, out _);
+                            saturation += s;
+                            count++;
+                        }
+                        if (count >= 4)
+                            allows = saturation / count <= 0.18f;
+                    }
+                    finally
+                    {
+                        RenderTexture.active = prev;
+                        RenderTexture.ReleaseTemporary(rt);
+                        if (sample != null) UnityEngine.Object.DestroyImmediate(sample);
+                    }
+                }
+            }
+            catch
+            {
+                allows = true;
+            }
+
+            TintableSpriteCache[key] = allows;
+            return allows;
+        }
+
+        /// <summary>
         /// Toggle/Button 这类容器自身常常没有 Image（图形在 Background 子节点上）。只回一句
         /// "has no Image component" 会让模型靠 inspect_hierarchy 猜路径，所以这里直接把候选节点报出来。
         /// </summary>
@@ -932,6 +1035,8 @@ namespace Indey.UIPrefabBuilder.Skills
             var spritePath = Str(args, "spritePath");
             var repeatedMiss = CheckMissingSpriteStrike(GetHierarchyPath(go), spritePath);
             if (repeatedMiss != null) return Error(repeatedMiss);
+            var tintRefusal = RefuseContainerTint(go, spritePath, null);
+            if (tintRefusal != null) return Error(tintRefusal);
             var spriteError = ComponentHelper.SetImageSprite(go, spritePath);
             if (!string.IsNullOrEmpty(spriteError)) return Error(spriteError);
             return Ok($"Sprite set on '{go.name}'.");
@@ -941,7 +1046,10 @@ namespace Indey.UIPrefabBuilder.Skills
         {
             var go = FindGO(Str(args, "target"));
             if (go == null) return TargetNotFound(Str(args, "target"));
-            var colorError = ComponentHelper.SetImageColor(go, new Color(Float(args, "r"), Float(args, "g"), Float(args, "b"), Float(args, "a", 1)));
+            var tintColor = new Color(Float(args, "r"), Float(args, "g"), Float(args, "b"), Float(args, "a", 1));
+            var tintRefusal = RefuseContainerTint(go, null, tintColor);
+            if (tintRefusal != null) return Error(tintRefusal);
+            var colorError = ComponentHelper.SetImageColor(go, tintColor);
             if (colorError != null) return Error(colorError);
             return Ok($"Image color set on '{go.name}'.");
         }
@@ -2284,23 +2392,19 @@ namespace Indey.UIPrefabBuilder.Skills
             {
                 message = "Compare the current UI build (Image 1) against the design mockup (Image 2). "
                     + "HARD RULE: If Image 1 is blank, nearly solid gray/black, or does not show the built UI, "
-                    + "report CAPTURE FAILURE immediately and do NOT claim Matches for any category.\n"
-                    + "FIRST, list every element you can actually SEE in Image 1 (icons, check marks, labels, frames). "
+                    + "report CAPTURE FAILURE immediately and do NOT claim a match.\n"
                     + "Anything you cannot see in Image 1 is MISSING, even if you created it earlier — "
                     + "never describe an element from your build plan as if it were rendered.\n"
                     + (framingNote != null ? framingNote + "\n" : "")
-                    + "For EACH of the following categories, state whether it matches or list the specific difference:\n"
-                    + "1. **Background/Frame**: Is the popup background sprite correct? Are decorative borders visible?\n"
-                    + "2. **Header/Title bar**: Is there a colored banner behind the title? Does the text have outline/shadow?\n"
-                    + "3. **Tab/Button styling**: Do selected/unselected tabs match the design's colors and shape?\n"
-                    + "4. **List items**: Are icons, labels, and values correctly positioned and sized?\n"
-                    + "5. **Text colors & fonts**: Do text colors, sizes, and weights match the design?\n"
-                    + "6. **Spacing & alignment**: Are margins, paddings, and element gaps proportionally correct?\n"
-                    + "7. **Close button**: Is it positioned and styled as shown in the design?\n"
-                    + "8. **Overlay/Dimming**: Is the background overlay present if shown in the design?\n\n"
-                    + "For each mismatch, describe the fix needed (e.g. 'Header needs a blue banner Image behind the title text').\n\n"
-                    + "THEN call `report_visual_verdict` with screenshotPath='" + path + "', matches, "
-                    + "visibleElements (what you actually see in Image 1), missingElements and mismatches.";
+                    + "Walk Image 2 from top to bottom:\n"
+                    + "1. Each part you can point at on its own is one item. Do not invent parts that are not in the mockup.\n"
+                    + "2. A container does not stand in for the parts inside it. A frame is still its own item: judge its edge, fill and corners, and also judge each part inside it.\n"
+                    + "3. For each part, give one box on Image 1 and call it the same, missing, or different. "
+                    + "A difference is shape, color, size, or alignment.\n"
+                    + "Write that into visibleElements, missingElements and mismatches — do not leave it only in prose.\n"
+                    + BuildMeasuredPartsNote(bytes)
+                    + "\nTHEN call `report_visual_verdict` with screenshotPath='" + path + "', matches, "
+                    + "visibleElements (one box per part, where you actually see it on Image 1), missingElements and mismatches.";
             }
             else
             {
@@ -2406,6 +2510,10 @@ namespace Indey.UIPrefabBuilder.Skills
                         "configure_selectable_states for tab/selection states) and leave every element that already matched untouched, " +
                         "then re-run take_screenshot → analyze_screenshot → report_visual_verdict.");
                 }
+
+                var coverageError = MeasuredCoverageError(fullPath, claims);
+                if (coverageError != null)
+                    return Error(coverageError);
             }
 
             var result = new JObject
@@ -2421,8 +2529,9 @@ namespace Indey.UIPrefabBuilder.Skills
             result["message"] = matches
                 ? "Verdict recorded: build matches the design."
                 : $"Verdict recorded: {missing.Count} missing, {mismatches.Count} mismatched. " +
-                  "Fix ONLY these items — do not rebuild the UI from scratch — " +
-                  "then take_screenshot → analyze_screenshot → report_visual_verdict again.";
+                  "Fix the listed nodes in place — do not rebuild the UI, and do not restyle parts that already match. " +
+                  "On the next pass, walk every measured part again, not only this list. " +
+                  "Then take_screenshot → analyze_screenshot → report_visual_verdict again.";
 
             _previousVerdictPath = path;
             _previousVerdictBoxes = claims.Select(c => c.Region).ToList();
@@ -3021,6 +3130,182 @@ namespace Indey.UIPrefabBuilder.Skills
         }
 
         /// <summary>
+        /// A measured region is a leaf when no other measured region sits strictly inside it.
+        /// Containers are omitted so a box around a parent cannot stand in for its parts.
+        /// </summary>
+        private const float LeafBoxAreaMultiple = 3f;
+        private const float LeafCoverFraction = 0.5f;
+
+        private struct ScreenshotLeaf
+        {
+            public string Label;
+            public Rect Box;
+        }
+
+        private static string BuildMeasuredPartsNote(byte[] screenshotBytes)
+        {
+            var frames = new List<ScreenshotLeaf>();
+            var parts = new List<ScreenshotLeaf>();
+            SplitMeasuredBoxes(screenshotBytes, frames, parts);
+            if (frames.Count == 0 && parts.Count == 0) return "";
+
+            var sb = new StringBuilder();
+            AppendMeasuredBoxList(sb, frames,
+                "\nMEASURED FRAMES to re-locate on Image 1 (normalized 0-1, top-left). " +
+                "Judge the frame itself — its edge, fill and corners. A box on the parts inside it does not count:\n");
+            AppendMeasuredBoxList(sb, parts,
+                "\nMEASURED PARTS to re-locate on Image 1 (normalized 0-1, top-left). " +
+                "Do not merge one into its parent box:\n");
+            return sb.ToString();
+        }
+
+        private static void AppendMeasuredBoxList(StringBuilder sb, List<ScreenshotLeaf> boxes, string heading)
+        {
+            if (boxes.Count == 0) return;
+            sb.Append(heading);
+            foreach (var leaf in boxes)
+            {
+                var box = leaf.Box;
+                sb.Append("- ").Append(leaf.Label)
+                    .Append(" x=").Append(box.x.ToString("0.###"))
+                    .Append(" y=").Append(box.y.ToString("0.###"))
+                    .Append(" w=").Append(box.width.ToString("0.###"))
+                    .Append(" h=").Append(box.height.ToString("0.###"))
+                    .Append('\n');
+            }
+        }
+
+        /// <summary>
+        /// Null when this task has no usable measurements, or every measured frame and part has a box.
+        /// Otherwise an error naming the ones that do not.
+        /// </summary>
+        private static string MeasuredCoverageError(string screenshotFullPath, List<VisibleClaim> claims)
+        {
+            byte[] bytes;
+            try { bytes = File.ReadAllBytes(screenshotFullPath); }
+            catch { return null; }
+
+            var frames = new List<ScreenshotLeaf>();
+            var parts = new List<ScreenshotLeaf>();
+            SplitMeasuredBoxes(bytes, frames, parts);
+            if (frames.Count == 0 && parts.Count == 0) return null;
+
+            var missingFrames = UncoveredLabels(frames, claims);
+            var missingParts = UncoveredLabels(parts, claims);
+            if (missingFrames.Count == 0 && missingParts.Count == 0) return null;
+
+            var sb = new StringBuilder("matches=true is rejected: ");
+            if (missingParts.Count > 0)
+            {
+                sb.Append("these measured parts have no box of their own — ")
+                    .Append(string.Join(", ", missingParts))
+                    .Append(". A box around a parent region does not count. ");
+            }
+            if (missingFrames.Count > 0)
+            {
+                sb.Append("these measured frames have no box of their own — ")
+                    .Append(string.Join(", ", missingFrames))
+                    .Append(". A box on the parts inside does not count. Judge the frame's edge, fill and corners. ");
+            }
+            sb.Append("Give each listed part its own box where you see it, or set matches=false and record the difference. Do not rebuild the UI.");
+            return sb.ToString();
+        }
+
+        private static List<string> UncoveredLabels(List<ScreenshotLeaf> boxes, List<VisibleClaim> claims)
+        {
+            var missing = new List<string>();
+            foreach (var leaf in boxes)
+            {
+                if (!IsLeafCovered(leaf.Box, claims))
+                    missing.Add(leaf.Label);
+            }
+            return missing;
+        }
+
+        private static void SplitMeasuredBoxes(byte[] screenshotBytes, List<ScreenshotLeaf> frames, List<ScreenshotLeaf> parts)
+        {
+            if (!DesignImageContext.HasFit) return;
+            if (!ScreenshotSharesCanvasAspect(screenshotBytes)) return;
+
+            var mapped = DesignImageContext.CopyMappedRects();
+            if (mapped.Count == 0) return;
+
+            for (int i = 0; i < mapped.Count; i++)
+            {
+                bool container = false;
+                for (int j = 0; j < mapped.Count; j++)
+                {
+                    if (i == j) continue;
+                    if (DesignImageContext.ContainsStrictly(mapped[i], mapped[j]))
+                    {
+                        container = true;
+                        break;
+                    }
+                }
+                if (!TryDesignToScreenshot(mapped[i], out var box)) continue;
+
+                var label = mapped[i].Label;
+                if (string.IsNullOrWhiteSpace(label)) label = "(unlabeled)";
+                var leaf = new ScreenshotLeaf { Label = label.Trim(), Box = box };
+                if (container) frames.Add(leaf);
+                else parts.Add(leaf);
+            }
+
+            SortMeasuredBoxes(frames);
+            SortMeasuredBoxes(parts);
+        }
+
+        private static void SortMeasuredBoxes(List<ScreenshotLeaf> boxes)
+        {
+            boxes.Sort((a, b) =>
+            {
+                if (Mathf.Abs(a.Box.y - b.Box.y) > 0.01f) return a.Box.y.CompareTo(b.Box.y);
+                return a.Box.x.CompareTo(b.Box.x);
+            });
+        }
+
+        private static bool TryDesignToScreenshot(DesignImageContext.MappedRect design, out Rect screenshot)
+        {
+            screenshot = default;
+            float canvasW = DesignImageContext.LastCanvasWidth;
+            float canvasH = DesignImageContext.LastCanvasHeight;
+            float imgW = DesignImageContext.LastImageWidth;
+            float imgH = DesignImageContext.LastImageHeight;
+            float scale = DesignImageContext.LastScale;
+            if (canvasW <= 0f || canvasH <= 0f || imgW <= 0f || imgH <= 0f || scale <= 0f) return false;
+
+            float left = (canvasW - imgW * scale) * 0.5f + design.X * imgW * scale;
+            float top = (canvasH - imgH * scale) * 0.5f + design.Y * imgH * scale;
+            float width = design.W * imgW * scale;
+            float height = design.H * imgH * scale;
+            screenshot = new Rect(left / canvasW, top / canvasH, width / canvasW, height / canvasH);
+            return screenshot.width > 0.001f && screenshot.height > 0.001f;
+        }
+
+        private static bool ScreenshotSharesCanvasAspect(byte[] screenshotBytes)
+        {
+            if (!TryGetPngSize(screenshotBytes, out var sw, out var sh) || sw <= 0 || sh <= 0) return false;
+            float canvasW = DesignImageContext.LastCanvasWidth;
+            float canvasH = DesignImageContext.LastCanvasHeight;
+            if (canvasW <= 0f || canvasH <= 0f) return false;
+            return Mathf.Abs(sw / (float)sh - canvasW / canvasH) <= 0.15f;
+        }
+
+        private static bool IsLeafCovered(Rect leaf, List<VisibleClaim> claims)
+        {
+            float leafArea = leaf.width * leaf.height;
+            if (leafArea <= 0.000001f) return false;
+            foreach (var claim in claims)
+            {
+                float claimArea = claim.Region.width * claim.Region.height;
+                if (claimArea > leafArea * LeafBoxAreaMultiple) continue;
+                if (IntersectionArea(claim.Region, leaf) >= leafArea * LeafCoverFraction)
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
         /// The capture is a full-screen render at the project design resolution, while a mockup is
         /// usually a crop of one popup. Without this note the model judges proportions against the
         /// wrong frame and reports bogus spacing/size mismatches.
@@ -3037,9 +3322,8 @@ namespace Indey.UIPrefabBuilder.Skills
 
             if (Mathf.Abs(shotAspect - refAspect) > 0.15f)
             {
-                note += " The two frames differ, so do NOT judge by full-frame proportions: " +
-                        "compare the popup content itself (element order, sprites, colors, relative sizes inside the popup), " +
-                        "and ignore differences that only come from the surrounding screen area.";
+                note += " The two frames differ. Ignore only the extra margin around the designed content. " +
+                        "Inside that content, still compare shape, color, relative size and alignment.";
             }
             return note;
         }
@@ -3620,6 +3904,59 @@ namespace Indey.UIPrefabBuilder.Skills
             return result.ToString();
         }
 
+        /// <summary>
+        /// Null when this box can be matched as a sprite. Otherwise a result with no matches:
+        /// the crop contains other regions, so it is those parts rather than one sprite.
+        /// </summary>
+        private static JObject BlockedSpriteRegion(
+            string label, float x, float y, float w, float h,
+            IList<DesignImageContext.MappedRect> siblings, int skipSibling)
+        {
+            var outer = new DesignImageContext.MappedRect { X = x, Y = y, W = w, H = h };
+            var names = new List<string>();
+            var mapped = DesignImageContext.CopyMappedRects();
+            for (int i = 0; i < mapped.Count; i++)
+            {
+                if (!DesignImageContext.ContainsStrictly(outer, mapped[i])) continue;
+                names.Add(string.IsNullOrWhiteSpace(mapped[i].Label) ? "unlabeled" : mapped[i].Label.Trim());
+            }
+            if (siblings != null)
+            {
+                for (int i = 0; i < siblings.Count; i++)
+                {
+                    if (i == skipSibling) continue;
+                    if (!DesignImageContext.ContainsStrictly(outer, siblings[i])) continue;
+                    names.Add(string.IsNullOrWhiteSpace(siblings[i].Label) ? "unlabeled" : siblings[i].Label.Trim());
+                }
+            }
+            if (names.Count == 0) return null;
+
+            var shown = new List<string>();
+            foreach (var name in names)
+            {
+                if (shown.Exists(existing => string.Equals(existing, name, StringComparison.OrdinalIgnoreCase))) continue;
+                shown.Add(name);
+                if (shown.Count >= 8) break;
+            }
+
+            var result = new JObject
+            {
+                ["success"] = true,
+                ["region"] = new JObject { ["x"] = x, ["y"] = y, ["width"] = w, ["height"] = h },
+                ["count"] = 0,
+                ["matches"] = new JArray(),
+                ["usableAsSprite"] = false,
+                ["contains"] = new JArray(shown.Select(name => (JToken)name)),
+                ["message"] = "This region contains " + string.Join(", ", shown)
+                    + ", so the crop is those parts, not a sprite of its own. No sprite is returned. "
+                    + "Do not assign a sliced sprite and a color to imitate texture, a border, or corner art — a color only changes color. "
+                    + "Match the parts inside, or send a box that is only the frame edge and does not contain them. "
+                    + "A flat fill is an empty spritePath plus a solid color."
+            };
+            if (!string.IsNullOrEmpty(label)) result["label"] = label;
+            return result;
+        }
+
         private string DoMatchSpriteByRegion(JObject args)
         {
             var settings = BuilderSettings.Get();
@@ -3642,6 +3979,9 @@ namespace Indey.UIPrefabBuilder.Skills
             var height = Mathf.Clamp(Float(args, "height", 1f), 0.01f, 1f - y);
             var topK = Int(args, "topK", 5);
             var minConfidence = Float(args, "minConfidence", (float)ImageMatchFilterDefault);
+
+            var blocked = BlockedSpriteRegion(null, x, y, width, height, null, -1);
+            if (blocked != null) return blocked.ToString();
 
             var tex = LoadDesignImageTexture(out var error);
             if (tex == null) return Error(error);
@@ -3688,32 +4028,77 @@ namespace Indey.UIPrefabBuilder.Skills
                 return Error("Asset index is empty. Run rebuild_asset_index first.");
 
             var regionsToken = args["regions"] as JArray;
+            if (regionsToken == null && args["regions"] != null && args["regions"].Type == JTokenType.String)
+            {
+                try { regionsToken = JArray.Parse(args["regions"].ToString()); }
+                catch { return Error("Invalid JSON in 'regions' parameter."); }
+            }
             if (regionsToken == null || regionsToken.Count == 0)
                 return Error("Missing or empty 'regions' array.");
 
             var globalMinConfidence = Float(args, "minConfidence", (float)ImageMatchFilterDefault);
 
-            var tex = LoadDesignImageTexture(out var error);
-            if (tex == null) return Error(error);
+            var parsed = new List<DesignImageContext.MappedRect>(regionsToken.Count);
+            foreach (var item in regionsToken)
+            {
+                var regionObj = item as JObject;
+                if (regionObj == null || regionObj["x"] == null || regionObj["y"] == null
+                    || regionObj["width"] == null || regionObj["height"] == null)
+                {
+                    parsed.Add(default);
+                    continue;
+                }
+                float px = Mathf.Clamp01((float)regionObj["x"]);
+                float py = Mathf.Clamp01((float)regionObj["y"]);
+                parsed.Add(new DesignImageContext.MappedRect
+                {
+                    Label = regionObj["label"]?.ToString() ?? "",
+                    X = px,
+                    Y = py,
+                    W = Mathf.Clamp((float)regionObj["width"], 0.01f, 1f - px),
+                    H = Mathf.Clamp((float)regionObj["height"], 0.01f, 1f - py)
+                });
+            }
+
+            bool needsCrop = false;
+            for (int i = 0; i < regionsToken.Count; i++)
+            {
+                if (parsed[i].W <= 0f) continue;
+                if (BlockedSpriteRegion(parsed[i].Label, parsed[i].X, parsed[i].Y, parsed[i].W, parsed[i].H, parsed, i) == null)
+                    needsCrop = true;
+            }
+
+            Texture2D tex = null;
+            if (needsCrop)
+            {
+                tex = LoadDesignImageTexture(out var error);
+                if (tex == null) return Error(error);
+            }
 
             var resultsArr = new JArray();
             try
             {
-                foreach (var item in regionsToken)
+                for (int i = 0; i < regionsToken.Count; i++)
                 {
-                    var regionObj = item as JObject;
-                    if (regionObj == null || regionObj["x"] == null || regionObj["y"] == null
-                        || regionObj["width"] == null || regionObj["height"] == null)
+                    var regionObj = regionsToken[i] as JObject;
+                    if (regionObj == null || parsed[i].W <= 0f)
                     {
                         resultsArr.Add(new JObject { ["error"] = "Region missing required x/y/width/height fields." });
                         continue;
                     }
 
-                    var label = regionObj["label"]?.ToString() ?? "";
-                    var x = Mathf.Clamp01((float)regionObj["x"]);
-                    var y = Mathf.Clamp01((float)regionObj["y"]);
-                    var width = Mathf.Clamp((float)regionObj["width"], 0.01f, 1f - x);
-                    var height = Mathf.Clamp((float)regionObj["height"], 0.01f, 1f - y);
+                    var label = parsed[i].Label;
+                    var x = parsed[i].X;
+                    var y = parsed[i].Y;
+                    var width = parsed[i].W;
+                    var height = parsed[i].H;
+                    var blocked = BlockedSpriteRegion(label, x, y, width, height, parsed, i);
+                    if (blocked != null)
+                    {
+                        resultsArr.Add(blocked);
+                        continue;
+                    }
+
                     var topK = regionObj["topK"] != null ? (int)regionObj["topK"] : 5;
 
                     var cropBytes = CropTextureNormalized(tex, x, y, width, height, out _, out _);

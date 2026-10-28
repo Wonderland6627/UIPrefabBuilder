@@ -49,6 +49,8 @@ namespace Indey.UIPrefabBuilder.UI
         [NonSerialized] private int _responseHistoryCount;
         [NonSerialized] private bool _awaitingContent;
         [NonSerialized] private ChatBubble _openTool;
+        [NonSerialized] private ChatBubble _openDirective;
+        [NonSerialized] private string _openDirectiveMessageId;
 
         // Styles
         private GUIStyle _headerStyle, _userBubble, _aiBubble, _thinkBubble, _codeBubble, _resultBubble, _errorBubble, _toolCallBubble;
@@ -96,6 +98,7 @@ namespace Indey.UIPrefabBuilder.UI
             _agent.OnStreamToken += t =>
             {
                 if (_ignoreStream) return;
+                CloseOpenDirective();
                 if (_contentStartedAt <= 0)
                     _contentStartedAt = EditorApplication.timeSinceStartup;
                 _streamBuffer += t;
@@ -105,6 +108,7 @@ namespace Indey.UIPrefabBuilder.UI
             _agent.OnThinkingToken += t =>
             {
                 if (_ignoreStream) return;
+                CloseOpenDirective();
                 if (_thinkingStartedAt <= 0)
                     _thinkingStartedAt = EditorApplication.timeSinceStartup;
                 _thinkingStreamBuffer += t;
@@ -122,7 +126,7 @@ namespace Indey.UIPrefabBuilder.UI
             };
             _agent.OnExecuted += r => { };
             _agent.OnToolCall += (name, args, result) => AcceptToolCall(name, args, result);
-            _agent.OnDirective += text => AddBubble(BubbleType.Directive, text);
+            _agent.OnDirective += text => AddDirectiveBubble(text);
 
             _sessions = new SessionManager();
             _settingsPanel = new SettingsPanel();
@@ -157,7 +161,9 @@ namespace Indey.UIPrefabBuilder.UI
             if ((_isStreaming || _isThinking) && EditorApplication.timeSinceStartup - _lastSessionPersist >= 1.0)
                 PersistSession();
 
-            bool live = _turnTiming || _isThinking || _isStreaming || (_openTool != null && _openTool.TimingOpen);
+            bool live = _turnTiming || _isThinking || _isStreaming
+                || (_openTool != null && _openTool.TimingOpen)
+                || (_openDirective != null && _openDirective.TimingOpen);
             if (!live && !_needsRepaint) return;
             float minInterval = _needsRepaint ? 0.05f : 0.1f;
             if (Time.realtimeSinceStartup - _lastRepaint < minInterval) return;
@@ -497,10 +503,11 @@ namespace Indey.UIPrefabBuilder.UI
             var bodyHeight = string.IsNullOrEmpty(body)
                 ? 0f
                 : Mathf.Max(16f, _directiveBody.CalcHeight(new GUIContent(body), textWidth));
+            float elapsedExtra = ElapsedText(b) != null ? 18f : 0f;
 
             EditorGUILayout.BeginVertical(_directiveBubble);
             EditorGUILayout.BeginHorizontal();
-            var accentHeight = 16f + bodyHeight;
+            var accentHeight = 16f + bodyHeight + elapsedExtra;
             var accent = GUILayoutUtility.GetRect(3f, accentHeight, GUILayout.Width(3f), GUILayout.Height(accentHeight));
             if (Event.current.type == EventType.Repaint)
                 EditorGUI.DrawRect(accent, BuilderStyles.DirectiveAccent);
@@ -509,6 +516,7 @@ namespace Indey.UIPrefabBuilder.UI
             GUILayout.Label(DirectiveHeading(b.Content), _directiveTitle, GUILayout.Width(textWidth));
             if (!string.IsNullOrEmpty(body))
                 GUILayout.Label(body, _directiveBody, GUILayout.Width(textWidth), GUILayout.Height(bodyHeight));
+            DrawElapsedFooter(b);
             GUILayout.Space(6f);
             EditorGUILayout.EndVertical();
             EditorGUILayout.EndHorizontal();
@@ -969,6 +977,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void FinalizeThinkingStream(string fullThinking)
         {
+            CloseOpenDirective();
             string text = null;
             if (!string.IsNullOrWhiteSpace(_thinkingStreamBuffer))
                 text = _thinkingStreamBuffer;
@@ -1011,6 +1020,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void FinishStream(string full)
         {
+            CloseOpenDirective();
             FlushUnstampedThinking();
             _isStreaming = false;
             if (!string.IsNullOrWhiteSpace(full))
@@ -1108,6 +1118,7 @@ namespace Indey.UIPrefabBuilder.UI
             _agent.History.Clear();
             _agent.Refresh();
             _sessions.NewSession();
+            DesignImageContext.Clear();
             ResetTurnTimer();
             ResetActivityClocks();
             ConsoleLogger.LogVolatile("New chat session created");
@@ -1118,6 +1129,7 @@ namespace Indey.UIPrefabBuilder.UI
             _bubbles.Clear();
             _agent?.History?.Clear();
             _agent?.Refresh();
+            DesignImageContext.Clear();
             ResetTurnTimer();
             ResetActivityClocks();
         }
@@ -1163,6 +1175,7 @@ namespace Indey.UIPrefabBuilder.UI
         {
             if (result == null)
             {
+                CloseOpenDirective();
                 if (_openTool != null && _openTool.TimingOpen)
                 {
                     _openTool.DurationSeconds = Math.Max(0, EditorApplication.timeSinceStartup - _openTool.StartedAt);
@@ -1209,6 +1222,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void FreezeTurnTimer()
         {
+            CloseOpenDirective();
             if (!_turnTiming) return;
             _turnElapsed = Math.Max(0, EditorApplication.timeSinceStartup - _turnStartedAt);
             _turnTiming = false;
@@ -1231,6 +1245,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void ResetActivityClocks()
         {
+            CloseOpenDirective();
             _responseStartedAt = 0;
             _thinkingStartedAt = 0;
             _thinkingEndedAt = 0;
@@ -1240,6 +1255,8 @@ namespace Indey.UIPrefabBuilder.UI
             _responseHistoryCount = _agent?.History?.Count ?? 0;
             _awaitingContent = false;
             _openTool = null;
+            _openDirective = null;
+            _openDirectiveMessageId = null;
             _streamBuffer = "";
             _thinkingStreamBuffer = "";
             _isStreaming = false;
@@ -1248,6 +1265,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void CloseOpenActivity()
         {
+            CloseOpenDirective();
             if (_openTool == null || !_openTool.TimingOpen) return;
             _openTool.DurationSeconds = Math.Max(0, EditorApplication.timeSinceStartup - _openTool.StartedAt);
             _openTool.TimingOpen = false;
@@ -1332,7 +1350,60 @@ namespace Indey.UIPrefabBuilder.UI
                 || type == BubbleType.AI
                 || type == BubbleType.AIStream
                 || type == BubbleType.ToolCall
-                || type == BubbleType.Code;
+                || type == BubbleType.Code
+                || type == BubbleType.Directive;
+        }
+
+        private void AddDirectiveBubble(string text)
+        {
+            CloseOpenDirective();
+            var bubble = AddBubble(BubbleType.Directive, text, timingOpen: true);
+            if (bubble == null) return;
+            _openDirective = bubble;
+            _openDirectiveMessageId = LatestUserMessageId();
+        }
+
+        private void CloseOpenDirective()
+        {
+            if (_openDirective == null || !_openDirective.TimingOpen)
+            {
+                _openDirective = null;
+                _openDirectiveMessageId = null;
+                return;
+            }
+
+            var started = _openDirective.StartedAt > 0 ? _openDirective.StartedAt : EditorApplication.timeSinceStartup;
+            _openDirective.DurationSeconds = Math.Max(0, EditorApplication.timeSinceStartup - started);
+            _openDirective.TimingOpen = false;
+            StampUserMessage(_openDirectiveMessageId, (float)_openDirective.DurationSeconds);
+            _openDirective = null;
+            _openDirectiveMessageId = null;
+            PersistSession();
+        }
+
+        private string LatestUserMessageId()
+        {
+            var messages = _agent?.History?.Messages;
+            if (messages == null) return null;
+            for (int i = messages.Count - 1; i >= 0; i--)
+            {
+                if (messages[i].Role == ChatRole.User)
+                    return messages[i].MessageId;
+            }
+            return null;
+        }
+
+        private void StampUserMessage(string messageId, float seconds)
+        {
+            if (string.IsNullOrEmpty(messageId)) return;
+            var messages = _agent?.History?.Messages;
+            if (messages == null) return;
+            for (int i = messages.Count - 1; i >= 0; i--)
+            {
+                if (messages[i].MessageId != messageId) continue;
+                messages[i].ContentSeconds = seconds;
+                return;
+            }
         }
 
         private static string FormatDuration(double seconds)

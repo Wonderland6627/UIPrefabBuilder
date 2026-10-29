@@ -138,6 +138,8 @@ namespace Indey.UIPrefabBuilder.UI
     public class SessionManager
     {
         private string _currentId;
+        private List<ChatSession> _sessionListCache;
+        private bool _sessionListDirty = true;
 
         public static string SessionDir
         {
@@ -274,8 +276,16 @@ namespace Indey.UIPrefabBuilder.UI
 
         public List<ChatSession> ListSessions()
         {
+            if (!_sessionListDirty && _sessionListCache != null)
+                return _sessionListCache;
+
             var result = new List<ChatSession>();
-            if (!Directory.Exists(SessionDir)) return result;
+            if (!Directory.Exists(SessionDir))
+            {
+                _sessionListCache = result;
+                _sessionListDirty = false;
+                return _sessionListCache;
+            }
             foreach (var f in Directory.GetFiles(SessionDir, "*.json"))
             {
                 try
@@ -285,11 +295,14 @@ namespace Indey.UIPrefabBuilder.UI
                 }
                 catch { }
             }
-            return result.OrderByDescending(s => s.UpdatedAt).ToList();
+            _sessionListCache = result.OrderByDescending(s => s.UpdatedAt).ToList();
+            _sessionListDirty = false;
+            return _sessionListCache;
         }
 
         public void DeleteSession(string id)
         {
+            _sessionListDirty = true;
             var path = FindSessionPath(id);
             string stem = null;
             if (!string.IsNullOrEmpty(path) && File.Exists(path))
@@ -895,6 +908,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void WriteSession(ChatSession session, string previousFileStem)
         {
+            _sessionListDirty = true;
             if (session == null || string.IsNullOrEmpty(session.SessionId)) return;
             Directory.CreateDirectory(SessionDir);
             var desired = ResolveUniqueStem(MakeStorageName(session.Title, session.SessionId), session.SessionId);

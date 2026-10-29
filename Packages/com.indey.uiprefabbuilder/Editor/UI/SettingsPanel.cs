@@ -22,6 +22,14 @@ namespace Indey.UIPrefabBuilder.UI
         private bool _repaintSubscribed;
         private bool _visionProbeInProgress;
         private string _visionProbeStatus = "";
+        private bool _fileStatusDirty = true;
+        private double _fileStatusTime = -1;
+        private bool _visionPresent;
+        private bool _textPresent;
+        private long _visionSize;
+        private long _textSize;
+        private long _indexMetaSize;
+        private long _indexVectorSize;
 
         private void EnsureKeyLoaded()
         {
@@ -34,7 +42,13 @@ namespace Indey.UIPrefabBuilder.UI
         {
             if (_repaintSubscribed) return;
             _repaintSubscribed = true;
-            ModelDownloadManager.Instance.OnStateChanged += RequestRepaint;
+            ModelDownloadManager.Instance.OnStateChanged += OnDownloadStateChanged;
+        }
+
+        private void OnDownloadStateChanged()
+        {
+            _fileStatusDirty = true;
+            RequestRepaint();
         }
 
         private static void RequestRepaint()
@@ -242,8 +256,9 @@ namespace Indey.UIPrefabBuilder.UI
 
             var dm = ModelDownloadManager.Instance;
             var sentisOk = IndexingSetupWizard.IsSentisInstalled();
-            var visionOk = ModelDownloadManager.IsVisionModelPresent();
-            var textOk = ModelDownloadManager.IsTextModelPresent();
+            EnsureFileStatus();
+            var visionOk = _visionPresent;
+            var textOk = _textPresent;
 
             EditorGUILayout.BeginHorizontal();
             BuilderStyles.StatusIcon(sentisOk);
@@ -266,7 +281,7 @@ namespace Indey.UIPrefabBuilder.UI
                 "CLIP Vision",
                 visionOk,
                 dm.IsDownloading && dm.CurrentTask == DownloadTaskType.VisionModel,
-                ModelDownloadManager.GetVisionModelSize(),
+                _visionSize,
                 () => dm.EnqueueVisionModel(),
                 () => dm.CancelCurrent(),
                 () => IndexingSetupWizard.RemoveVisionModel());
@@ -275,7 +290,7 @@ namespace Indey.UIPrefabBuilder.UI
                 "CLIP Text",
                 textOk,
                 dm.IsDownloading && dm.CurrentTask == DownloadTaskType.TextModel,
-                ModelDownloadManager.GetTextModelSize(),
+                _textSize,
                 () => dm.EnqueueTextModel(),
                 () => dm.CancelCurrent(),
                 () => IndexingSetupWizard.RemoveTextModel());
@@ -483,6 +498,7 @@ namespace Indey.UIPrefabBuilder.UI
             GUILayout.Label("Index Status", BuilderStyles.SectionLabel);
 
             var indexer = AssetIndexer.Instance;
+            EnsureFileStatus();
             var indexDir = System.IO.Path.Combine(
                 System.IO.Path.GetDirectoryName(Application.dataPath),
                 "Library", "UIPrefabBuilder", "Index");
@@ -502,8 +518,8 @@ namespace Indey.UIPrefabBuilder.UI
             }
             EditorGUILayout.EndHorizontal();
 
-            long metaSize = System.IO.File.Exists(metaFile) ? new System.IO.FileInfo(metaFile).Length : 0;
-            long vecSize = System.IO.File.Exists(vecFile) ? new System.IO.FileInfo(vecFile).Length : 0;
+            long metaSize = _indexMetaSize;
+            long vecSize = _indexVectorSize;
             long totalSize = metaSize + vecSize;
 
             EditorGUILayout.BeginHorizontal();
@@ -541,6 +557,7 @@ namespace Indey.UIPrefabBuilder.UI
                 {
                     indexer.EnsureInitialized();
                     indexer.RebuildFullIndex();
+                    _fileStatusDirty = true;
                 }
             }
 
@@ -562,6 +579,7 @@ namespace Indey.UIPrefabBuilder.UI
                     if (System.IO.File.Exists(metaFile)) System.IO.File.Delete(metaFile);
                     if (System.IO.File.Exists(vecFile)) System.IO.File.Delete(vecFile);
                     indexer.Dispose();
+                    _fileStatusDirty = true;
                     ConsoleLogger.Log("[AssetIndexer] Index cleared.");
                 }
             }
@@ -601,7 +619,29 @@ namespace Indey.UIPrefabBuilder.UI
             SecureKeyStore.SaveApiKey(_apiKeyDisplay);
             BuilderSettings.Get().Save();
             ProjectConfig.Save();
+            _fileStatusDirty = true;
             ConsoleLogger.Log("Settings saved");
+        }
+
+        private void EnsureFileStatus()
+        {
+            if (!_fileStatusDirty && EditorApplication.timeSinceStartup - _fileStatusTime < 1.0)
+                return;
+
+            _visionPresent = ModelDownloadManager.IsVisionModelPresent();
+            _textPresent = ModelDownloadManager.IsTextModelPresent();
+            _visionSize = ModelDownloadManager.GetVisionModelSize();
+            _textSize = ModelDownloadManager.GetTextModelSize();
+
+            var indexDir = System.IO.Path.Combine(
+                System.IO.Path.GetDirectoryName(Application.dataPath),
+                "Library", "UIPrefabBuilder", "Index");
+            var metaFile = System.IO.Path.Combine(indexDir, "AssetIndexMeta.json");
+            var vecFile = System.IO.Path.Combine(indexDir, "AssetVectors.bytes");
+            _indexMetaSize = System.IO.File.Exists(metaFile) ? new System.IO.FileInfo(metaFile).Length : 0;
+            _indexVectorSize = System.IO.File.Exists(vecFile) ? new System.IO.FileInfo(vecFile).Length : 0;
+            _fileStatusTime = EditorApplication.timeSinceStartup;
+            _fileStatusDirty = false;
         }
 
         private static void OpenBuilderSettingsFolder()

@@ -21,6 +21,17 @@ namespace Indey.UIPrefabBuilder.UI
         private float _lastRepaint;
 
         private readonly List<ChatBubble> _bubbles = new List<ChatBubble>();
+        [NonSerialized] private List<float> _bubbleOffsets = new List<float>();
+        [NonSerialized] private List<float> _bubbleHeights = new List<float>();
+        [NonSerialized] private bool _bubbleLayoutDirty = true;
+        [NonSerialized] private float _bubbleLayoutWidth = -1f;
+        [NonSerialized] private int _bubbleLayoutCount = -1;
+        [NonSerialized] private int _chatVisibleFirst;
+        [NonSerialized] private int _chatVisibleLast;
+        [NonSerialized] private bool _chatShowThinking;
+        [NonSerialized] private bool _chatShowStreaming;
+        [NonSerialized] private bool _endGuiPass;
+        private const float ChatVirtualizationBuffer = 360f;
         private readonly List<string> _attachedFiles = new List<string>();
         private bool _visionSendPending;
         private string _streamBuffer = "";
@@ -32,6 +43,10 @@ namespace Indey.UIPrefabBuilder.UI
         private PrefabWorkflowMode _workflowMode = PrefabWorkflowMode.Auto;
         private bool _changedAssetsExpanded = true;
         private Vector2 _changedAssetsScroll;
+        private readonly List<SessionAssetChange> _orderedChangedAssets = new List<SessionAssetChange>();
+        private bool _changedAssetsDirty = true;
+        private bool _consoleRepaintPending;
+        private double _lastConsoleRepaint;
         private const string WorkflowModePref = "UIPrefabBuilder_WorkflowMode";
         private bool _ignoreStream;
         private double _lastSessionPersist;
@@ -76,6 +91,9 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void OnEnable()
         {
+            _bubbleOffsets = _bubbleOffsets ?? new List<float>();
+            _bubbleHeights = _bubbleHeights ?? new List<float>();
+            InvalidateBubbleLayouts();
             ConsoleLogger.Initialize();
 
             var settings = BuilderSettings.Get();
@@ -142,7 +160,7 @@ namespace Indey.UIPrefabBuilder.UI
                 _hSplitRight.SplitPosition = 320f;
             _vSplitLeft = new SplitView("UIPrefabBuilder_VSplitLeft", SplitDirection.Vertical, 200f, 80f);
 
-            ConsoleLogger.OnLogAdded += _ => _needsRepaint = true;
+            ConsoleLogger.OnLogAdded += OnLogAdded;
 
             EditorApplication.update += Tick;
             ConsoleLogger.LogVolatile("BuilderWindow opened");
@@ -152,12 +170,19 @@ namespace Indey.UIPrefabBuilder.UI
         {
             EditorApplication.update -= Tick;
             SessionAssetChanges.Changed -= OnSessionAssetsChanged;
+            ConsoleLogger.OnLogAdded -= OnLogAdded;
             PersistSession();
             _agent?.Dispose();
         }
 
         private void Tick()
         {
+            if (_consoleRepaintPending && EditorApplication.timeSinceStartup - _lastConsoleRepaint >= 0.15)
+            {
+                _consoleRepaintPending = false;
+                _lastConsoleRepaint = EditorApplication.timeSinceStartup;
+                _needsRepaint = true;
+            }
             if ((_isStreaming || _isThinking) && EditorApplication.timeSinceStartup - _lastSessionPersist >= 1.0)
                 PersistSession();
 
@@ -218,13 +243,26 @@ namespace Indey.UIPrefabBuilder.UI
 
             bool running = IsAgentRunning();
             GUI.enabled = !running;
-            if (GUILayout.Button("New Chat", EditorStyles.toolbarButton, GUILayout.Width(65))) NewChat();
+            if (GUILayout.Button("New Chat", EditorStyles.toolbarButton, GUILayout.Width(65)))
+            {
+                NewChat();
+                _endGuiPass = true;
+            }
             if (GUILayout.Button(_showHistory ? "Close History" : "History", EditorStyles.toolbarButton, GUILayout.Width(85)))
                 _showHistory = !_showHistory;
             GUI.enabled = true;
             if (GUILayout.Button("Export", EditorStyles.toolbarButton, GUILayout.Width(50))) ExportChat();
 
             EditorGUILayout.EndHorizontal();
+            if (_endGuiPass)
+            {
+                _endGuiPass = false;
+                _chatVisibleFirst = 0;
+                _chatVisibleLast = 0;
+                _chatShowThinking = false;
+                _chatShowStreaming = false;
+                GUIUtility.ExitGUI();
+            }
         }
         #endregion
 
@@ -244,55 +282,205 @@ namespace Indey.UIPrefabBuilder.UI
         {
             _centerWidth = rect.width;
             GUILayout.BeginArea(rect);
-
-            if (_showHistory)
+            try
             {
-                DrawHistoryOverlay();
+                if (_showHistory)
+                {
+                    DrawHistoryOverlay();
+                }
+                else
+                {
+                    DrawChatArea();
+                    DrawChangedAssets();
+                }
+
+                DrawStatusBar();
+                DrawInputArea();
             }
-            else
+            finally
             {
-                DrawChatArea();
-                DrawChangedAssets();
+                GUILayout.EndArea();
             }
-
-            DrawStatusBar();
-            DrawInputArea();
-
-            GUILayout.EndArea();
         }
 
         private void DrawChatArea()
         {
+            float layoutWidth = Mathf.Max(120f, _centerWidth);
+            bool layout = Event.current.type == EventType.Layout;
+            if (layout)
+                EnsureBubbleLayout(layoutWidth);
+
             _chatScroll = EditorGUILayout.BeginScrollView(_chatScroll, GUILayout.ExpandHeight(true));
+            try
+            {
+                if (layout)
+                    CaptureChatWindow(layoutWidth);
 
+                int first = _chatVisibleFirst;
+                int lastExclusive = _chatVisibleLast;
+                int count = _bubbles.Count;
+                bool windowReady = _bubbleOffsets != null
+                    && _bubbleOffsets.Count == count + 1
+                    && first >= 0
+                    && lastExclusive >= first
+                    && lastExclusive <= count;
+                if (!windowReady)
+                {
+                    first = 0;
+                    lastExclusive = 0;
+                }
+
+                if (first > 0)
+                    GUILayout.Space(_bubbleOffsets[first]);
+
+                for (int i = first; i < lastExclusive; i++)
+                    DrawBubble(_bubbles[i], i);
+
+                if (lastExclusive < _bubbles.Count)
+                {
+                    float renderedBottom = _bubbleOffsets[lastExclusive];
+                    float totalHeight = _bubbleOffsets[_bubbleOffsets.Count - 1];
+                    GUILayout.Space(Mathf.Max(0f, totalHeight - renderedBottom));
+                }
+
+                if (_chatShowThinking)
+                {
+                    DrawBubble(new ChatBubble
+                    {
+                        Type = BubbleType.Thinking,
+                        Content = _thinkingStreamBuffer,
+                        TimingOpen = true,
+                        StartedAt = _thinkingStartedAt > 0 ? _thinkingStartedAt : EditorApplication.timeSinceStartup
+                    });
+                }
+
+                if (_chatShowStreaming)
+                {
+                    DrawBubble(new ChatBubble
+                    {
+                        Type = BubbleType.AIStream,
+                        Content = _streamBuffer,
+                        TimingOpen = true,
+                        StartedAt = _contentStartedAt > 0 ? _contentStartedAt : EditorApplication.timeSinceStartup
+                    });
+                }
+            }
+            finally
+            {
+                EditorGUILayout.EndScrollView();
+            }
+        }
+
+        private void CaptureChatWindow(float layoutWidth)
+        {
+            EnsureBubbleLayout(layoutWidth);
+            float viewportHeight = Mathf.Max(180f, position.height - 190f);
+            float scrollY = _chatScroll.y;
+            float total = _bubbleOffsets.Count == 0 ? 0f : _bubbleOffsets[_bubbleOffsets.Count - 1];
+            if (float.IsInfinity(scrollY) || scrollY >= total)
+                scrollY = Mathf.Max(0f, total - viewportHeight);
+            float visibleTop = Mathf.Max(0f, scrollY - ChatVirtualizationBuffer);
+            float visibleBottom = scrollY + viewportHeight + ChatVirtualizationBuffer;
+            int first = FindBubbleAt(visibleTop);
+            int lastExclusive = FindBubbleAfter(visibleBottom);
+            if (lastExclusive < first)
+                lastExclusive = first;
+            _chatVisibleFirst = first;
+            _chatVisibleLast = lastExclusive;
+            _chatShowThinking = _isThinking && !string.IsNullOrEmpty(_thinkingStreamBuffer);
+            _chatShowStreaming = _isStreaming && !string.IsNullOrEmpty(_streamBuffer);
+        }
+
+        private void EnsureBubbleLayout(float width)
+        {
+            if (_bubbleOffsets == null)
+                _bubbleOffsets = new List<float>();
+            if (_bubbleHeights == null)
+                _bubbleHeights = new List<float>();
+            if (!_bubbleLayoutDirty
+                && _bubbleLayoutCount == _bubbles.Count
+                && _bubbleOffsets.Count == _bubbles.Count + 1
+                && _bubbleHeights.Count == _bubbles.Count
+                && Mathf.Abs(_bubbleLayoutWidth - width) < 1f)
+                return;
+
+            _bubbleOffsets.Clear();
+            _bubbleHeights.Clear();
+            _bubbleOffsets.Add(0f);
+            float offset = 0f;
             for (int i = 0; i < _bubbles.Count; i++)
-                DrawBubble(_bubbles[i]);
-
-            // Thinking stream (real-time)
-            if (_isThinking && !string.IsNullOrEmpty(_thinkingStreamBuffer))
             {
-                DrawBubble(new ChatBubble
-                {
-                    Type = BubbleType.Thinking,
-                    Content = _thinkingStreamBuffer,
-                    TimingOpen = true,
-                    StartedAt = _thinkingStartedAt > 0 ? _thinkingStartedAt : EditorApplication.timeSinceStartup
-                });
+                var bubble = _bubbles[i];
+                float height = bubble?.RenderCache != null && bubble.RenderCache.Matches(
+                    bubble, width, position.width, EditorGUIUtility.isProSkin, ElapsedText(bubble) != null)
+                    ? bubble.RenderCache.LayoutHeight
+                    : EstimateBubbleHeight(bubble, width);
+                _bubbleHeights.Add(height);
+                offset += height;
+                _bubbleOffsets.Add(offset);
             }
 
-            // Content stream (real-time)
-            if (_isStreaming && !string.IsNullOrEmpty(_streamBuffer))
-            {
-                DrawBubble(new ChatBubble
-                {
-                    Type = BubbleType.AIStream,
-                    Content = _streamBuffer,
-                    TimingOpen = true,
-                    StartedAt = _contentStartedAt > 0 ? _contentStartedAt : EditorApplication.timeSinceStartup
-                });
-            }
+            _bubbleLayoutWidth = width;
+            _bubbleLayoutCount = _bubbles.Count;
+            _bubbleLayoutDirty = false;
+        }
 
-            EditorGUILayout.EndScrollView();
+        private int FindBubbleAt(float offset)
+        {
+            int count = _bubbles.Count;
+            if (_bubbleOffsets == null || _bubbleOffsets.Count != count + 1)
+                return 0;
+            int low = 0;
+            int high = count;
+            while (low < high)
+            {
+                int middle = low + (high - low) / 2;
+                if (_bubbleOffsets[middle + 1] <= offset)
+                    low = middle + 1;
+                else
+                    high = middle;
+            }
+            return low;
+        }
+
+        private int FindBubbleAfter(float offset)
+        {
+            int count = _bubbles.Count;
+            if (_bubbleOffsets == null || _bubbleOffsets.Count != count + 1)
+                return count;
+            int low = 0;
+            int high = count;
+            while (low < high)
+            {
+                int middle = low + (high - low) / 2;
+                if (_bubbleOffsets[middle] < offset)
+                    low = middle + 1;
+                else
+                    high = middle;
+            }
+            return Mathf.Clamp(low, 0, _bubbles.Count);
+        }
+
+        private static float EstimateBubbleHeight(ChatBubble bubble, float width)
+        {
+            if (bubble == null) return 0f;
+            int chars = (bubble.Content?.Length ?? 0) + (bubble.Note?.Length ?? 0);
+            float textWidth = Mathf.Max(120f, width * (bubble.Type == BubbleType.User ? 0.55f : 0.78f));
+            float lines = Mathf.Max(1f, chars / Mathf.Max(24f, textWidth / 7f));
+            float baseHeight = 42f + lines * 18f;
+            if (bubble.Type == BubbleType.Code)
+                baseHeight = Mathf.Min(520f, Mathf.Max(86f, baseHeight));
+            else if (bubble.Type == BubbleType.Directive)
+                baseHeight += 26f;
+            return baseHeight + 4f;
+        }
+
+        private void UpdateBubbleHeight(int index, ChatBubble bubble)
+        {
+            if (index < 0 || index >= _bubbleHeights.Count || bubble?.RenderCache == null) return;
+            float height = bubble.RenderCache.LayoutHeight;
+            if (Mathf.Abs(_bubbleHeights[index] - height) < 0.5f) return;
+            _bubbleLayoutDirty = true;
         }
 
         private void DrawHistoryOverlay()
@@ -320,6 +508,7 @@ namespace Indey.UIPrefabBuilder.UI
                 if (GUILayout.Button("Load", EditorStyles.miniButton, GUILayout.Width(50)))
                 {
                     _sessions.LoadSession(s.SessionId, _agent.History, _bubbles);
+                    InvalidateBubbleLayouts();
                     _showHistory = false;
                 }
                 if (GUILayout.Button("\u00d7", EditorStyles.miniButton, GUILayout.Width(BuilderStyles.RemoveIconWidth)))
@@ -330,16 +519,19 @@ namespace Indey.UIPrefabBuilder.UI
             EditorGUILayout.EndVertical();
         }
 
-        private void DrawBubble(ChatBubble b)
+        private void DrawBubble(ChatBubble b, int bubbleIndex = -1)
         {
+            if (b == null) return;
+            var cache = GetRenderCache(b);
+            UpdateBubbleHeight(bubbleIndex, b);
             if (b.Type == BubbleType.Directive)
             {
-                DrawDirective(b);
+                DrawDirective(b, cache);
                 return;
             }
             if (b.Type == BubbleType.Code)
             {
-                DrawCodeBubble(b);
+                DrawCodeBubble(b, cache);
                 return;
             }
 
@@ -377,19 +569,19 @@ namespace Indey.UIPrefabBuilder.UI
             if (b.Type == BubbleType.Thinking)
             {
                 GUILayout.Label(ThinkingTitle(b.TimingOpen), EditorStyles.miniBoldLabel);
-                DrawWrappedText(b.Content, EditorStyles.wordWrappedMiniLabel, maxBubbleWidth - 24f);
+                DrawWrappedText(b.Content, EditorStyles.wordWrappedMiniLabel, maxBubbleWidth - 24f, cache.ContentHeight);
             }
             else if (b.Type == BubbleType.ToolCall)
             {
-                DrawToolCall(b.Content, maxBubbleWidth - 24f);
+                DrawToolCall(cache, maxBubbleWidth - 24f);
             }
             else if (b.Type == BubbleType.AI || b.Type == BubbleType.AIStream)
             {
-                DrawMarkdownContent(b.Content, maxBubbleWidth - 16f);
+                DrawMarkdownContent(cache, maxBubbleWidth - 16f);
             }
             else
             {
-                DrawWrappedText(b.Content, EditorStyles.wordWrappedLabel, maxBubbleWidth - 24f);
+                DrawWrappedText(b.Content, EditorStyles.wordWrappedLabel, maxBubbleWidth - 24f, cache.ContentHeight);
             }
 
             if (b.AttachedFilePaths != null && b.AttachedFilePaths.Count > 0)
@@ -416,42 +608,26 @@ namespace Indey.UIPrefabBuilder.UI
             GUILayout.Space(4);
         }
 
-        private void DrawToolCall(string content, float width)
+        private void DrawToolCall(ChatBubbleRenderCache cache, float width)
         {
-            var text = content ?? "";
-            var split = text.IndexOf('\n');
-            var header = split < 0 ? text : text.Substring(0, split);
-            var details = split < 0 ? "" : text.Substring(split + 1);
             var layoutWidth = Mathf.Max(40f, width);
-            GUILayout.Label(header, _toolCallHeader, GUILayout.Width(layoutWidth));
-            if (!string.IsNullOrEmpty(details))
+            GUILayout.Label(cache.ToolHeader, _toolCallHeader, GUILayout.Width(layoutWidth), GUILayout.Height(cache.ToolHeaderHeight));
+            if (!string.IsNullOrEmpty(cache.ToolFlow))
             {
-                var flowed = ToolCallPresenter.Flow(details, Mathf.Max(8f, layoutWidth - 4f), text => _toolCallLabel.CalcSize(new GUIContent(text)).x);
-                DrawWrappedText(flowed, _toolCallLabel, layoutWidth);
+                DrawWrappedText(cache.ToolFlow, _toolCallLabel, layoutWidth, cache.ToolFlowHeight);
             }
         }
 
-        private void DrawCodeBubble(ChatBubble b)
+        private void DrawCodeBubble(ChatBubble b, ChatBubbleRenderCache cache)
         {
-            float width = Mathf.Max(280f, _centerWidth - 20f);
-            var viewWidth = Mathf.Max(160f, width - 56f);
-            var code = string.IsNullOrEmpty(b.Content) ? " " : b.Content;
-            int sourceLines = 1;
-            for (int i = 0; i < code.Length; i++)
-                if (code[i] == '\n') sourceLines++;
-            float lineBased = sourceLines * (Mathf.Max(12, _codeBody.fontSize) + 3) + 8f;
-            var codeHeight = Mathf.Max(lineBased, _codeBody.CalcHeight(new GUIContent(code), viewWidth));
+            float width = cache.BubbleWidth;
+            var viewWidth = cache.ContentWidth;
+            var code = cache.Code;
+            float codeHeight = cache.CodeHeight;
             const float maxView = 440f;
             var viewHeight = Mathf.Min(codeHeight, maxView);
-            float noteHeight = 0f;
-            var note = "";
-            if (!string.IsNullOrEmpty(b.Note))
-            {
-                note = ToolCallPresenter.Flow(b.Note, Mathf.Max(8f, viewWidth - 4f), text => _codeNote.CalcSize(new GUIContent(text)).x);
-                noteHeight = Mathf.Max(16f, _codeNote.CalcHeight(new GUIContent(note), viewWidth));
-            }
-            float elapsedExtra = ElapsedText(b) != null ? 16f : 0f;
-            float blockHeight = 22f + viewHeight + (noteHeight > 0f ? noteHeight + 8f : 0f) + elapsedExtra + 6f;
+            float noteHeight = cache.NoteHeight;
+            float blockHeight = cache.CodeBlockHeight;
 
             EditorGUILayout.BeginHorizontal();
             GUILayout.Space(4);
@@ -481,10 +657,10 @@ namespace Indey.UIPrefabBuilder.UI
                 EditorGUILayout.EndScrollView();
             }
 
-            if (!string.IsNullOrEmpty(note))
+            if (!string.IsNullOrEmpty(cache.FlowedNote))
             {
                 GUILayout.Space(2f);
-                GUILayout.Label(note, _codeNote, GUILayout.Width(viewWidth), GUILayout.Height(noteHeight));
+                GUILayout.Label(cache.FlowedNote, _codeNote, GUILayout.Width(viewWidth), GUILayout.Height(noteHeight));
             }
 
             DrawElapsedFooter(b);
@@ -496,13 +672,11 @@ namespace Indey.UIPrefabBuilder.UI
             GUILayout.Space(4);
         }
 
-        private void DrawDirective(ChatBubble b)
+        private void DrawDirective(ChatBubble b, ChatBubbleRenderCache cache)
         {
-            var body = FormatDirectiveBody(b.Content);
-            var textWidth = Mathf.Max(140f, _centerWidth - 64f);
-            var bodyHeight = string.IsNullOrEmpty(body)
-                ? 0f
-                : Mathf.Max(16f, _directiveBody.CalcHeight(new GUIContent(body), textWidth));
+            var body = cache.DirectiveBody;
+            var textWidth = cache.ContentWidth;
+            var bodyHeight = cache.ContentHeight;
             float elapsedExtra = ElapsedText(b) != null ? 18f : 0f;
 
             EditorGUILayout.BeginVertical(_directiveBubble);
@@ -513,7 +687,7 @@ namespace Indey.UIPrefabBuilder.UI
                 EditorGUI.DrawRect(accent, BuilderStyles.DirectiveAccent);
             GUILayout.Space(8f);
             EditorGUILayout.BeginVertical();
-            GUILayout.Label(DirectiveHeading(b.Content), _directiveTitle, GUILayout.Width(textWidth));
+            GUILayout.Label(cache.DirectiveHeading, _directiveTitle, GUILayout.Width(textWidth), GUILayout.Height(cache.DirectiveHeadingHeight));
             if (!string.IsNullOrEmpty(body))
                 GUILayout.Label(body, _directiveBody, GUILayout.Width(textWidth), GUILayout.Height(bodyHeight));
             DrawElapsedFooter(b);
@@ -570,56 +744,33 @@ namespace Indey.UIPrefabBuilder.UI
             return string.IsNullOrEmpty(rest) ? trimmed : rest;
         }
 
-        private void DrawWrappedText(string content, GUIStyle style, float width)
+        private void DrawWrappedText(string content, GUIStyle style, float width, float cachedHeight = -1f)
         {
             if (string.IsNullOrEmpty(content)) return;
             var layoutWidth = Mathf.Max(40f, width);
-            var height = Mathf.Max(18f, style.CalcHeight(new GUIContent(content), layoutWidth));
+            var height = cachedHeight > 0f ? cachedHeight : Mathf.Max(18f, style.CalcHeight(new GUIContent(content), layoutWidth));
             GUILayout.Label(content, style, GUILayout.Width(layoutWidth), GUILayout.Height(height));
         }
 
-        private void DrawMarkdownContent(string content, float contentWidth)
+        private void DrawMarkdownContent(ChatBubbleRenderCache cache, float contentWidth)
         {
-            if (string.IsNullOrEmpty(content))
+            if (cache.MarkdownBlocks == null || cache.MarkdownBlocks.Count == 0)
                 return;
 
-            List<MarkdownBlock> blocks;
-            try
-            {
-                var theme = MarkdownView.Theme.ForEditorSkin(EditorGUIUtility.isProSkin);
-                blocks = MarkdownView.Parse(content, theme);
-            }
-            catch (Exception e)
-            {
-                if (!_markdownFailed)
-                {
-                    _markdownFailed = true;
-                    Debug.LogException(e);
-                }
-                GUILayout.Label(content, EditorStyles.wordWrappedLabel);
-                return;
-            }
-
-            if (blocks.Count == 0)
-            {
-                GUILayout.Label(content, EditorStyles.wordWrappedLabel);
-                return;
-            }
-
-            for (var i = 0; i < blocks.Count; i++)
+            for (var i = 0; i < cache.MarkdownBlocks.Count; i++)
             {
                 if (i > 0)
                     GUILayout.Space(4f);
 
-                var block = blocks[i];
+                var block = cache.MarkdownBlocks[i];
                 if (block.Kind == MarkdownBlockKind.Code)
-                    DrawFenceBlock(block.Text, block.Language, contentWidth);
+                    DrawFenceBlock(block.Text, block.Language, contentWidth, block.Height);
                 else
-                    GUILayout.Label(block.Text, _markdownBody);
+                    GUILayout.Label(block.Text, _markdownBody, GUILayout.Width(contentWidth), GUILayout.Height(block.Height));
             }
         }
 
-        private void DrawFenceBlock(string code, string language, float contentWidth)
+        private void DrawFenceBlock(string code, string language, float contentWidth, float cachedHeight = -1f)
         {
             var shown = string.IsNullOrEmpty(code) ? " " : code;
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
@@ -631,9 +782,161 @@ namespace Indey.UIPrefabBuilder.UI
             EditorGUILayout.EndHorizontal();
 
             var width = Mathf.Max(120f, contentWidth - 28f);
-            var height = Mathf.Max(20f, _codeBlockStyle.CalcHeight(new GUIContent(shown), width));
+            var height = cachedHeight > 0f ? cachedHeight : Mathf.Max(20f, _codeBlockStyle.CalcHeight(new GUIContent(shown), width));
             EditorGUILayout.SelectableLabel(shown, _codeBlockStyle, GUILayout.MinHeight(height));
             EditorGUILayout.EndVertical();
+        }
+
+        private ChatBubbleRenderCache GetRenderCache(ChatBubble bubble)
+        {
+            float sourceWidth = Mathf.Max(120f, _centerWidth);
+            float windowWidth = Mathf.Max(120f, position.width);
+            bool proSkin = EditorGUIUtility.isProSkin;
+            if (bubble.RenderCache != null && bubble.RenderCache.Matches(bubble, sourceWidth, windowWidth, proSkin, ElapsedText(bubble) != null))
+                return bubble.RenderCache;
+
+            bool hasElapsed = ElapsedText(bubble) != null;
+            var cache = new ChatBubbleRenderCache
+            {
+                Type = bubble.Type,
+                Content = bubble.Content,
+                Title = bubble.Title,
+                Note = bubble.Note,
+                SourceWidth = sourceWidth,
+                WindowWidth = windowWidth,
+                ProSkin = proSkin,
+                HasElapsed = hasElapsed
+            };
+
+            if (bubble.Type == BubbleType.Code)
+            {
+                cache.BubbleWidth = Mathf.Max(280f, _centerWidth - 20f);
+                cache.ContentWidth = Mathf.Max(160f, cache.BubbleWidth - 56f);
+                cache.Code = string.IsNullOrEmpty(bubble.Content) ? " " : bubble.Content;
+                int lines = 1;
+                for (int i = 0; i < cache.Code.Length; i++)
+                    if (cache.Code[i] == '\n') lines++;
+                float lineBased = lines * (Mathf.Max(12, _codeBody.fontSize) + 3) + 8f;
+                cache.CodeHeight = Mathf.Max(lineBased, _codeBody.CalcHeight(new GUIContent(cache.Code), cache.ContentWidth));
+                if (!string.IsNullOrEmpty(bubble.Note))
+                {
+                    cache.FlowedNote = ToolCallPresenter.Flow(bubble.Note, Mathf.Max(8f, cache.ContentWidth - 4f),
+                        text => _codeNote.CalcSize(new GUIContent(text)).x);
+                    cache.NoteHeight = Mathf.Max(16f, _codeNote.CalcHeight(new GUIContent(cache.FlowedNote), cache.ContentWidth));
+                }
+                float viewHeight = Mathf.Min(cache.CodeHeight, 440f);
+                cache.CodeBlockHeight = 22f + viewHeight + (cache.NoteHeight > 0f ? cache.NoteHeight + 8f : 0f)
+                    + (hasElapsed ? 16f : 0f) + 6f;
+                cache.LayoutHeight = cache.CodeBlockHeight + 12f;
+            }
+            else if (bubble.Type == BubbleType.Directive)
+            {
+                cache.ContentWidth = Mathf.Max(140f, _centerWidth - 64f);
+                cache.DirectiveBody = FormatDirectiveBody(bubble.Content);
+                cache.DirectiveHeading = DirectiveHeading(bubble.Content);
+                cache.DirectiveHeadingHeight = Mathf.Max(16f, _directiveTitle.CalcHeight(new GUIContent(cache.DirectiveHeading), cache.ContentWidth));
+                cache.ContentHeight = string.IsNullOrEmpty(cache.DirectiveBody)
+                    ? 0f
+                    : Mathf.Max(16f, _directiveBody.CalcHeight(new GUIContent(cache.DirectiveBody), cache.ContentWidth));
+                int attachedCount = bubble.AttachedFilePaths?.Count ?? 0;
+                cache.LayoutHeight = cache.DirectiveHeadingHeight + cache.ContentHeight + 40f + attachedCount * 18f
+                    + (hasElapsed ? 18f : 0f);
+            }
+            else
+            {
+                cache.BubbleWidth = bubble.Type == BubbleType.ToolCall
+                    ? Mathf.Clamp(_centerWidth - 28f, 260f, 560f)
+                    : position.width * 0.55f;
+                cache.ContentWidth = bubble.Type == BubbleType.AI || bubble.Type == BubbleType.AIStream
+                    ? cache.BubbleWidth - 16f
+                    : cache.BubbleWidth - 24f;
+
+                if (bubble.Type == BubbleType.ToolCall)
+                {
+                    var text = bubble.Content ?? "";
+                    int split = text.IndexOf('\n');
+                    cache.ToolHeader = split < 0 ? text : text.Substring(0, split);
+                    var details = split < 0 ? "" : text.Substring(split + 1);
+                    cache.ToolHeaderHeight = Mathf.Max(18f, _toolCallHeader.CalcHeight(new GUIContent(cache.ToolHeader), cache.ContentWidth));
+                    if (!string.IsNullOrEmpty(details))
+                    {
+                        cache.ToolFlow = ToolCallPresenter.Flow(details, Mathf.Max(8f, cache.ContentWidth - 4f),
+                            value => _toolCallLabel.CalcSize(new GUIContent(value)).x);
+                        cache.ToolFlowHeight = Mathf.Max(18f, _toolCallLabel.CalcHeight(new GUIContent(cache.ToolFlow), cache.ContentWidth));
+                    }
+                    cache.ContentHeight = cache.ToolHeaderHeight + cache.ToolFlowHeight;
+                }
+                else if (bubble.Type == BubbleType.AI || bubble.Type == BubbleType.AIStream)
+                {
+                    cache.MarkdownBlocks = BuildMarkdownLayout(bubble.Content, cache.ContentWidth);
+                    for (int i = 0; i < cache.MarkdownBlocks.Count; i++)
+                    {
+                        cache.ContentHeight += cache.MarkdownBlocks[i].Height;
+                        if (i > 0) cache.ContentHeight += 4f;
+                    }
+                }
+                else
+                {
+                    var style = bubble.Type == BubbleType.Thinking ? EditorStyles.wordWrappedMiniLabel : EditorStyles.wordWrappedLabel;
+                    cache.ContentHeight = string.IsNullOrEmpty(bubble.Content)
+                        ? 0f
+                        : Mathf.Max(18f, style.CalcHeight(new GUIContent(bubble.Content), cache.ContentWidth));
+                    if (bubble.Type == BubbleType.Thinking)
+                        cache.ContentHeight += 18f;
+                }
+
+                int attachments = bubble.AttachedFilePaths?.Count ?? 0;
+                cache.LayoutHeight = cache.ContentHeight + 22f + attachments * 18f + (hasElapsed ? 16f : 0f);
+            }
+
+            bubble.RenderCache = cache;
+            return cache;
+        }
+
+        private List<MarkdownRenderBlock> BuildMarkdownLayout(string content, float width)
+        {
+            try
+            {
+                var parsed = MarkdownView.Parse(content, MarkdownView.Theme.ForEditorSkin(EditorGUIUtility.isProSkin));
+                var blocks = new List<MarkdownRenderBlock>(parsed.Count);
+                for (int i = 0; i < parsed.Count; i++)
+                {
+                    var block = parsed[i];
+                    float blockWidth = block.Kind == MarkdownBlockKind.Code ? Mathf.Max(120f, width - 28f) : width;
+                    var style = block.Kind == MarkdownBlockKind.Code ? _codeBlockStyle : _markdownBody;
+                    blocks.Add(new MarkdownRenderBlock
+                    {
+                        Kind = block.Kind,
+                        Text = block.Text,
+                        Language = block.Language,
+                        Height = Mathf.Max(20f, style.CalcHeight(new GUIContent(string.IsNullOrEmpty(block.Text) ? " " : block.Text), blockWidth))
+                    });
+                }
+                return blocks;
+            }
+            catch (Exception e)
+            {
+                if (!_markdownFailed)
+                {
+                    _markdownFailed = true;
+                    Debug.LogException(e);
+                }
+                return new List<MarkdownRenderBlock>
+                {
+                    new MarkdownRenderBlock
+                    {
+                        Kind = MarkdownBlockKind.Text,
+                        Text = content ?? "",
+                        Height = Mathf.Max(18f, _markdownBody.CalcHeight(new GUIContent(content ?? ""), width))
+                    }
+                };
+            }
+        }
+
+        private void InvalidateBubbleLayouts()
+        {
+            _bubbleLayoutDirty = true;
+            _bubbleLayoutCount = -1;
         }
 
         private void DrawInputArea()
@@ -707,8 +1010,14 @@ namespace Indey.UIPrefabBuilder.UI
             var items = SessionAssetChanges.Items;
             if (items.Count == 0) return;
 
-            var ordered = new List<SessionAssetChange>(items);
-            ordered.Sort((a, b) => b.Ticks.CompareTo(a.Ticks));
+            if (_changedAssetsDirty)
+            {
+                _orderedChangedAssets.Clear();
+                _orderedChangedAssets.AddRange(items);
+                _orderedChangedAssets.Sort((a, b) => b.Ticks.CompareTo(a.Ticks));
+                _changedAssetsDirty = false;
+            }
+            var ordered = _orderedChangedAssets;
 
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
             var title = ordered.Count == 1 ? "1 File" : ordered.Count + " Files";
@@ -731,7 +1040,13 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void OnSessionAssetsChanged()
         {
+            _changedAssetsDirty = true;
             _needsRepaint = true;
+        }
+
+        private void OnLogAdded(LogEntry _)
+        {
+            _consoleRepaintPending = true;
         }
 
         private static void PingProjectAsset(string assetPath)
@@ -1114,6 +1429,7 @@ namespace Indey.UIPrefabBuilder.UI
             _titleRequestedSessionId = null;
             _sessions.SaveCurrentSession(_agent.History, SnapshotBubbles());
             _bubbles.Clear();
+            InvalidateBubbleLayouts();
             SessionAssetChanges.Clear();
             _agent.History.Clear();
             _agent.Refresh();
@@ -1127,6 +1443,7 @@ namespace Indey.UIPrefabBuilder.UI
         private void ClearChat()
         {
             _bubbles.Clear();
+            InvalidateBubbleLayouts();
             _agent?.History?.Clear();
             _agent?.Refresh();
             DesignImageContext.Clear();
@@ -1165,6 +1482,7 @@ namespace Indey.UIPrefabBuilder.UI
                 DurationSeconds = -1
             };
             _bubbles.Add(bubble);
+            InvalidateBubbleLayouts();
             _chatScroll.y = float.MaxValue;
             _needsRepaint = true;
             PersistSession();
@@ -1200,6 +1518,8 @@ namespace Indey.UIPrefabBuilder.UI
                 bubble.Content = done.Content ?? "";
                 bubble.Title = done.Title;
                 bubble.Note = done.Note;
+                bubble.RenderCache = null;
+                InvalidateBubbleLayouts();
                 _chatScroll.y = float.MaxValue;
                 _needsRepaint = true;
             }
@@ -1591,5 +1911,56 @@ namespace Indey.UIPrefabBuilder.UI
         public double StartedAt;
         public double DurationSeconds = -1;
         public bool TimingOpen;
+        [NonSerialized] public ChatBubbleRenderCache RenderCache;
+    }
+
+    public sealed class ChatBubbleRenderCache
+    {
+        public BubbleType Type;
+        public string Content;
+        public string Title;
+        public string Note;
+        public float SourceWidth;
+        public float WindowWidth;
+        public bool ProSkin;
+        public bool HasElapsed;
+        public float BubbleWidth;
+        public float ContentWidth;
+        public float ContentHeight;
+        public float LayoutHeight;
+        public string ToolHeader;
+        public float ToolHeaderHeight;
+        public string ToolFlow;
+        public float ToolFlowHeight;
+        public string Code;
+        public float CodeHeight;
+        public string FlowedNote;
+        public float NoteHeight;
+        public float CodeBlockHeight;
+        public string DirectiveHeading;
+        public float DirectiveHeadingHeight;
+        public string DirectiveBody;
+        public List<MarkdownRenderBlock> MarkdownBlocks;
+
+        public bool Matches(ChatBubble bubble, float sourceWidth, float windowWidth, bool proSkin, bool hasElapsed)
+        {
+            return bubble != null
+                && Type == bubble.Type
+                && Content == bubble.Content
+                && Title == bubble.Title
+                && Note == bubble.Note
+                && Mathf.Abs(SourceWidth - sourceWidth) < 1f
+                && Mathf.Abs(WindowWidth - windowWidth) < 1f
+                && ProSkin == proSkin
+                && HasElapsed == hasElapsed;
+        }
+    }
+
+    public struct MarkdownRenderBlock
+    {
+        public MarkdownBlockKind Kind;
+        public string Text;
+        public string Language;
+        public float Height;
     }
 }

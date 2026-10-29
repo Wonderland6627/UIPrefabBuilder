@@ -114,7 +114,7 @@ namespace Indey.UIPrefabBuilder.UI
                     var maxWidth = _maxSize > 0
                         ? Mathf.Min(_maxSize, bodyRect.width - otherPanelMin)
                         : bodyRect.width - otherPanelMin;
-                    SplitPosition = Mathf.Clamp(newWidth, _minSize, Mathf.Max(_minSize, maxWidth));
+                    _splitPosition = Mathf.Clamp(newWidth, _minSize, Mathf.Max(_minSize, maxWidth));
                     e.Use();
                     break;
 
@@ -170,7 +170,6 @@ namespace Indey.UIPrefabBuilder.UI
                             _splitPosition = e.mousePosition.y - available.y;
 
                         ClampPosition(available);
-                        EditorPrefs.SetFloat(_prefsKey, _splitPosition);
                         e.Use();
                     }
                     break;

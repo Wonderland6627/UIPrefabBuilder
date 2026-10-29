@@ -14,6 +14,7 @@ namespace Indey.UIPrefabBuilder.Logging
         public DateTime Timestamp;
         public LogLevel Level;
         public string Message;
+        public string TimeLabel;
     }
 
     public static class ConsoleLogger
@@ -152,11 +153,13 @@ namespace Indey.UIPrefabBuilder.Logging
         {
             if (string.IsNullOrEmpty(message)) return;
 
+            var now = DateTime.Now;
             var entry = new LogEntry
             {
-                Timestamp = DateTime.Now,
+                Timestamp = now,
                 Level = level,
-                Message = message
+                Message = message,
+                TimeLabel = now.ToString("HH:mm:ss.ff")
             };
 
             lock (_lock)

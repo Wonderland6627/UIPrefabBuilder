@@ -32,6 +32,10 @@ namespace Indey.UIPrefabBuilder.UI
         private readonly List<Sprite> _dragSprites = new List<Sprite>();
         private readonly List<GameObject> _dragPrefabs = new List<GameObject>();
         private readonly List<Sprite> _spriteScratch = new List<Sprite>();
+        private readonly Dictionary<string, CachedObject<Sprite>> _spriteCache = new Dictionary<string, CachedObject<Sprite>>();
+        private readonly Dictionary<string, CachedObject<GameObject>> _prefabCache = new Dictionary<string, CachedObject<GameObject>>();
+        private readonly Dictionary<int, CachedObject<Sprite>> _previewSpriteCache = new Dictionary<int, CachedObject<Sprite>>();
+        private readonly Dictionary<string, float> _textHeightCache = new Dictionary<string, float>();
 
         public void Draw(Rect rect, Action requestRepaint = null)
         {
@@ -89,6 +93,7 @@ namespace Indey.UIPrefabBuilder.UI
                 {
                     ProjectConfig.Save();
                     _dirty = false;
+                    ClearAssetCaches();
                 }
                 if (GUILayout.Button("Export", EditorStyles.toolbarButton, GUILayout.Width(45)))
                 {
@@ -106,6 +111,7 @@ namespace Indey.UIPrefabBuilder.UI
                     {
                         ProjectConfig.Import(path);
                         _dirty = true;
+                        ClearAssetCaches();
                     }
                 }
                 if (GUILayout.Button("Reset", EditorStyles.toolbarButton, GUILayout.Width(40)))
@@ -114,6 +120,7 @@ namespace Indey.UIPrefabBuilder.UI
                     {
                         ProjectConfig.Reset();
                         _dirty = true;
+                        ClearAssetCaches();
                     }
                 }
             }, 85f);
@@ -190,7 +197,7 @@ namespace Indey.UIPrefabBuilder.UI
                 ref hovered,
                 SpriteBarHover,
                 _dragSprites.Count > 0,
-                () => list.Add(new SpriteEntry()),
+                () => { list.Add(new SpriteEntry()); ClearAssetCaches(); },
                 () => AddDraggedSprites(list));
 
             CommitMappingHover(ref _spriteDragHover, hovered);
@@ -198,6 +205,7 @@ namespace Indey.UIPrefabBuilder.UI
             {
                 list.RemoveAt(removeIndex);
                 _dirty = true;
+                ClearAssetCaches();
             }
             if (addAtTop)
                 InsertBlankSprite(list, 0);
@@ -221,16 +229,18 @@ namespace Indey.UIPrefabBuilder.UI
                 removeIndex = index;
             EditorGUILayout.EndHorizontal();
 
-            var current = LoadSprite(entry.assetPath);
-            var picked = (Sprite)EditorGUILayout.ObjectField(current, typeof(Sprite), false);
-            if (picked != current)
+            var sprite = LoadSprite(entry.assetPath);
+            var picked = (Sprite)EditorGUILayout.ObjectField(sprite, typeof(Sprite), false);
+            if (picked != sprite)
+            {
                 AssignSprite(entry, picked, fillRole: true);
+                _spriteCache.Remove(entry.assetPath ?? "");
+                sprite = LoadSprite(entry.assetPath);
+            }
 
             entry.description = HintTextField(entry.description, "Description", "sprite-desc-" + index, null);
             EditorGUILayout.EndVertical();
             EditorGUILayout.EndHorizontal();
-
-            var sprite = LoadSprite(entry.assetPath);
             bool missing = sprite == null && !string.IsNullOrEmpty(entry.assetPath);
             bool warnSlice = sprite != null && entry.imageType == "Sliced" && sprite.border == Vector4.zero;
 
@@ -333,7 +343,7 @@ namespace Indey.UIPrefabBuilder.UI
                 ref hovered,
                 PrefabBarHover,
                 _dragPrefabs.Count > 0,
-                () => list.Add(new PrefabEntry()),
+                () => { list.Add(new PrefabEntry()); ClearAssetCaches(); },
                 () => AddDraggedPrefabs(list));
 
             CommitMappingHover(ref _prefabDragHover, hovered);
@@ -341,6 +351,7 @@ namespace Indey.UIPrefabBuilder.UI
             {
                 list.RemoveAt(removeIndex);
                 _dirty = true;
+                ClearAssetCaches();
             }
             if (addAtTop)
                 InsertBlankPrefab(list, 0);
@@ -364,16 +375,18 @@ namespace Indey.UIPrefabBuilder.UI
                 removeIndex = index;
             EditorGUILayout.EndHorizontal();
 
-            var current = LoadPrefab(entry.prefabPath);
-            var picked = (GameObject)EditorGUILayout.ObjectField(current, typeof(GameObject), false);
-            if (picked != current)
+            var prefab = LoadPrefab(entry.prefabPath);
+            var picked = (GameObject)EditorGUILayout.ObjectField(prefab, typeof(GameObject), false);
+            if (picked != prefab)
+            {
                 AssignPrefab(entry, picked, fillRole: true);
+                _prefabCache.Remove(entry.prefabPath ?? "");
+                prefab = LoadPrefab(entry.prefabPath);
+            }
 
             entry.description = HintTextField(entry.description, "Description", "prefab-desc-" + index, null);
             EditorGUILayout.EndVertical();
             EditorGUILayout.EndHorizontal();
-
-            var prefab = LoadPrefab(entry.prefabPath);
             bool missing = prefab == null && !string.IsNullOrEmpty(entry.prefabPath);
             var summary = SummarizePrefab(prefab);
 
@@ -785,7 +798,7 @@ namespace Indey.UIPrefabBuilder.UI
 
         private void DrawPrefabPreview(Rect rect, GameObject prefab, bool dragHover, string tooltip)
         {
-            var previewSprite = FindPreviewSprite(prefab);
+            var previewSprite = CachedPreviewSprite(prefab);
             DrawThumbnailChrome(rect, prefab == null ? "Prefab" : null);
             if (previewSprite != null)
                 DrawSpriteTexture(rect, previewSprite);
@@ -1122,12 +1135,14 @@ namespace Indey.UIPrefabBuilder.UI
         {
             list.Insert(index, new SpriteEntry());
             _dirty = true;
+            ClearAssetCaches();
         }
 
         private void InsertBlankPrefab(List<PrefabEntry> list, int index)
         {
             list.Insert(index, new PrefabEntry());
             _dirty = true;
+            ClearAssetCaches();
         }
 
         private void RemoveSpriteAt(List<SpriteEntry> list, int index)
@@ -1136,6 +1151,7 @@ namespace Indey.UIPrefabBuilder.UI
                 return;
             list.RemoveAt(index);
             _dirty = true;
+            ClearAssetCaches();
         }
 
         private void RemovePrefabAt(List<PrefabEntry> list, int index)
@@ -1144,6 +1160,7 @@ namespace Indey.UIPrefabBuilder.UI
                 return;
             list.RemoveAt(index);
             _dirty = true;
+            ClearAssetCaches();
         }
 
         private void AddDraggedSprites(List<SpriteEntry> list)
@@ -1161,6 +1178,7 @@ namespace Indey.UIPrefabBuilder.UI
                     imageType = "Simple"
                 });
                 _dirty = true;
+                ClearAssetCaches();
             }
         }
 
@@ -1178,6 +1196,7 @@ namespace Indey.UIPrefabBuilder.UI
                     prefabPath = path
                 });
                 _dirty = true;
+                ClearAssetCaches();
             }
         }
 
@@ -1187,6 +1206,7 @@ namespace Indey.UIPrefabBuilder.UI
                 return;
             AssignSprite(entry, _dragSprites[0], true);
             _dirty = true;
+            ClearAssetCaches();
             for (int i = 1; i < _dragSprites.Count; i++)
             {
                 var sprite = _dragSprites[i];
@@ -1199,6 +1219,7 @@ namespace Indey.UIPrefabBuilder.UI
                     assetPath = path,
                     imageType = "Simple"
                 });
+                ClearAssetCaches();
             }
         }
 
@@ -1208,6 +1229,7 @@ namespace Indey.UIPrefabBuilder.UI
                 return;
             AssignPrefab(entry, _dragPrefabs[0], true);
             _dirty = true;
+            ClearAssetCaches();
             for (int i = 1; i < _dragPrefabs.Count; i++)
             {
                 var prefab = _dragPrefabs[i];
@@ -1219,6 +1241,7 @@ namespace Indey.UIPrefabBuilder.UI
                     role = prefab.name,
                     prefabPath = path
                 });
+                ClearAssetCaches();
             }
         }
 
@@ -1269,18 +1292,61 @@ namespace Indey.UIPrefabBuilder.UI
             return false;
         }
 
-        private static Sprite LoadSprite(string path)
+        private Sprite LoadSprite(string path)
         {
-            if (string.IsNullOrEmpty(path))
-                return null;
-            return AssetDatabase.LoadAssetAtPath<Sprite>(path);
+            return LoadCached(_spriteCache, path, assetPath => AssetDatabase.LoadAssetAtPath<Sprite>(assetPath));
         }
 
-        private static GameObject LoadPrefab(string path)
+        private GameObject LoadPrefab(string path)
+        {
+            return LoadCached(_prefabCache, path, assetPath => AssetDatabase.LoadAssetAtPath<GameObject>(assetPath));
+        }
+
+        private static T LoadCached<T>(Dictionary<string, CachedObject<T>> cache, string path, Func<string, T> load) where T : UnityEngine.Object
         {
             if (string.IsNullOrEmpty(path))
                 return null;
-            return AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (cache.TryGetValue(path, out var slot))
+            {
+                if (slot.Missing || slot.Value != null)
+                    return slot.Value;
+                cache.Remove(path);
+            }
+
+            var loaded = load(path);
+            cache[path] = new CachedObject<T> { Value = loaded, Missing = loaded == null };
+            return loaded;
+        }
+
+        private Sprite CachedPreviewSprite(GameObject prefab)
+        {
+            if (prefab == null)
+                return null;
+            int id = prefab.GetInstanceID();
+            if (_previewSpriteCache.TryGetValue(id, out var slot))
+            {
+                if (slot.Missing || slot.Value != null)
+                    return slot.Value;
+                _previewSpriteCache.Remove(id);
+            }
+
+            var found = FindPreviewSprite(prefab);
+            _previewSpriteCache[id] = new CachedObject<Sprite> { Value = found, Missing = found == null };
+            return found;
+        }
+
+        private void ClearAssetCaches()
+        {
+            _spriteCache.Clear();
+            _prefabCache.Clear();
+            _previewSpriteCache.Clear();
+            _textHeightCache.Clear();
+        }
+
+        private sealed class CachedObject<T> where T : UnityEngine.Object
+        {
+            public T Value;
+            public bool Missing;
         }
 
         private static void PingObject(UnityEngine.Object obj)
@@ -1303,12 +1369,17 @@ namespace Indey.UIPrefabBuilder.UI
             var style = BuilderStyles.WrappedTextArea;
             var value = text ?? "";
             var wrapWidth = Mathf.Max(80f, _panelWidth - 40f);
-            var height = style.CalcHeight(new GUIContent(value), wrapWidth);
-
-            if (value.EndsWith("\n"))
-                height += style.lineHeight;
-
-            height = Mathf.Max(minHeight, height + 4f);
+            var key = wrapWidth.ToString("0.0") + "\n" + minHeight.ToString("0.0") + "\n" + value;
+            if (!_textHeightCache.TryGetValue(key, out var height))
+            {
+                height = style.CalcHeight(new GUIContent(value), wrapWidth);
+                if (value.EndsWith("\n"))
+                    height += style.lineHeight;
+                height = Mathf.Max(minHeight, height + 4f);
+                if (_textHeightCache.Count > 64)
+                    _textHeightCache.Clear();
+                _textHeightCache[key] = height;
+            }
             return EditorGUILayout.TextArea(value, style, GUILayout.Height(height), GUILayout.ExpandWidth(true));
         }
     }
